@@ -303,6 +303,9 @@ PHONY += bzImage $(BOOT_TARGETS) $(INSTALL_TARGETS)
 bootpImage uImage: zImage
 zImage: Image
 
+# These targets cannot be built in parallel
+.NOTPARALLEL: $(BOOT_TARGETS)
+
 $(BOOT_TARGETS): vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
 	@$(kecho) '  Kernel: $(boot)/$@ is ready'
