@@ -344,7 +344,8 @@ ENTRY(\sym)
  * With EABI a couple syscalls are obsolete and defined as sys_ni_syscall.
  */
 	syscall_table_start sys_call_table
-#ifdef CONFIG_AEABI
+
+#if defined(CONFIG_AEABI) && !defined(CONFIG_OABI_COMPAT)
 #include <calls-eabi.S>
 #else
 #include <calls-oabi.S>
