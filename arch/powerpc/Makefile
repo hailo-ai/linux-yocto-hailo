@@ -429,7 +429,7 @@ vdso_prepare: prepare0
 		$(build)=arch/powerpc/kernel/vdso64 include/generated/vdso64-offsets.h)
 endif
 
-archprepare: checkbin
+archprepare: checkbin arch/powerpc/lib/crtsavres.o
 
 archheaders:
 	$(Q)$(MAKE) $(build)=arch/powerpc/kernel/syscalls all
