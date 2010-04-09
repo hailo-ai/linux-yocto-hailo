@@ -1570,6 +1570,19 @@ static int __ref kernel_init(void *unused)
 /* Open /dev/console, for stdin/stdout/stderr, this should never fail */
 void __init console_on_rootfs(void)
 {
+#ifndef CONFIG_BLK_DEV_INITRD
+       /*
+        * Use /dev/console to infer if the rootfs is setup properly.
+        * In case of initrd or initramfs /dev/console might be instantiated
+        * later by /init so don't do this check for CONFIG_BLK_DEV_INITRD
+        */
+	struct kstat console_stat;
+	if (vfs_lstat((char __user *) "/dev/console", (struct kstat __user *) &console_stat)
+			|| !S_ISCHR(console_stat.mode)) {
+		panic("/dev/console is missing or not a character device!\nPlease ensure your rootfs is properly configured\n");
+	}
+#endif
+
 	struct file *file = filp_open("/dev/console", O_RDWR, 0);
 
 	if (IS_ERR(file)) {
