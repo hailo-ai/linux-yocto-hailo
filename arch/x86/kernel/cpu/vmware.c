@@ -21,6 +21,7 @@
  *
  */
 
+#include <linux/jiffies.h>
 #include <linux/dmi.h>
 #include <linux/init.h>
 #include <linux/export.h>
