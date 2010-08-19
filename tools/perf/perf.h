@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PERF_PERF_H
+#include <stdbool.h>
+
 #define _PERF_PERF_H
 
 #include <stdbool.h>
