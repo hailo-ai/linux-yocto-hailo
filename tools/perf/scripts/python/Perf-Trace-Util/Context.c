@@ -11,6 +11,10 @@
  */
 #define PY_SSIZE_T_CLEAN
 
+#ifdef __mips__
+#include <sgidefs.h>
+#endif
+
 #include <Python.h>
 #include "../../../util/trace-event.h"
 #include "../../../util/event.h"
