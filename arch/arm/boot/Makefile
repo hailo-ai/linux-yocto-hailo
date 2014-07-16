@@ -68,6 +68,10 @@ $(obj)/zImage:	$(obj)/compressed/vmlinux FORCE
 
 endif
 
+ifeq ($(CONFIG_ARCH_VEXPRESS), y)
+LOADADDR=0x04080000
+endif
+
 ifneq ($(LOADADDR),)
   UIMAGE_LOADADDR=$(LOADADDR)
 else
