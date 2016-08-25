@@ -89,7 +89,9 @@ struct vbe_mode_ib {
 
 #define UVESAFB_DEFAULT_MODE "640x480-16"
 
-/* How long to wait for a reply from userspace [ms] */
+/* How long to wait for a reply from userspace [ms]
+ * This is the default value of module param task_timeout
+ */
 #define UVESAFB_TIMEOUT 5000
 
 /* Max number of concurrent tasks */

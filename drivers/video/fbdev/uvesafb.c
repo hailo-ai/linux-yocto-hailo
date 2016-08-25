@@ -44,6 +44,7 @@ static const struct fb_fix_screeninfo uvesafb_fix = {
 	.visual = FB_VISUAL_TRUECOLOR,
 };
 
+static int task_timeout = UVESAFB_TIMEOUT; /* timeout [ms] of task execution */
 static int mtrr		= 3;	/* enable mtrr by default */
 static bool blank	= true;	/* enable blanking by default */
 static int ypan		= 1;	/* 0: scroll, 1: ypan, 2: ywrap */
@@ -147,7 +148,9 @@ static int uvesafb_exec(struct uvesafb_ktask *task)
 	struct cn_msg *m;
 	int err;
 	int len = sizeof(task->t) + task->t.buf_len;
-
+	int forever_wait = task_timeout < 0 ? 1 : 0;
+	/* For infinite wait case, set interval to the legacy 5000 ms */
+	int timeout = forever_wait ? 5000 : task_timeout;
 	/*
 	 * Check whether the message isn't longer than the maximum
 	 * allowed by connector.
@@ -214,11 +217,19 @@ static int uvesafb_exec(struct uvesafb_ktask *task)
 		err = 0;
 
 	if (!err && !(task->t.flags & TF_EXIT)) {
-		err = !wait_for_completion_timeout(task->done,
-				msecs_to_jiffies(UVESAFB_TIMEOUT));
-		if (err)
-			printk_ratelimited(KERN_ERR "uvesafb: %u ms task timeout error\n",
-					UVESAFB_TIMEOUT);
+		do {
+			err = !wait_for_completion_timeout(task->done,
+					msecs_to_jiffies(timeout));
+			if (err)
+				printk_ratelimited(
+						KERN_WARNING
+						"uvesafb: %u ms task timeout%s\n",
+						timeout,
+						forever_wait ?
+						", infinitely waiting." : ".");
+			else
+				break;
+		} while (forever_wait);
 	}
 
 	mutex_lock(&uvfb_lock);
@@ -1823,6 +1834,8 @@ static int uvesafb_setup(char *options)
 	while ((this_opt = strsep(&options, ",")) != NULL) {
 		if (!*this_opt) continue;
 
+		if (!strncmp(this_opt, "task_timeout", 12))
+			task_timeout = simple_strtol(this_opt+12, NULL, 0);
 		if (!strcmp(this_opt, "redraw"))
 			ypan = 0;
 		else if (!strcmp(this_opt, "ypan"))
@@ -1966,6 +1979,9 @@ static const struct kernel_param_ops param_ops_scroll = {
 };
 #define param_check_scroll(name, p) __param_check(name, p, void)
 
+module_param(task_timeout, int, 0400);
+MODULE_PARM_DESC(task_timeout,
+	"Timeout [ms] of a task's completion, or set to any negative value to infinitely wait");
 module_param_named(scroll, ypan, scroll, 0);
 MODULE_PARM_DESC(scroll,
 	"Scrolling mode, set to 'redraw', 'ypan', or 'ywrap'");
