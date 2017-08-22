@@ -1,4 +1,4 @@
-#!/bin/awk -f
+#!/usr/bin/awk -f
 # SPDX-License-Identifier: GPL-2.0-only
 # gen-insn-x86-dat.awk: script to convert data for the insn-x86 test
 # Copyright (c) 2015, Intel Corporation.
