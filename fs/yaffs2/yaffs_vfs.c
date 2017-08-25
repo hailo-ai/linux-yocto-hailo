@@ -268,7 +268,7 @@ MODULE_PARM(yaffs_gc_control, "i");
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0))
 #define update_dir_time(dir) do {\
-		(dir)->i_ctime = (dir)->i_mtime = CURRENT_TIME; \
+		(dir)->i_ctime = (dir)->i_mtime = current_time(dir); \
 	} while (0)
 #elif (LINUX_VERSION_CODE < KERNEL_VERSION(4,18,0))
 #define update_dir_time(dir) do {\
@@ -276,7 +276,7 @@ MODULE_PARM(yaffs_gc_control, "i");
 	} while (0)
 #else
 #define update_dir_time(dir) do {\
-		(dir)->i_ctime = (dir)->i_mtime = current_kernel_time64(); \
+		(dir)->i_ctime = (dir)->i_mtime = current_time(dir); \
 	} while (0)
 #endif
 

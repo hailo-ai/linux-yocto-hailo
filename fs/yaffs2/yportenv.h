@@ -62,9 +62,9 @@
 
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0))
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0))
-#define Y_CURRENT_TIME CURRENT_TIME.tv_sec
+#define Y_CURRENT_TIME ktime_get_real_seconds()
 #else
-#define Y_CURRENT_TIME current_kernel_time().tv_sec
+#define Y_CURRENT_TIME ktime_get_real_seconds()
 #endif
 #define Y_TIME_CONVERT(x) (x).tv_sec
 #else
