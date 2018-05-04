@@ -4,7 +4,8 @@
 #
 
 ifdef CONFIG_PPC64
-CFLAGS_prom_init.o	+= $(NO_MINIMAL_TOC)
+CFLAGS_prom_init.o	+= $(NO_MINIMAL_TOC) $(call cc-disable-warning, attribute-alias)
+CFLAGS_syscalls.o	+= $(call cc-disable-warning, attribute-alias)
 endif
 ifdef CONFIG_PPC32
 CFLAGS_prom_init.o      += -fPIC
