@@ -4,6 +4,14 @@
 PKG="ncursesw"
 PKG2="ncurses"
 
+if [ "$CROSS_CURSES_LIB" != "" ]; then
+    echo libs=\'$CROSS_CURSES_LIB\'
+    if [ x"$CROSS_CURSES_INC" != x ]; then
+	echo cflags=\'$CROSS_CURSES_INC\'
+    fi
+    exit 0
+fi
+
 if [ -n "$(command -v pkg-config)" ]; then
 	if pkg-config --exists $PKG; then
 		echo cflags=\"$(pkg-config --cflags $PKG)\"
