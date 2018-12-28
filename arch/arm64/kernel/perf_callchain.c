@@ -54,16 +54,22 @@ user_backtrace(struct frame_tail __user *tail,
 
 #ifdef CONFIG_COMPAT
 /*
- * The registers we're interested in are at the end of the variable
- * length saved register structure. The fp points at the end of this
- * structure so the address of this struct is:
- * (struct compat_frame_tail *)(xxx->fp)-1
+ * The AAPCS ABI, the most current replacing the obsolete APCS ABI,
+ * does not specifically describe the stack frame with respect to the
+ * frame pointer.  However, the examination of emitted prologue
+ * instructions for ARM implies that with -fno-omit-framepointer,
+ * register R11 is used as the frame pointer register and saved on the
+ * stack, with LR.
  *
- * This code has been adapted from the ARM OProfile support.
+ * After the prolog, the FP points to the location of the saved LR and
+ * FP+4 points to the previous frames FP as shown below:
+ *  Stack Hi Mem
+ *  (Value of FP)+4  Saved FP for caller
+ *  (Value of FP)    LR set by caller
+ *  Stack Lo Mem
  */
 struct compat_frame_tail {
 	compat_uptr_t	fp; /* a (struct compat_frame_tail *) in compat mode */
-	u32		sp;
 	u32		lr;
 } __attribute__((packed));
 
@@ -91,11 +97,10 @@ compat_user_backtrace(struct compat_frame_tail __user *tail,
 	 * Frame pointers should strictly progress back up the stack
 	 * (towards higher addresses).
 	 */
-	if (tail + 1 >= (struct compat_frame_tail __user *)
-			compat_ptr(buftail.fp))
+	if ((u32)tail + 4 >= buftail.fp)
 		return NULL;
 
-	return (struct compat_frame_tail __user *)compat_ptr(buftail.fp) - 1;
+	return (struct compat_frame_tail __user *)(buftail.fp - 4);
 }
 #endif /* CONFIG_COMPAT */
 
@@ -123,7 +128,7 @@ void perf_callchain_user(struct perf_callchain_entry_ctx *entry,
 		/* AARCH32 compat mode */
 		struct compat_frame_tail __user *tail;
 
-		tail = (struct compat_frame_tail __user *)regs->compat_fp - 1;
+		tail = (struct compat_frame_tail __user *)(regs->compat_fp - 4);
 
 		while ((entry->nr < entry->max_stack) &&
 			tail && !((unsigned long)tail & 0x3))
