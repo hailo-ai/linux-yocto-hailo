@@ -256,17 +256,25 @@ struct mtd_info * yaffs_get_mtd_device(dev_t sdev)
 {
 	struct mtd_info *mtd;
 
-	mtd = yaffs_get_mtd_device(sdev);
-
 	/* Check it's an mtd device..... */
 	if (MAJOR(sdev) != MTD_BLOCK_MAJOR)
 		return NULL;	/* This isn't an mtd device */
+
+	/* Get the device */
+	mtd = get_mtd_device(NULL, MINOR(sdev));
+	if (IS_ERR_OR_NULL(mtd)) {
+		yaffs_trace(YAFFS_TRACE_ALWAYS,
+			"yaffs: MTD device %u either not valid or unavailable",
+			MINOR(sdev));
+		return NULL;
+	}
 
 	/* Check it's NAND */
 	if (mtd->type != MTD_NANDFLASH) {
 		yaffs_trace(YAFFS_TRACE_ALWAYS,
 			"yaffs: MTD device is not NAND it's type %d",
 			mtd->type);
+		put_mtd_device(mtd);
 		return NULL;
 	}
 
