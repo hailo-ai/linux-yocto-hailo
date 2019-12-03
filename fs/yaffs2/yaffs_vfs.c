@@ -2960,12 +2960,9 @@ static struct super_block *yaffs_internal_read_super(int yaffs_version,
 		MAJOR(sb->s_dev), MINOR(sb->s_dev),
 		yaffs_devname(sb, devname_buf));
 
-	/* Get the device */
-	mtd = get_mtd_device(NULL, MINOR(sb->s_dev));
+
+	mtd = yaffs_get_mtd_device(sb->s_dev);
 	if (IS_ERR(mtd)) {
-		yaffs_trace(YAFFS_TRACE_ALWAYS,
-			"yaffs: MTD device %u either not valid or unavailable",
-			MINOR(sb->s_dev));
 		return NULL;
 	}
 
