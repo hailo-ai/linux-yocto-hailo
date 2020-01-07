@@ -125,6 +125,10 @@ config MACH_INGENIC
 	select CPU_SUPPORTS_CPUFREQ
 	select MIPS_EXTERNAL_TIMER
 
+config QEMUMIPS64
+	bool "Enable for qemumips64 specific configurations"
+        default n
+
 menu "Machine selection"
 
 choice
@@ -138,17 +142,17 @@ config MIPS_GENERIC_KERNEL
 	select BOOT_RAW
 	select BUILTIN_DTB
 	select CEVT_R4K
-	select CLKSRC_MIPS_GIC
 	select COMMON_CLK
 	select CPU_MIPSR2_IRQ_EI
 	select CPU_MIPSR2_IRQ_VI
-	select CSRC_R4K
 	select DMA_NONCOHERENT
 	select HAVE_PCI
 	select IRQ_MIPS_CPU
 	select MIPS_AUTO_PFN_OFFSET
 	select MIPS_CPU_SCACHE
 	select MIPS_GIC
+	select CLKSRC_MIPS_GIC if !QEMUMIPS64
+	select CSRC_R4K if !QEMUMIPS64
 	select MIPS_L1_CACHE_SHIFT_7
 	select NO_EXCEPT_FILL
 	select PCI_DRIVERS_GENERIC
@@ -524,9 +528,9 @@ config MIPS_MALTA
 	select BOOT_RAW
 	select BUILTIN_DTB
 	select CEVT_R4K
-	select CLKSRC_MIPS_GIC
+	select CLKSRC_MIPS_GIC if !QEMUMIPS64
+	select CSRC_R4K if !QEMUMIPS64
 	select COMMON_CLK
-	select CSRC_R4K
 	select DMA_NONCOHERENT
 	select GENERIC_ISA_DMA
 	select HAVE_PCSPKR_PLATFORM
