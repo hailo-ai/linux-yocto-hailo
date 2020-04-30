@@ -1826,7 +1826,6 @@ static int yaffs_iterate(struct file *f, struct dir_context *dc)
 	int ret_val = 0;
 
 	char name[YAFFS_MAX_NAME_LENGTH + 1];
-	u64 i_version;
 
 	obj = yaffs_dentry_to_obj(Y_GET_DENTRY(f));
 	dev = obj->my_dev;
@@ -1898,6 +1897,7 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 	unsigned long offset, curoffs;
 	struct yaffs_obj *l;
 	int ret_val = 0;
+	u64 i_version;
 
 	char name[YAFFS_MAX_NAME_LENGTH + 1];
 
