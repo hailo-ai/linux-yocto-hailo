@@ -97,10 +97,10 @@ compat_user_backtrace(struct compat_frame_tail __user *tail,
 	 * Frame pointers should strictly progress back up the stack
 	 * (towards higher addresses).
 	 */
-	if ((u32)tail + 4 >= buftail.fp)
+	if ((u64)tail + 4 >= (u64)buftail.fp)
 		return NULL;
 
-	return (struct compat_frame_tail __user *)(buftail.fp - 4);
+	return (struct compat_frame_tail __user *)((u64)buftail.fp - 4);
 }
 #endif /* CONFIG_COMPAT */
 
