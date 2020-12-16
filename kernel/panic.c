@@ -652,21 +652,36 @@ EXPORT_SYMBOL(__warn_printk);
 
 /* Support resetting WARN*_ONCE state */
 
-static int clear_warn_once_set(void *data, u64 val)
+static u64 clear_warn_once;
+
+static void do_clear_warn_once(void)
 {
 	generic_bug_clear_once();
 	memset(__start_once, 0, __end_once - __start_once);
+}
+
+static int warn_once_get(void *data, u64 *val)
+{
+	*val = clear_warn_once;
 	return 0;
 }
 
-DEFINE_DEBUGFS_ATTRIBUTE(clear_warn_once_fops, NULL, clear_warn_once_set,
-			 "%lld\n");
+static int warn_once_set(void *data, u64 val)
+{
+	clear_warn_once = val;
+
+	do_clear_warn_once();
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(clear_warn_once_fops, warn_once_get, warn_once_set,
+			 "%llu\n");
 
 static __init int register_warn_debugfs(void)
 {
 	/* Don't care about failure */
-	debugfs_create_file_unsafe("clear_warn_once", 0200, NULL, NULL,
-				   &clear_warn_once_fops);
+	debugfs_create_file_unsafe("clear_warn_once", 0600, NULL,
+				   &clear_warn_once, &clear_warn_once_fops);
 	return 0;
 }
 
