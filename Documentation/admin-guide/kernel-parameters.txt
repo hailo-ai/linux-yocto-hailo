@@ -6237,6 +6237,14 @@
 	vt.underline=	[VT] Default color for underlined text; 0-15.
 			Default: 3 = cyan.
 
+	clear_warn_once=
+			[KNL]
+			Set the WARN_ONCE reset period in minutes.  Normally
+			a WARN_ONCE() will only ever emit a message once per
+			boot, but for example, setting this to 60 would
+			effectively rate-limit WARN_ONCE to once per hour.
+			Default: 0 = never.
+
 	watchdog timers	[HW,WDT] For information on watchdog timers,
 			see Documentation/watchdog/watchdog-parameters.rst
 			or other driver-specific files in the

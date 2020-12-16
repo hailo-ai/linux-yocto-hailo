@@ -714,10 +714,31 @@ static __init int register_warn_debugfs(void)
 	/* Don't care about failure */
 	debugfs_create_file_unsafe("clear_warn_once", 0600, NULL,
 				   &clear_warn_once, &clear_warn_once_fops);
+
+	/* if a bootarg was used, set the initial timer */
+	if (clear_warn_once)
+		warn_once_set(NULL, clear_warn_once);
+
 	return 0;
 }
 
 device_initcall(register_warn_debugfs);
+
+static int __init warn_once_setup(char *s)
+{
+	int r;
+
+	if (!s)
+		return -EINVAL;
+
+	r = kstrtoull(s, 0, &clear_warn_once);
+	if (r)
+		return r;
+
+	return 1;
+}
+__setup("clear_warn_once=", warn_once_setup);
+
 #endif
 
 #ifdef CONFIG_STACKPROTECTOR
