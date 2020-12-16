@@ -653,12 +653,21 @@ EXPORT_SYMBOL(__warn_printk);
 /* Support resetting WARN*_ONCE state */
 
 static u64 clear_warn_once;
+static bool warn_timer_active;
 
 static void do_clear_warn_once(void)
 {
 	generic_bug_clear_once();
 	memset(__start_once, 0, __end_once - __start_once);
 }
+
+static void timer_warn_once(struct timer_list *timer)
+{
+	do_clear_warn_once();
+	timer->expires = jiffies + clear_warn_once * HZ * 60;
+	add_timer(timer);
+}
+static DEFINE_TIMER(warn_reset_timer, timer_warn_once);
 
 static int warn_once_get(void *data, u64 *val)
 {
@@ -670,6 +679,29 @@ static int warn_once_set(void *data, u64 val)
 {
 	clear_warn_once = val;
 
+	if (val > 1) {		/* set/reset new timer */
+		unsigned long expires = jiffies + val * HZ * 60;
+
+		if (warn_timer_active) {
+			mod_timer(&warn_reset_timer, expires);
+		} else {
+			warn_timer_active = 1;
+			warn_reset_timer.expires = expires;
+			add_timer(&warn_reset_timer);
+		}
+		return 0;
+	}
+
+	if (warn_timer_active) {
+		del_timer_sync(&warn_reset_timer);
+		warn_timer_active = 0;
+	}
+	clear_warn_once = 0;
+
+	if (val == 0)		/* cleared timer, we are done */
+		return 0;
+
+	/* Getting here means val == 1  --->  so clear existing data */
 	do_clear_warn_once();
 	return 0;
 }
