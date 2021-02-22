@@ -489,6 +489,12 @@ config X86_CPU_RESCTRL
 
 	  Say N if unsure.
 
+config QEMUX86
+	bool "Enable for qemumx86 specific configurations"
+	default n
+	select PCI_MSI_ARCH_FALLBACKS if PCI_MSI
+
+
 if X86_32
 config X86_BIGSMP
 	bool "Support for big SMP systems with more than 8 CPUs"
