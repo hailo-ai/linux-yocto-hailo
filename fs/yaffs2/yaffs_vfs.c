@@ -897,7 +897,7 @@ static int yaffs_vfs_setsize(struct inode *inode, loff_t newsize)
 static int yaffs_vfs_setattr(struct inode *inode, struct iattr *attr)
 {
 #ifdef YAFFS_USE_SETATTR_COPY
-	setattr_copy(inode, attr);
+	setattr_copy(&init_user_ns,inode, attr);
 	return 0;
 #else
 	return inode_setattr(inode, attr);
@@ -905,7 +905,7 @@ static int yaffs_vfs_setattr(struct inode *inode, struct iattr *attr)
 
 }
 
-static int yaffs_setattr(struct dentry *dentry, struct iattr *attr)
+static int yaffs_setattr(struct user_namespace *ns, struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = dentry->d_inode;
 	int error = 0;
@@ -921,7 +921,7 @@ static int yaffs_setattr(struct dentry *dentry, struct iattr *attr)
 #endif
 
 	if (error == 0)
-		error = setattr_prepare(dentry, attr);
+		error = setattr_prepare(&init_user_ns,dentry, attr);
 	if (error == 0) {
 		int result;
 		if (!error) {
@@ -1339,7 +1339,7 @@ struct inode *yaffs_get_inode(struct super_block *sb, int mode, int dev,
 
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0))
-static int yaffs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
+static int yaffs_mknod(struct user_namespace *ns, struct inode *dir, struct dentry *dentry, umode_t mode,
 		       dev_t rdev)
 #elif (LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0))
 static int yaffs_mknod(struct inode *dir, struct dentry *dentry, int mode,
@@ -1433,20 +1433,20 @@ static int yaffs_mknod(struct inode *dir, struct dentry *dentry, int mode,
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0))
-static int yaffs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+static int yaffs_mkdir(struct user_namespace *ns, struct inode *dir, struct dentry *dentry, umode_t mode)
 #else
 static int yaffs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 #endif
 {
 	int ret_val;
 	yaffs_trace(YAFFS_TRACE_OS, "yaffs_mkdir");
-	ret_val = yaffs_mknod(dir, dentry, mode | S_IFDIR, 0);
+	ret_val = yaffs_mknod(ns, dir, dentry, mode | S_IFDIR, 0);
 	return ret_val;
 }
 
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
-static int yaffs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
+static int yaffs_create(struct user_namespace *ns, struct inode *dir, struct dentry *dentry, umode_t mode,
 			bool dummy)
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0))
 static int yaffs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
@@ -1459,7 +1459,7 @@ static int yaffs_create(struct inode *dir, struct dentry *dentry, int mode)
 #endif
 {
 	yaffs_trace(YAFFS_TRACE_OS, "yaffs_create");
-	return yaffs_mknod(dir, dentry, mode | S_IFREG, 0);
+	return yaffs_mknod(ns, dir, dentry, mode | S_IFREG, 0);
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
@@ -1551,7 +1551,8 @@ static int yaffs_link(struct dentry *old_dentry, struct inode *dir,
 	return -EPERM;
 }
 
-static int yaffs_symlink(struct inode *dir, struct dentry *dentry,
+static int yaffs_symlink(struct user_namespace *ns,
+		         struct inode *dir, struct dentry *dentry,
 			 const char *symname)
 {
 	struct yaffs_obj *obj;
@@ -1597,7 +1598,7 @@ static int yaffs_symlink(struct inode *dir, struct dentry *dentry,
  * NB: POSIX says you can rename an object over an old object of the same name
  */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0))
-static int yaffs_rename(struct inode *old_dir, struct dentry *old_dentry,
+static int yaffs_rename(struct user_namespace *ns, struct inode *old_dir, struct dentry *old_dentry,
 			struct inode *new_dir, struct dentry *new_dentry, unsigned int unused)
 #else
 static int yaffs_rename(struct inode *old_dir, struct dentry *old_dentry,
