@@ -2,6 +2,7 @@
 menuconfig IP_DCCP
 	tristate "The DCCP Protocol"
 	depends on INET
+	depends on BROKEN
 	help
 	  Datagram Congestion Control Protocol (RFC 4340)
 
