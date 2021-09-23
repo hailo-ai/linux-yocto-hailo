@@ -23,13 +23,16 @@
 #include <linux/fs.h>
 #include "aufs.h"
 
-struct posix_acl *aufs_get_acl(struct inode *inode, int type)
+struct posix_acl *aufs_get_acl(struct inode *inode, int type, bool rcu)
 {
 	struct posix_acl *acl;
 	int err;
 	aufs_bindex_t bindex;
 	struct inode *h_inode;
 	struct super_block *sb;
+
+	if (rcu)
+		return ERR_PTR(-ECHILD);
 
 	acl = NULL;
 	sb = inode->i_sb;
