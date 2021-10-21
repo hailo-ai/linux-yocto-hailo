@@ -2965,7 +2965,7 @@ static struct super_block *yaffs_internal_read_super(int yaffs_version,
 
 
 	mtd = yaffs_get_mtd_device(sb->s_dev);
-	if (IS_ERR(mtd)) {
+	if (IS_ERR_OR_NULL(mtd)) {
 		return NULL;
 	}
 
