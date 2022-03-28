@@ -31,15 +31,16 @@ struct posix_acl *aufs_get_acl(struct inode *inode, int type, bool rcu)
 	struct inode *h_inode;
 	struct super_block *sb;
 
+	acl = ERR_PTR(-ECHILD);
 	if (rcu)
-		return ERR_PTR(-ECHILD);
+		goto out;
 
 	acl = NULL;
 	sb = inode->i_sb;
 	si_read_lock(sb, AuLock_FLUSH);
 	ii_read_lock_child(inode);
 	if (!(sb->s_flags & SB_POSIXACL))
-		goto out;
+		goto unlock;
 
 	bindex = au_ibtop(inode);
 	h_inode = au_h_iptr(inode, bindex);
@@ -48,7 +49,7 @@ struct posix_acl *aufs_get_acl(struct inode *inode, int type, bool rcu)
 			 != (inode->i_mode & S_IFMT)))) {
 		err = au_busy_or_stale();
 		acl = ERR_PTR(err);
-		goto out;
+		goto unlock;
 	}
 
 	/* always topmost only */
@@ -58,10 +59,11 @@ struct posix_acl *aufs_get_acl(struct inode *inode, int type, bool rcu)
 	else
 		set_cached_acl(inode, type, acl);
 
-out:
+unlock:
 	ii_read_unlock(inode);
 	si_read_unlock(sb);
 
+out:
 	AuTraceErrPtr(acl);
 	return acl;
 }
