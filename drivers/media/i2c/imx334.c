@@ -16,6 +16,8 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 
+#define DEFAULT_MODE_IDX 0
+
 /* Streaming Mode */
 #define IMX334_REG_MODE_SELECT	0x3000
 #define IMX334_MODE_STANDBY	0x01
@@ -55,6 +57,88 @@
 #define IMX334_REG_MIN		0x00
 #define IMX334_REG_MAX		0xfffff
 
+#define IMX334_TPG_EN_DUOUT			0x329C /* TEST PATTERN ENABLE */
+#define IMX334_TPG_PATSEL_DUOUT		0x329e /*Patsel mode */
+#define IMX334_TPG_COLOR_WIDTH		0x32a0 /*color width */
+
+/* Horizontal / vertical flip control*/
+#define IMX334_REG_HREVERSE		0x304e
+#define IMX334_REG_VREVERSE		0x304f
+#define IMX334_REG_AREA3_ST_ADR_1		0x3074
+#define IMX334_REG_AREA3_ST_ADR_2		0x308e
+#define IMX334_REG_VERT_SPEC1		0x3080
+#define IMX334_REG_VERT_SPEC2		0x309b
+#define IMX334_ALL_PX_AREA_ADR1_INVERTED		0x11c0
+#define IMX334_ALL_PX_AREA_ADR2_INVERTED		0x11c1
+#define IMX334_ALL_PX_AREA_ADR1_NORMAL		0xb0
+#define IMX334_ALL_PX_AREA_ADR2_NORMAL		0xb1
+#define IMX334_ALL_PX_VERT_SPEC1_INVERTED		0xfe
+#define IMX334_ALL_PX_VERT_SPEC2_INVERTED		0xfe
+#define IMX334_ALL_PX_VERT_SPEC1_NORMAL		0x02
+#define IMX334_ALL_PX_VERT_SPEC2_NORMAL		0x02
+
+static uint16_t area_adr1_conf[2] = {
+	IMX334_ALL_PX_AREA_ADR1_NORMAL,
+	IMX334_ALL_PX_AREA_ADR1_INVERTED
+};
+
+static uint16_t area_adr2_conf[2] = {
+	IMX334_ALL_PX_AREA_ADR2_NORMAL,
+	IMX334_ALL_PX_AREA_ADR2_INVERTED
+};
+
+static uint8_t vert_spec1_conf[2] = {
+	IMX334_ALL_PX_VERT_SPEC1_NORMAL,
+	IMX334_ALL_PX_VERT_SPEC1_INVERTED
+};
+
+static uint8_t vert_spec2_conf[2] = {
+	IMX334_ALL_PX_VERT_SPEC2_NORMAL,
+	IMX334_ALL_PX_VERT_SPEC2_INVERTED
+};
+
+typedef enum {
+	IMX334_FLIP_NORMAL = 0,
+	IMX334_FLIP_INVERTED
+}imx334_vertical_state;
+
+/*
+ * imx344 test pattern related structure
+ */
+enum {
+	TEST_PATTERN_DISABLED = 0,
+	TEST_PATTERN_ALL_000H,
+	TEST_PATTERN_ALL_FFFH,
+	TEST_PATTERN_ALL_555H,
+	TEST_PATTERN_ALL_AAAH,
+	TEST_PATTERN_TP_5AH, /* VERTICAL TOGGLE PATTERN 555H/AAAH */
+	TEST_PATTERN_TP_A5H, /* VERTICAL TOGGLE PATTERN AAAH/555H */
+	TEST_PATTERN_TP_05H, /* VERTICAL TOGGLE PATTERN 000H/555H */
+	TEST_PATTERN_TP_50H, /* VERTICAL TOGGLE PATTERN 555H/000H */
+	TEST_PATTERN_TP_0FH, /* VERTICAL TOGGLE PATTERN 000H/FFFH */
+	TEST_PATTERN_TP_F0H, /* VERTICAL TOGGLE PATTERN FFFH/000H */
+	TEST_PATTERN_V_COLOR_BARS,
+	TEST_PATTERN_H_COLOR_BARS,
+};
+
+/**
+ * enum imx334_test_pattern_menu - imx344 test pattern options
+ */
+static const char * const imx334_test_pattern_menu[] = {
+	"Disabled",
+	"All 000h Pattern",
+	"All FFFh Pattern",
+	"All 555h Pattern",
+	"All AAAh Pattern",
+	"Toggle (555h / AAAh)",
+	"Toggle (AAAh / 555h)",
+	"Toggle (000h / 555h)",
+	"Toggle (555h / 000h)",
+	"Toggle (000h / FFFh)",
+	"Toggle (FFFh / 000h)",
+	"Vertical Color Bars",
+	"Horizontal Color Bars",
+};
 /**
  * struct imx334_reg - imx334 sensor register
  * @address: Register address
@@ -99,6 +183,7 @@ struct imx334_mode {
 	u64 pclk;
 	u32 link_freq_idx;
 	struct imx334_reg_list reg_list;
+	struct v4l2_fract frame_interval;
 };
 
 /**
@@ -114,6 +199,7 @@ struct imx334_mode {
  * @pclk_ctrl: Pointer to pixel clock control
  * @hblank_ctrl: Pointer to horizontal blanking control
  * @vblank_ctrl: Pointer to vertical blanking control
+ * @test_pattern_ctrl pointer to test pattern control
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
  * @vblank: Vertical blanking in lines
@@ -133,6 +219,9 @@ struct imx334 {
 	struct v4l2_ctrl *pclk_ctrl;
 	struct v4l2_ctrl *hblank_ctrl;
 	struct v4l2_ctrl *vblank_ctrl;
+	struct v4l2_ctrl *test_pattern_ctrl;
+	struct v4l2_ctrl *hflip_ctrl;
+	struct v4l2_ctrl *vflip_ctrl;
 	struct {
 		struct v4l2_ctrl *exp_ctrl;
 		struct v4l2_ctrl *again_ctrl;
@@ -141,6 +230,8 @@ struct imx334 {
 	const struct imx334_mode *cur_mode;
 	struct mutex mutex;
 	bool streaming;
+	size_t selected_mode_idx;
+	imx334_vertical_state vert_state;
 };
 
 static const s64 link_freq[] = {
@@ -243,8 +334,20 @@ static const struct imx334_reg mode_3840x2160_regs[] = {
 	{0x3a00, 0x01},
 };
 
+
+static const struct imx334_reg imx334_tpg_en_regs[] = {
+	//TPG config
+	{ 0x3148, 0x10 },	//TESTCLKEN_MIPI
+	{ 0x3280, 0x00 },	//DIG_CLP_MODE
+	{ 0x329c, 0x01 },	//TPG_EN_DUOUT
+	{ 0x32a0, 0x13 },	//TPG_COLORWIDTH
+	{ 0x3302, 0x00 },	//BLKLEVEL
+	{ 0x336c, 0x00 }	//WRG_OPEN
+};
+
 /* Supported sensor mode configurations */
-static const struct imx334_mode supported_mode = {
+static const struct imx334_mode supported_modes[] = { 
+    {
 	.width = 3840,
 	.height = 2160,
 	.hblank = 560,
@@ -258,6 +361,49 @@ static const struct imx334_mode supported_mode = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
 		.regs = mode_3840x2160_regs,
 	},
+	.frame_interval = {
+		.denominator = 30,
+		.numerator = 1,
+	},
+    },
+    {
+	.width = 3840,
+	.height = 2160,
+	.hblank = 560,
+	.vblank = 90,
+	.vblank_min = 90,
+	.vblank_max = 132840,
+	.pclk = 594000000,
+	.link_freq_idx = 0,
+	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+	.reg_list = {
+		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
+		.regs = mode_3840x2160_regs,
+	},
+	.frame_interval = {
+		.denominator = 60,
+		.numerator = 1,
+	},
+    },
+	{
+	.width = 3840,
+	.height = 2160,
+	.hblank = 560,
+	.vblank = 6840,
+	.vblank_min = 90,
+	.vblank_max = 132840,
+	.pclk = 594000000,
+	.link_freq_idx = 0,
+	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+	.reg_list = {
+		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
+		.regs = mode_3840x2160_regs,
+	},
+	.frame_interval = {
+		.denominator = 15,
+		.numerator = 1,
+	},
+    }
 };
 
 /**
@@ -359,13 +505,14 @@ static int imx334_write_regs(struct imx334 *imx334,
 
 	for (i = 0; i < len; i++) {
 		ret = imx334_write_reg(imx334, regs[i].address, 1, regs[i].val);
-		if (ret)
+		if(ret)
 			return ret;
-	}
+        }
 
 	return 0;
 }
 
+#ifdef IMX334_UPDATE_CONTROLS_TRY_FMT
 /**
  * imx334_update_controls() - Update control ranges based on streaming mode
  * @imx334: pointer to imx334 device
@@ -389,6 +536,7 @@ static int imx334_update_controls(struct imx334 *imx334,
 	return __v4l2_ctrl_modify_range(imx334->vblank_ctrl, mode->vblank_min,
 					mode->vblank_max, 1, mode->vblank);
 }
+#endif
 
 /**
  * imx334_update_exp_gain() - Set updated exposure and gain
@@ -429,12 +577,123 @@ error_release_group_hold:
 	return ret;
 }
 
+/*
+ * imx334_set_test_pattern - Function called when setting test pattern
+ * @priv: Pointer to device structure
+ * @val: Variable for test pattern
+ *
+ * Set to different test patterns based on input value.
+ *
+ * Return: 0 on success
+*/
+static int imx334_set_test_pattern(struct imx334 *imx334, int val)
+{
+	int ret = 0;
+
+	if (TEST_PATTERN_DISABLED == val)
+		ret = imx334_write_reg(imx334, IMX334_TPG_EN_DUOUT, 1, val);
+	else {
+		ret = imx334_write_reg(imx334, IMX334_TPG_PATSEL_DUOUT, 1, val-1);
+		if (!ret) {
+			ret = imx334_write_regs(imx334, imx334_tpg_en_regs, ARRAY_SIZE(imx334_tpg_en_regs));
+		}
+	}
+	return ret;
+}
+
+/*
+ * imx334_set_hflip - Function called when setting horizontal flip
+ * @priv: Pointer to device structure
+ * @val: Variable for flip (0 - normal, 1 - flip)
+ *
+ * Set the horizontal flip state based on input value.
+ *
+ * Return: 0 on success
+*/
+static int imx334_set_hflip(struct imx334 *imx334, int val)
+{
+	int ret = 0;
+
+	if(val != IMX334_FLIP_NORMAL && val != IMX334_FLIP_INVERTED){
+		ret = -EINVAL;
+		goto out;
+	}
+	ret = imx334_write_reg(imx334, IMX334_REG_HREVERSE, 1, val);
+
+out:
+	return ret;
+}
+
+/*
+ * imx334_set_vflip - Function called when setting vertical flip
+ * @priv: Pointer to device structure
+ * @val: Variable for flip (0 - normal, 1 - flip)
+ *
+ * Set the vertical flip state based on input value.
+ *
+ * Return: 0 on success
+*/
+static int imx334_set_vflip(struct imx334 *imx334, int val)
+{
+	int ret = 0;
+
+	if(val != IMX334_FLIP_NORMAL && val != IMX334_FLIP_INVERTED){
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if(val == imx334->vert_state)
+		goto out;
+
+	ret = imx334_write_reg(imx334, IMX334_REG_VREVERSE, 1, val);
+	if(ret){
+		goto out;
+	}
+	
+	ret = imx334_write_reg(imx334, IMX334_REG_AREA3_ST_ADR_1, 2, area_adr1_conf[val]);
+	if(ret){
+		goto err_write_area1;
+	}
+	
+	ret = imx334_write_reg(imx334, IMX334_REG_AREA3_ST_ADR_2, 2, area_adr2_conf[val]);
+	if(ret){
+		goto err_write_area2;
+	}
+	
+	ret = imx334_write_reg(imx334, IMX334_REG_VERT_SPEC1, 1, vert_spec1_conf[val]);
+	if(ret){
+		goto err_write_spec1;
+	}
+	
+	ret = imx334_write_reg(imx334, IMX334_REG_VERT_SPEC2, 1, vert_spec2_conf[val]);
+	if(ret){
+		goto err_write_spec2;
+	}
+
+	imx334->vert_state = val;
+	goto out;
+
+err_write_spec2:
+	imx334_write_reg(imx334, IMX334_REG_VERT_SPEC1, 1, vert_spec1_conf[imx334->vert_state]);
+err_write_spec1:
+	imx334_write_reg(imx334, IMX334_REG_AREA3_ST_ADR_2, 2, area_adr2_conf[imx334->vert_state]);
+err_write_area2:
+	imx334_write_reg(imx334, IMX334_REG_AREA3_ST_ADR_1, 2, area_adr1_conf[imx334->vert_state]);
+err_write_area1:
+	imx334_write_reg(imx334, IMX334_REG_HREVERSE, 1, imx334->vert_state);
+out:
+	return ret;
+}
+
 /**
  * imx334_set_ctrl() - Set subdevice control
  * @ctrl: pointer to v4l2_ctrl structure
  *
  * Supported controls:
  * - V4L2_CID_VBLANK
+ * - V4L2_CID_TEST_PATTERN
+ * - V4L2_CID_HFLIP
+ * - V4L2_CID_VFLIP
  * - cluster controls:
  *   - V4L2_CID_ANALOGUE_GAIN
  *   - V4L2_CID_EXPOSURE
@@ -481,6 +740,28 @@ static int imx334_set_ctrl(struct v4l2_ctrl *ctrl)
 		pm_runtime_put(imx334->dev);
 
 		break;
+	case V4L2_CID_TEST_PATTERN:
+		if (!pm_runtime_get_if_in_use(imx334->dev))
+			return 0;
+		ret = imx334_set_test_pattern(imx334, ctrl->val);
+
+		pm_runtime_put(imx334->dev);
+
+		break;
+	case V4L2_CID_HFLIP:
+		if (!pm_runtime_get_if_in_use(imx334->dev))
+			return 0;
+		ret = imx334_set_hflip(imx334, ctrl->val);
+
+		pm_runtime_put(imx334->dev);
+		break;
+	case V4L2_CID_VFLIP:
+		if (!pm_runtime_get_if_in_use(imx334->dev))
+			return 0;
+		ret = imx334_set_vflip(imx334, ctrl->val);
+
+		pm_runtime_put(imx334->dev);
+		break;
 	default:
 		dev_err(imx334->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -506,11 +787,12 @@ static int imx334_enum_mbus_code(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
+	struct imx334 *imx334 = to_imx334(sd);
 	if (code->index > 0)
 		return -EINVAL;
-
-	code->code = supported_mode.code;
-
+	mutex_lock(&imx334->mutex);
+	code->code = supported_modes[imx334->selected_mode_idx].code;
+	mutex_unlock(&imx334->mutex);
 	return 0;
 }
 
@@ -526,16 +808,21 @@ static int imx334_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fsize)
 {
+	struct imx334 *imx334 = to_imx334(sd);
 	if (fsize->index > 0)
 		return -EINVAL;
 
-	if (fsize->code != supported_mode.code)
+	mutex_lock(&imx334->mutex);
+	if (fsize->code != supported_modes[imx334->selected_mode_idx].code){
+		mutex_unlock(&imx334->mutex);
 		return -EINVAL;
+	}
 
-	fsize->min_width = supported_mode.width;
+	fsize->min_width = supported_modes[imx334->selected_mode_idx].width;
 	fsize->max_width = fsize->min_width;
-	fsize->min_height = supported_mode.height;
+	fsize->min_height = supported_modes[imx334->selected_mode_idx].height;
 	fsize->max_height = fsize->min_height;
+	mutex_unlock(&imx334->mutex);
 
 	return 0;
 }
@@ -609,9 +896,9 @@ static int imx334_set_pad_format(struct v4l2_subdev *sd,
 
 	mutex_lock(&imx334->mutex);
 
-	mode = &supported_mode;
+	mode = &supported_modes[imx334->selected_mode_idx];
 	imx334_fill_pad_format(imx334, mode, fmt);
-
+#ifdef IMX334_UPDATE_CONTROLS_TRY_FMT
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *framefmt;
 
@@ -622,7 +909,7 @@ static int imx334_set_pad_format(struct v4l2_subdev *sd,
 		if (!ret)
 			imx334->cur_mode = mode;
 	}
-
+#endif
 	mutex_unlock(&imx334->mutex);
 
 	return ret;
@@ -642,7 +929,7 @@ static int imx334_init_pad_cfg(struct v4l2_subdev *sd,
 	struct v4l2_subdev_format fmt = { 0 };
 
 	fmt.which = sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
-	imx334_fill_pad_format(imx334, &supported_mode, &fmt);
+	imx334_fill_pad_format(imx334, &supported_modes[DEFAULT_MODE_IDX], &fmt);
 
 	return imx334_set_pad_format(sd, sd_state, &fmt);
 }
@@ -681,7 +968,14 @@ static int imx334_start_streaming(struct imx334 *imx334)
 		dev_err(imx334->dev, "fail to start streaming");
 		return ret;
 	}
-
+	/* Start streaming */
+	ret = imx334_write_reg(imx334, 0x3002,
+			       1, 0);
+	if (ret) {
+		dev_err(imx334->dev, "fail to start streaming");
+		return ret;
+	}
+    pr_info("imx334: start_streaming successful\n");
 	return 0;
 }
 
@@ -741,6 +1035,88 @@ error_unlock:
 	mutex_unlock(&imx334->mutex);
 
 	return ret;
+}
+
+static int imx334_find_nearest_frame_interval_mode(struct imx334 *imx334, 
+					struct v4l2_subdev_frame_interval *fi, struct imx334_mode const **mode)
+{
+	struct imx334_mode const *curr_mode;
+	int min_diff = INT_MAX;
+	int curr_diff;
+	int i;
+
+	if(!imx334 || !fi) {
+		return -EINVAL;
+	}
+
+	if(fi->interval.denominator == 0 || fi->interval.numerator == 0) {
+		*mode = &supported_modes[DEFAULT_MODE_IDX];
+		return 0;
+	}
+
+	for(i = 0; i < sizeof(supported_modes) / sizeof(struct imx334_mode); ++i) {
+		curr_mode = &supported_modes[i];
+		curr_diff = abs(curr_mode->frame_interval.denominator - 
+		(int)(fi->interval.denominator / fi->interval.numerator));
+		if(curr_diff == 0){
+			*mode = curr_mode;
+			return 0;
+		}
+		if(curr_diff < min_diff) {
+			min_diff = curr_diff;
+			*mode = curr_mode;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * imx334_s_frame_interval - Set the frame interval
+ * @sd: Pointer to V4L2 Sub device structure
+ * @fi: Pointer to V4l2 Sub device frame interval structure
+ *
+ * This function is used to set the frame intervavl.
+ *
+ * Return: 0 on success
+ */
+static int imx334_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct imx334 *imx334 = to_imx334(sd);
+	struct imx334_mode const *mode;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(imx334->dev);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&imx334->mutex);
+	
+	ret = imx334_find_nearest_frame_interval_mode(imx334, fi, &mode);
+
+	if (ret == 0) {
+		fi->interval = mode->frame_interval;
+		imx334->cur_mode = mode;
+		ret = __v4l2_ctrl_s_ctrl(imx334->vblank_ctrl, mode->vblank);
+	}
+
+	mutex_unlock(&imx334->mutex);
+	pm_runtime_put(imx334->dev);
+
+	return ret;
+}
+
+static int imx334_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct imx334 *imx334 = to_imx334(sd);
+
+	mutex_lock(&imx334->mutex);
+	fi->interval = imx334->cur_mode->frame_interval;
+	mutex_unlock(&imx334->mutex);
+
+	return 0;
 }
 
 /**
@@ -847,6 +1223,8 @@ done_endpoint_free:
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx334_video_ops = {
 	.s_stream = imx334_set_stream,
+	.s_frame_interval = imx334_s_frame_interval,
+	.g_frame_interval = imx334_g_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops imx334_pad_ops = {
@@ -957,6 +1335,19 @@ static int imx334_init_controls(struct imx334 *imx334)
 						mode->vblank_max,
 						1, mode->vblank);
 
+	imx334->test_pattern_ctrl = v4l2_ctrl_new_std_menu_items(ctrl_hdlr, &imx334_ctrl_ops,
+				     V4L2_CID_TEST_PATTERN,
+				     ARRAY_SIZE(imx334_test_pattern_menu) - 1,
+				     0, 0, imx334_test_pattern_menu);
+
+	imx334->hflip_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx334_ctrl_ops,
+						V4L2_CID_HFLIP, 0, 1, 1, 0);
+
+	imx334->vflip_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx334_ctrl_ops,
+						V4L2_CID_VFLIP, 0, 1, 1, 0);
+	
 	/* Read only controls */
 	imx334->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
 					      &imx334_ctrl_ops,
@@ -1037,7 +1428,7 @@ static int imx334_probe(struct i2c_client *client)
 	}
 
 	/* Set default mode to max resolution */
-	imx334->cur_mode = &supported_mode;
+	imx334->cur_mode = &supported_modes[DEFAULT_MODE_IDX];
 	imx334->vblank = imx334->cur_mode->vblank;
 
 	ret = imx334_init_controls(imx334);

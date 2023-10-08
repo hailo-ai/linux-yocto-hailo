@@ -27,6 +27,8 @@ config VIDEO_VIA_CAMERA
 #
 source "drivers/media/platform/cadence/Kconfig"
 
+source "drivers/media/platform/hailo/Kconfig"
+
 source "drivers/media/platform/davinci/Kconfig"
 
 source "drivers/media/platform/omap/Kconfig"

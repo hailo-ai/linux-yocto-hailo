@@ -35,6 +35,7 @@
 #include <linux/tcp.h>
 #include <linux/iopoll.h>
 #include <linux/pm_runtime.h>
+#include <linux/log2.h>
 #include "macb.h"
 
 /* This structure is only used for MACB on SiFive FU540 devices */
@@ -91,6 +92,11 @@ struct sifive_fu540_macb_mgmt {
  * 1 frame time (10 Mbits/s, full-duplex, ignoring collisions)
  */
 #define MACB_HALT_TIMEOUT	1230
+
+/* moving to halt in half duplex may take more time since 
+ * the controller rgmii line might need to wait for his "turn"
+ */
+#define MACB_HALT_HALF_DUPLEX_TIMEOUT	(MACB_HALT_TIMEOUT * 1000)
 
 #define MACB_PM_TIMEOUT  100 /* ms */
 
@@ -442,6 +448,14 @@ static void macb_init_buffers(struct macb *bp)
 	struct macb_queue *queue;
 	unsigned int q;
 
+	if (bp->disable_queues_at_init) {
+		/* disable all queues first */
+		for (q = 1; q < MACB_MAX_QUEUES; q++){
+			gem_writel(bp, TBQP(q - 1), 1);
+			gem_writel(bp, RBQP(q - 1), 1);
+		}
+	}
+
 	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
 		queue_writel(queue, RBQP, lower_32_bits(queue->rx_ring_dma));
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
@@ -758,6 +772,7 @@ static void macb_mac_link_up(struct phylink_config *config,
 
 	if (duplex)
 		ctrl |= MACB_BIT(FD);
+	bp->duplex = duplex;
 
 	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC)) {
 		ctrl &= ~MACB_BIT(PAE);
@@ -981,7 +996,11 @@ static int macb_halt_tx(struct macb *bp)
 
 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(THALT));
 
-	timeout = jiffies + usecs_to_jiffies(MACB_HALT_TIMEOUT);
+	if (bp->duplex)
+		timeout = jiffies + usecs_to_jiffies(MACB_HALT_TIMEOUT);
+	else
+		timeout = jiffies + usecs_to_jiffies(MACB_HALT_HALF_DUPLEX_TIMEOUT);
+
 	do {
 		halt_time = jiffies;
 		status = macb_readl(bp, TSR);
@@ -3741,6 +3760,7 @@ static void macb_configure_caps(struct macb *bp,
 
 static void macb_probe_queues(void __iomem *mem,
 			      bool native_io,
+				  const struct macb_config *macb_config,
 			      unsigned int *queue_mask,
 			      unsigned int *num_queues)
 {
@@ -3757,7 +3777,12 @@ static void macb_probe_queues(void __iomem *mem,
 		return;
 
 	/* bit 0 is never set but queue 0 always exists */
-	*queue_mask |= readl_relaxed(mem + GEM_DCFG6) & 0xff;
+	*queue_mask |= readl_relaxed(mem + GEM_DCFG6) & 0xffff;
+
+	if (macb_config->queue_mask) {
+		*queue_mask &= macb_config->queue_mask;
+	}
+
 	*num_queues = hweight32(*queue_mask);
 }
 
@@ -3868,9 +3893,14 @@ static int macb_init(struct platform_device *pdev)
 	struct macb_queue *queue;
 	int err;
 	u32 val, reg;
+	u32 seg_alloc_lower = 0, seg_alloc_upper = 0, seg_per_queue = 0; 
 
 	bp->tx_ring_size = DEFAULT_TX_RING_SIZE;
 	bp->rx_ring_size = DEFAULT_RX_RING_SIZE;
+
+	/* calculate how many segments should be allocated for each queue.
+	   round down the value, such that we won't overflow num of segments */ 
+	seg_per_queue = ilog2(MACB_SEGMENTS_NUM / bp->num_queues);
 
 	/* set the queue register mapping once for all: queue0 has a special
 	 * register mapping but we don't want to test the queue index then
@@ -3928,8 +3958,22 @@ static int macb_init(struct platform_device *pdev)
 			return err;
 		}
 
+		/* segments allocator divided between 2 registers (lower - queues 0-7, upper queues 8-15)
+		   number of segments per queue is configured in 4 bits (3 bits configured as log2 of segments number + 1 reserved bit) */
+		if (hw_q < MACB_LOWER_SEGMENTS_NUM) {
+			seg_alloc_lower |= seg_per_queue << (hw_q * 4);
+		}
+		else {
+			seg_alloc_upper |= seg_per_queue << ((hw_q - MACB_LOWER_SEGMENTS_NUM) * 4);
+		}
+
 		INIT_WORK(&queue->tx_error_task, macb_tx_error_task);
 		q++;
+	}
+
+	if (bp->allocate_segments_equally) {
+		gem_writel(bp, SEG_ALLOC_LOWER, seg_alloc_lower);
+		gem_writel(bp, SEG_ALLOC_UPPER, seg_alloc_upper);
 	}
 
 	dev->netdev_ops = &macb_netdev_ops;
@@ -4632,6 +4676,18 @@ static const struct macb_config sama7g5_emac_config = {
 	.usrio = &sama7g5_usrio,
 };
 
+static const struct macb_config hailo15_config = {
+	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE,
+	.usrio = &macb_default_usrio,
+	.dma_burst_length = 16,
+	.clk_init = macb_clk_init,
+	.init = macb_init,
+	.usrio = &macb_default_usrio,
+	.queue_mask = 1, // working with half duplex with more than 1 queue might result error -> when moving to half duplex this value should be ignored and use value 1 (MSW-2355)
+	.disable_queues_at_init = true,
+	.allocate_segments_equally = true
+};
+
 static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "cdns,at32ap7000-macb" },
 	{ .compatible = "cdns,at91sam9260-macb", .data = &at91sam9260_config },
@@ -4652,6 +4708,7 @@ static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "sifive,fu540-c000-gem", .data = &fu540_c000_config },
 	{ .compatible = "microchip,sama7g5-gem", .data = &sama7g5_gem_config },
 	{ .compatible = "microchip,sama7g5-emac", .data = &sama7g5_emac_config },
+	{ .compatible = "hailo,hailo15-gem", .data = &hailo15_config },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, macb_dt_ids);
@@ -4713,7 +4770,7 @@ static int macb_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	native_io = hw_is_native_io(mem);
 
-	macb_probe_queues(mem, native_io, &queue_mask, &num_queues);
+	macb_probe_queues(mem, native_io, macb_config, &queue_mask, &num_queues);
 	dev = alloc_etherdev_mq(sizeof(*bp), num_queues);
 	if (!dev) {
 		err = -ENOMEM;
@@ -4745,8 +4802,11 @@ static int macb_probe(struct platform_device *pdev)
 	bp->tx_clk = tx_clk;
 	bp->rx_clk = rx_clk;
 	bp->tsu_clk = tsu_clk;
-	if (macb_config)
+	if (macb_config) {
 		bp->jumbo_max_len = macb_config->jumbo_max_len;
+		bp->disable_queues_at_init = macb_config->disable_queues_at_init;
+		bp->allocate_segments_equally = macb_config->allocate_segments_equally;
+	}
 
 	bp->wol = 0;
 	if (of_get_property(np, "magic-packet", NULL))

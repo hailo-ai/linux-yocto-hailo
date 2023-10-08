@@ -14,7 +14,7 @@
 #include <linux/types.h>
 
 #define SCMI_MAX_STR_SIZE	16
-#define SCMI_MAX_NUM_RATES	16
+#define SCMI_MAX_NUM_RATES	128
 
 /**
  * struct scmi_revision_info - version information structure

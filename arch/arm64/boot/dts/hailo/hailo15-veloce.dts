@@ -1,0 +1,79 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+
+#include "hailo15-base.dtsi"
+
+/ {
+    /* FAKE flash */
+    flash@80000000 {
+        compatible = "mtd-ram";
+        probe-type = "map_ram";
+        reg = <0x0 0x80000000 0 0x10000000>; /* size here MUST be a power of 2 */
+        bank-width = <4>;
+        device-width = <1>;
+
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        partitions {
+            compatible = "fixed-partitions";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            uboot@1000 {
+                label = "uboot";
+                reg = <0x001000 0x100000>;
+                read-only;
+            };
+
+            fitImage@101000 {
+                label = "fitImage";
+                reg = <0x101000 0x2eff000>;
+                read-only;
+            };
+
+            rootfs@2101000 {
+                label = "rootfs";
+                reg = <0x3000000 0xd000000>;
+            };
+        };
+    };
+
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x90000000 0x00000000 0x10000000>;
+    };
+    veloce_serial_clock: veloce_serial_clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <1843200>; /* 115200 * 16, so divisor=1 would be chosen */
+    };
+};
+
+&cma {
+    status = "disabled";
+};
+
+&serial1 {
+    clocks = <&veloce_serial_clock>;
+};
+
+&xrp {
+    status = "okay";
+};
+
+&xrp_reserved {
+    status = "okay";
+};
+
+&eth {
+    status = "okay";
+    fixed-link {
+        speed = <1000>;
+        full-duplex;
+    };
+};

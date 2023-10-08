@@ -842,6 +842,18 @@ static void disable_rsa(struct uart_8250_port *up)
 }
 #endif /* CONFIG_SERIAL_8250_RSA */
 
+static inline bool can_read_empty_fifo(struct uart_8250_port *up)
+{
+	if (!(up->bugs & UART_BUG_RXEMPT)) {
+		return true;
+	}
+	if (!(up->fcr & UART_FCR_ENABLE_FIFO)) {
+		return true;
+	}
+
+	return !!(serial_in(up, UART_LSR) & UART_LSR_DR);
+}
+
 /*
  * This is a quickie test to see how big the FIFO is.
  * It doesn't work at all the time, more's the pity.
@@ -1349,7 +1361,8 @@ static void autoconfig(struct uart_8250_port *up)
 #endif
 	serial8250_out_MCR(up, save_mcr);
 	serial8250_clear_fifos(up);
-	serial_in(up, UART_RX);
+	if (can_read_empty_fifo(up))
+		serial_in(up, UART_RX);
 	if (up->capabilities & UART_CAP_UUE)
 		serial_out(up, UART_IER, UART_IER_UUE);
 	else
@@ -1409,7 +1422,8 @@ static void autoconfig_irq(struct uart_8250_port *up)
 	}
 	serial_out(up, UART_IER, 0x0f);	/* enable all intrs */
 	serial_in(up, UART_LSR);
-	serial_in(up, UART_RX);
+	if (can_read_empty_fifo(up))
+		serial_in(up, UART_RX);
 	serial_in(up, UART_IIR);
 	serial_in(up, UART_MSR);
 	serial_out(up, UART_TX, 0xFF);
@@ -2223,7 +2237,8 @@ int serial8250_do_startup(struct uart_port *port)
 	 * Clear the interrupt registers.
 	 */
 	serial_port_in(port, UART_LSR);
-	serial_port_in(port, UART_RX);
+	if (can_read_empty_fifo(up))
+		serial_port_in(port, UART_RX);
 	serial_port_in(port, UART_IIR);
 	serial_port_in(port, UART_MSR);
 
@@ -2385,7 +2400,8 @@ dont_test_tx_en:
 	 * routines or the previous session.
 	 */
 	serial_port_in(port, UART_LSR);
-	serial_port_in(port, UART_RX);
+	if (can_read_empty_fifo(up))
+		serial_port_in(port, UART_RX);
 	serial_port_in(port, UART_IIR);
 	serial_port_in(port, UART_MSR);
 	up->lsr_saved_flags = 0;
@@ -2485,7 +2501,8 @@ void serial8250_do_shutdown(struct uart_port *port)
 	 * Read data port to reset things, and then unlink from
 	 * the IRQ chain.
 	 */
-	serial_port_in(port, UART_RX);
+	 if (can_read_empty_fifo(up))
+		serial_port_in(port, UART_RX);
 	serial8250_rpm_put(up);
 
 	up->ops->release_irq(up);

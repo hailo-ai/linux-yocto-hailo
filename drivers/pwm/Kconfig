@@ -260,6 +260,16 @@ config PWM_INTEL_LGM
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-intel-lgm.
 
+config PWM_HAILO15
+	tristate "Hailo15 PWM support"
+	depends on ARCH_HAILO15
+	depends on HAS_IOMEM
+	help
+	  PWM framework driver for HAILO15.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-hailo15.
+
 config PWM_IQS620A
 	tristate "Azoteq IQS620A PWM support"
 	depends on MFD_IQS62X || COMPILE_TEST

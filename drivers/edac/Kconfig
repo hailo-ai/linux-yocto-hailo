@@ -539,4 +539,10 @@ config EDAC_DMC520
 	  Support for error detection and correction on the
 	  SoCs with ARM DMC-520 DRAM controller.
 
+config EDAC_HAILO15_CDNS
+	bool "Hailo15 EDAC driver for Cadence memory controller"
+	depends on ARCH_HAILO15
+	help
+	  Support error detection and correction for Hailo15 Cadence memory controller.
+
 endif # EDAC

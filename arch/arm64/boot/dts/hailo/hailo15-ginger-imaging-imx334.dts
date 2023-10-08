@@ -1,0 +1,70 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+
+#include "hailo15-ginger-imaging.dtsi"
+
+&sdio1 {
+    status = "okay";
+    8-bit-mux-mode;
+};
+
+&eth {
+    status = "okay";
+};
+
+&csi2rx0 {
+    status = "okay";
+};
+
+&i2c_0 {
+    status = "okay";
+    imx334: camera-sensor@1a {
+        status = "okay";
+        compatible = "sony,imx334";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <0>;
+
+        port {
+            sensor_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+		link-frequencies = /bits/ 64 <891000000>;
+            };
+        };
+     };
+};
+
+&i2c_1 {
+    status = "okay";
+};
+
+&i2c_2 {
+    status = "okay";
+};
+
+&i2c_3 {
+    status = "okay";
+};
+
+&csi2tx0 {
+    status = "okay";
+};
+
+&hailo_isp {
+    status = "okay";
+};
+
+&hailo_pixel_mux {
+    status = "okay";
+};
+
+&rxwrapper0 {
+    status = "okay";
+};

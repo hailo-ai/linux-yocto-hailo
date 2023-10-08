@@ -1,0 +1,1 @@
+#define SENSOR_IMX334

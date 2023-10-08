@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_HAILO15
+	bool "Hailo15 video Devices"
+	depends on MEDIA_SUPPORT
+	select VIDEO_V4L2
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  If you have a media device from hailo15 series, say Y.
+
+	  Note that this option doesn't include new drivers in the kernel:
+	  saying N will just cause Kconfig to skip all the questions about
+	  hailo15 media devices.
+
+if VIDEO_HAILO15
+
+config VIDEO_HAILO15_VIDEO_CAPTURE
+	tristate "Hailo15 video capture device"
+
+config VIDEO_HAILO15_PIX_MUX
+	tristate "Hailo15 pixel-mux driver"
+	help
+	  Support for the hailo15 pixel mux driver.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called hailo15-pixel-mux.
+
+config VIDEO_HAILO15_RXWRAPPER
+	tristate "Hailo15 rxwrapper driver"
+	help
+	  Support for the hailo15 rxwrapper driver.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called hailo15-rxwrapper.
+
+config VIDEO_HAILO15_ISP
+	tristate "Hailo15 ISP driver"
+	help
+		Support for Hailo15 ISP
+
+endif

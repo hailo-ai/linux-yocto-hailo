@@ -227,6 +227,16 @@ config MMC_SDHCI_OF_DWCMSHC
 	  If you have a controller with this interface, say Y or M here.
 	  If unsure, say N.
 
+config MMC_HAILO_SDHCI_DWCMSHC
+	tristate "SDHCI OF support for the Synopsys DWC MSHC"
+	depends on MMC_SDHCI_PLTFM
+	depends on COMMON_CLK
+	help
+	  This selects Synopsys DesignWare Cores Mobile Storage Controller
+	  support.
+	  If you have a controller with this interface, say Y or M here.
+	  If unsure, say N.
+
 config MMC_SDHCI_OF_SPARX5
 	tristate "SDHCI OF support for the MCHP Sparx5 SoC"
 	depends on MMC_SDHCI_PLTFM

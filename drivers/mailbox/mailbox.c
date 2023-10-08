@@ -190,8 +190,7 @@ EXPORT_SYMBOL_GPL(mbox_chan_txdone);
  */
 void mbox_client_txdone(struct mbox_chan *chan, int r)
 {
-	if (unlikely(!(chan->txdone_method & TXDONE_BY_ACK))) {
-		dev_err(chan->mbox->dev, "Client can't run the TX ticker\n");
+	if (!(chan->txdone_method & TXDONE_BY_ACK)) {
 		return;
 	}
 

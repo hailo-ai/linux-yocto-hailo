@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * hailo15_cpld_of_evb_rev2.dts
+ *
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/main-bus/sdio0@78000000} {
+    status = "okay";
+};

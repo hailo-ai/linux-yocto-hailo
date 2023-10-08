@@ -1,0 +1,72 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+
+#include "hailo15-base.dtsi"
+
+/ {
+    ethernet@2,0 {
+        compatible = "smsc,lan91c111";
+        reg = <0 0x78401000 0 0x4000>;
+        interrupts = <0 15 4>;
+    };
+
+    v2m_fixed_3v3: fixed-regulator-0 {
+        compatible = "regulator-fixed";
+        regulator-name = "3V3";
+        regulator-min-microvolt = <3300000>;
+        regulator-max-microvolt = <3300000>;
+        regulator-always-on;
+    };
+
+    mmci@2,4000 {
+        vmmc-supply = <&v2m_fixed_3v3>;
+        compatible = "arm,pl180", "arm,primecell";
+        reg = <0 0x78405000 0 0x1000>;
+        interrupts = <0 17 4 0 18 4>;
+        max-frequency = <12000000>;
+        clocks = <&soc_clk24mhz>, <&soc_clk24mhz>;
+        clock-names = "mclk", "apb_pclk";
+    };
+
+    soc_clk24mhz: clk24mhz {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+        clock-output-names = "v2m:clk24mhz";
+    };
+
+    serial_vp: uart_vp@00109000 {
+        compatible = "ns16550";
+        reg = <0 0x00109000 0 0x1000>;
+        clocks = <&soc_clk24mhz>;
+        interrupts = <0 2 4>;
+        reg-shift = <2>;
+        reg-io-width = <1>;
+    };
+
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000000 0x80000000>;
+    };
+
+    chosen {
+        stdout-path = &serial_vp;
+     };
+};
+
+&xrp {
+    status = "okay";
+};
+
+&xrp_reserved {
+    status = "okay";
+};
+
+/* disable default uart */
+&serial1 {
+    status = "disabled";
+};

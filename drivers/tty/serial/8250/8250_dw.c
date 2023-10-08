@@ -84,8 +84,21 @@ static inline int dw8250_modify_msr(struct uart_port *p, int offset, int value)
 static void dw8250_force_idle(struct uart_port *p)
 {
 	struct uart_8250_port *up = up_to_u8250p(p);
+	unsigned int lsr;
 
 	serial8250_clear_and_reinit_fifos(up);
+
+	/*
+	 * With PSLVERR_RESP_EN parameter set to 1, the device generates an
+	 * error response when an attempt to read an empty RBR with FIFO
+	 * enabled.
+	 */
+	if (up->fcr & UART_FCR_ENABLE_FIFO) {
+		lsr = p->serial_in(p, UART_LSR);
+		if (!(lsr & UART_LSR_DR))
+			return;
+	}
+
 	(void)p->serial_in(p, UART_RX);
 }
 
@@ -468,6 +481,13 @@ static int dw8250_probe(struct platform_device *pdev)
 	p->serial_out	= dw8250_serial_out;
 	p->set_ldisc	= dw8250_set_ldisc;
 	p->set_termios	= dw8250_set_termios;
+
+	/*
+	 * With PSLVERR_RESP_EN parameter set to 1, the device generates an
+	 * error response when an attempt to read an empty RBR with FIFO
+	 * enabled.
+	 */
+	up->bugs	|= UART_BUG_RXEMPT;
 
 	p->membase = devm_ioremap(dev, regs->start, resource_size(regs));
 	if (!p->membase)

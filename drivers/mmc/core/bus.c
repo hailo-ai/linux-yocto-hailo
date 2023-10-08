@@ -47,8 +47,21 @@ static ssize_t type_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(type);
 
+
+static ssize_t data_error_count_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct mmc_card *card = mmc_dev_to_card(dev);
+	struct mmc_host *host = card->host;
+	u64 data_error_count = 0;
+	data_error_count = host->ops->get_data_error_count(host);
+	return sprintf(buf, "Data error count: %lld\n", data_error_count);
+}
+static DEVICE_ATTR_RO(data_error_count);
+
 static struct attribute *mmc_dev_attrs[] = {
 	&dev_attr_type.attr,
+	&dev_attr_data_error_count.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(mmc_dev);

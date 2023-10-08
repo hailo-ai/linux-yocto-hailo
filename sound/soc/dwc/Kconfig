@@ -18,3 +18,12 @@ config SND_DESIGNWARE_PCM
 	 This functionality is specially suited for I2S devices that don't have
 	 DMA support.
 
+config SND_DESIGNWARE_HAILO15_STATS
+	bool "PCM PIO Hailo15 stats"
+	depends on SND_DESIGNWARE_PCM
+	default n
+	help
+	 Say Y if you want to get Hailo15 IRQ execution and interval statistics.
+
+	 This functionality is specially suited for I2S devices that don't have
+	 DMA support.

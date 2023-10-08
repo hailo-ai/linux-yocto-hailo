@@ -1499,6 +1499,10 @@ static int scmi_chan_setup(struct scmi_info *info, struct device *dev,
 	if (ret)
 		return ret;
 
+	if (!tx) {
+		info->desc->ops->clear_channel(cinfo);
+	}
+
 idr_alloc:
 	ret = idr_alloc(idr, cinfo, prot_id, prot_id + 1, GFP_KERNEL);
 	if (ret != prot_id) {
@@ -1810,6 +1814,7 @@ static int scmi_probe(struct platform_device *pdev)
 	struct scmi_info *info;
 	struct device *dev = &pdev->dev;
 	struct device_node *child, *np = dev->of_node;
+	u32 fw_ver;
 
 	desc = of_device_get_match_data(dev);
 	if (!desc)
@@ -1862,6 +1867,19 @@ static int scmi_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dev, "unable to communicate with SCMI\n");
 		goto notification_exit;
+	}
+
+	/*
+	 * optionally check match between the expected firmware version
+	 * against the actual version
+	 */
+	if (!of_property_read_u32(np, "fw-ver", &fw_ver)) {
+		if (fw_ver != handle->version->impl_ver) {
+			dev_err(dev, "Firmware version mismatch: expected=0x%x, actual=0x%x\n",
+				fw_ver,
+				handle->version->impl_ver);
+			goto notification_exit;
+		}
 	}
 
 	mutex_lock(&scmi_list_mutex);

@@ -1,0 +1,281 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+#include "hailo15-base.dtsi"
+
+/ {
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000001 0x00000000>;
+    };
+};
+
+&i2c_0 {
+    status = "okay";
+};
+
+&i2c_1 {
+    status = "okay";
+    ina231_MPP_AVDDH: MPP_AVDDH@41 {
+        compatible = "ti,ina231_precise";
+        reg = <0x41>;
+        shunt-resistor = <100000>;
+        max-current = <100>;
+    };
+    ina231_DDR_PHY_1v1: DDR_PHY_1v1@42 {
+        compatible = "ti,ina231_precise";
+        reg = <0x42>;
+        shunt-resistor = <50000>;
+        max-current = <300>;
+    };
+    ina231_ALL_PLL: ALL_PLL@43 {
+        compatible = "ti,ina231_precise";
+        reg = <0x43>;
+        shunt-resistor = <100000>;
+        max-current = <100>;
+    };
+    ina231_MIPI_AVDDH: MIPI_AVDDH@44 {
+        compatible = "ti,ina231_precise";
+        reg = <0x44>;
+        shunt-resistor = <100000>;
+        max-current = <100>;
+    };
+    ina231_USB_AVDD_IO_HV: USB_AVDD_IO_HV@45 {
+        compatible = "ti,ina231_precise";
+        reg = <0x45>;
+        shunt-resistor = <100000>;
+        max-current = <100>;
+    };
+    ina231_DDR_1V8: DDR_1V8@46 {
+        compatible = "ti,ina231_precise";
+        reg = <0x46>;
+        shunt-resistor = <100000>;
+        max-current = <300>;
+    };
+    ina231_DDR_PHY_0v8: DDR_PHY_0v8@47 {
+        compatible = "ti,ina231_precise";
+        reg = <0x47>;
+        shunt-resistor = <50000>;
+        max-current = <1400>;
+    };
+    ina231_5V_PERIPH: 5V_PERIPH@49 {
+        compatible = "ti,ina231_precise";
+        reg = <0x49>;
+        shunt-resistor = <1000>;
+        max-current = <5500>;
+    };
+    ina231_SOC_and_DRAM_5V_SRC: SOC_and_DRAM_5V_SRC@4a {
+        compatible = "ti,ina231_precise";
+        reg = <0x4a>;
+        shunt-resistor = <1000>;
+        max-current = <3500>;
+    };
+    /* Assembly only on EVB with LPDDR4X
+    ina231_DDR_PHY_0v6: DDR_PHY_0v6@4c {
+        compatible = "ti,ina231_precise";
+        reg = <0x4c>;
+        shunt-resistor = <50000>;
+        max-current = <2500>;
+    };
+    */
+    ina231_IO_1v8: IO_1v8@4d {
+        compatible = "ti,ina231_precise";
+        reg = <0x4d>;
+        shunt-resistor = <100000>;
+        max-current = <250>;
+    };
+    ina231_VDD: VDD@4e {
+        compatible = "ti,ina231_precise";
+        reg = <0x4e>;
+        shunt-resistor = <1000>;
+        max-current = <12000>;
+    };
+    ina231_MIPI_MPP_USB_AVDD: MIPI_MPP_USB_AVDD@4f {
+        compatible = "ti,ina231_precise";
+        reg = <0x4f>;
+        shunt-resistor = <50000>;
+        max-current = <600>;
+    };
+
+    tmp175_NEAR_TOP_POWER: NEAR_TOP_POWER@2d {
+        compatible = "ti,tmp175";
+        reg = <0x2d>;
+    };
+    tmp175_NEAR_DDR: NEAR_DDR@2f {
+        compatible = "ti,tmp175";
+        reg = <0x2f>;
+    };
+    tmp175_NEAR_H15_SOC_0: NEAR_H15_SOC_0@2e {
+        compatible = "ti,tmp175";
+        reg = <0x2e>;
+    };
+    tmp175_NEAR_H15_SOC_1: NEAR_H15_SOC_1@2c {
+        compatible = "ti,tmp175";
+        reg = <0x2c>;
+    };
+    codec_tlv320aic3104: tlv320aic3104@18 {
+        #sound-dai-cells = <0>;
+        compatible = "ti,tlv320aic3104";
+        reg = <0x18>;
+        ai3x-source-clk = "bclk";
+        ai3x-micbias-vg = <2>;
+		/* Regulators */
+		AVDD-supply = <&regulator_3p3v>;
+		IOVDD-supply = <&regulator_1p8v>;
+		DRVDD-supply = <&regulator_3p3v>;
+		DVDD-supply = <&regulator_1p8v>;
+    };
+};
+
+&csi2rx0 {
+    status = "okay";
+};
+
+&csi2rx1 {
+    status = "okay";
+};
+
+&hailo_vid_cap {
+    status = "okay";
+};
+
+&hailo_isp {
+    status = "okay";
+};
+
+&hailo_pixel_mux {
+    status = "okay";
+};
+
+&rxwrapper0 {
+    status = "okay";
+};
+
+&hailo_vc8000e {
+    status = "okay";
+};
+
+&vc8000e_reserved {
+    status = "okay";
+};
+
+&xrp {
+    status = "okay";
+};
+
+&xrp_reserved {
+    status = "okay";
+};
+
+&sdio0 {
+    phy-config {
+		card-is-emmc = <0x0>;
+		cmd-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
+        	drive-strength = <0xC 0xC>; //pad_sp, pad_sn	
+    };
+};
+&sdio1 {
+    non-removable;
+    status = "okay";
+    phy-config {
+		card-is-emmc = <0x1>;
+        	cmd-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	dat-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	rst-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	clk-pad-values = <0x2 0x2 0x0 0x0>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
+        	drive-strength = <0xC 0xC>; //pad_sp, pad_sn
+        };
+};
+
+&eth {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_eth>;
+};
+
+&pinctrl {
+    compatible = "hailo15-cpld,pinctrl";
+    pinctrl_eth: eth {
+        pins = "eth_rgmii_tx_clk",
+               "eth_rgmii_tx_ctl",
+               "eth_rgmii_txd_0",
+               "eth_rgmii_txd_1",
+               "eth_rgmii_txd_2",
+               "eth_rgmii_txd_3";
+        drive-strength = <2>;
+    };
+};
+
+&qspi {
+    status = "okay";
+
+    spi0_flash0: flash@0 {
+        /* values for MT25QU01G */
+        spi-max-frequency = <6250000>; /* 90Mhz in DTR, 166Mhz in STR */
+        cdns,read-delay = <7>;
+        cdns,tshsl-ns = <30>;
+        cdns,tsd2d-ns = <30>;
+        cdns,tchsh-ns = <5>;
+        cdns,tslch-ns = <3>;
+    };
+};
+
+&i2s_cpu_master {
+    status = "okay";
+    rx-sample-pace-pattern-repetitions = <2>;
+    rx-sample-pace = <64 64 64>;
+    rx-sample-cmp-to = "prev-val";
+    tx-sample-offset = <81>;
+    tx-sample-pace = <63>;
+};
+
+&audio_card_master {
+    status = "okay";
+    simple-audio-card,bitclock-master = <&cpu_dai_master>;
+    simple-audio-card,frame-master = <&cpu_dai_master>;
+
+    cpu_dai_master: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_master>;
+        system-clock-frequency = <1562500>;
+        system-clock-direction-out;
+    };
+    codec_dai_master: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <1562500>;
+    };
+};
+
+&audio_card_slave_tx {
+    simple-audio-card,bitclock-master = <&codec_dai_tx>;
+    simple-audio-card,frame-master = <&codec_dai_tx>;
+
+    cpu_dai_tx: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_slave_tx>;
+        system-clock-frequency = <12288000>;
+    };
+    codec_dai_tx: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <12288000>;
+    };
+};
+
+&audio_card_slave_rx {
+    simple-audio-card,bitclock-master = <&codec_dai_rx>;
+    simple-audio-card,frame-master = <&codec_dai_rx>;
+
+    cpu_dai_rx: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_slave_rx>;
+        system-clock-frequency = <12288000>;
+    };
+    codec_dai_rx: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <12288000>;
+    };
+};

@@ -83,6 +83,13 @@ properties:
     description:
       SMC id required when using smc or hvc transports
 
+  fw-ver:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Optional firmware version. If set, the firmware
+      version will be validated against the implementation version
+      received by the base protocol's DISCOVER_IMPLEMENT_VERSION command.
+  
   protocol@11:
     type: object
     properties:

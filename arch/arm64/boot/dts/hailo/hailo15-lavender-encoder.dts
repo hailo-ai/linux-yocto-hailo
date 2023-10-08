@@ -1,0 +1,17 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+
+#include "hailo15-base.dtsi"
+
+&eth {
+    status = "okay";
+};
+
+&sdio1 {
+    status = "okay";
+    8-bit-mux-mode;
+};

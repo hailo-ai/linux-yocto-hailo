@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+config HAILO_XRP
+    bool "Hailo XRP (Xtensa remote processing) driver"
+    help
+      This enables DSP IPC protocol between host AP (Linux)
+      and the firmware running on DSP.
+
+config HAILO_XRP_DEBUG
+    bool "Hailo XRP verbose debug messages"
+    help
+      Say Y here if you want the XRP driver to produce a bunch of
+      debug messages to the system log. Select this if you are having a
+      problem with the driver and want to see more of what is
+      going on.
+
+      If you are unsure about this, say N here.
+
+config HAILO_SCU_LOG
+    bool "Hailo SCU (System Control Unit) log driver"
+    help
+      This enables reading logs from SCU firmware.

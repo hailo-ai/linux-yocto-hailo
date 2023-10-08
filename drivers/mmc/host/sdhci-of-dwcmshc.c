@@ -10,14 +10,76 @@
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/mmc/slot-gpio.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/sizes.h>
-
+#include <linux/of_reserved_mem.h>
+#include <linux/reset.h>
 #include "sdhci-pltfm.h"
+
+#define DWCMSHC_EMMC_CTRL_R  			0x0000052C
+#define DWCMSHC_EMMC_CTRL_R__CARD_IS_EMMC            BIT(0)
+#define DWCMSHC_EMMC_CTRL_R__DISABLE_DATA_CRC_CHK    BIT(1)
+#define DWCMSHC_EMMC_CTRL_R__EMMC_RST_N		     BIT(2)
+#define DWCMSHC_EMMC_CTRL_R__EMMC_RST_N_OE	     BIT(3)
+
+#define DWCMSHC_CMDPAD_CNFG  			0x00000304 
+#define DWCMSHC_CMDPAD_CNFG__RXSEL GENMASK(2, 0)
+#define DWCMSHC_CMDPAD_CNFG__WEAKPULL_EN GENMASK(4, 3)
+#define DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_P GENMASK(8,5)
+#define DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_N GENMASK(12,9)
+
+#define DWCMSHC_DATPAD_CNFG 			0x00000306 
+#define DWCMSHC_DATPAD_CNFG__RXSEL GENMASK(2, 0)
+#define DWCMSHC_DATPAD_CNFG__WEAKPULL_EN GENMASK (4, 3)
+#define DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_P GENMASK(8,5)
+#define DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_N GENMASK(12,9)
+
+#define DWCMSHC_RSTNPAD_CNFG			0x0000030C 
+#define DWCMSHC_RSTNPAD_CNFG__RXSEL GENMASK(2, 0)
+#define DWCMSHC_RSTNPAD_CNFG__WEAKPULL_EN GENMASK (4, 3)
+#define DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_P GENMASK(8,5)
+#define DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_N GENMASK(12,9)
+
+#define DWCMSHC_CLKPAD_CNFG			0x00000308 
+#define DWCMSHC_CLKPAD_CNFG__RXSEL GENMASK(2, 0)
+#define DWCMSHC_CLKPAD_CNFG__WEAKPULL_EN GENMASK(4, 3)
+#define DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_P GENMASK(8,5)
+#define DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_N GENMASK(12,9)
+
+#define DWCMSHC_PHY_CNFG			0x00000300
+#define DWCMSHC_PHY_CNFG__PHY_RSTN BIT(0)
+#define DWCMSHC_PHY_CNFG__PHY_PWRGOOD BIT(1)
+#define DWCMSHC_PHY_CNFG__PAD_SP GENMASK(19,16)
+#define DWCMSHC_PHY_CNFG__PAD_SN GENMASK(23,20)
+
+#define DWCMSHC_CLK_CTRL_R			0x0000002C
+#define DWCMSHC_CLK_CTRL_R__PLL_ENABLE	BIT(3)
+
+#define DWCMSHC_SDCLKDL_CNFG			0x0000031D
+#define DWCMSHC_SDCLKDL_CNFG__EXTDLY_EN BIT(0)
+
+#define DWCMSHC_SDCLKDL_DC			0x0000031E
+#define DWCMSHC_SDCLKDL_DC__CCKDL_DC GENMASK(6,0)
+
+#define DWCMSHC_BLOCKSIZE_R			0x00000004
+#define DWCMSHC_BLOCKSIZE_R__XFER_BLOCK_SIZE GENMASK(11,0)
+
+#define DWCMSHC_BLOCKCOUNT_R			0x00000006
+
+#define DWCMSHC_XFER_MODE_R			0x0000000C
+#define DWCMSHC_XFER_MODE_R__BLOCK_COUNT_ENABLE BIT(1)
+#define DWCMSHC_XFER_MODE_R__DATA_XFER_DIR BIT(4)
+#define DWCMSHC_XFER_MODE_R__MULTI_BLK_SEL BIT(5)
+
+#define DWCMSHC_AT_CTRL_R			0x00000540
+#define DWCMSHC_AT_CTRL_R__SWIN_TH_EN BIT(2)
+#define DWCMSHC_AT_CTRL_R__SWIN_TH_VAL GENMASK(30, 24)
+
 
 #define SDHCI_DWCMSHC_ARG2_STUFF	GENMASK(31, 16)
 
@@ -66,12 +128,46 @@ struct rk3568_priv {
 	u8 txclk_tapnum;
 };
 
+enum pad_config {
+	TXSLEW_CTRL_N = 0,
+	TXSLEW_CTRL_P = 1,
+	WEAKPULL_EN = 2,
+	RXSEL = 3,
+	PAD_CONFIG_MAX = 4
+};
+enum clk_delay_config {
+	EXTDLY_EN = 0,
+        CCKDL_DC = 1,
+	CLK_DELAY_CONFIG_MAX = 2
+};
+enum drive_strength_config {
+	PAD_SP = 0,
+	PAD_SN = 1,
+	DS_CONFIG_MAX = 2
+};
+
+typedef struct hailo15_phy_config {
+	u32 card_is_emmc;
+	u32 cmd_pad[PAD_CONFIG_MAX];
+	u32 dat_pad[PAD_CONFIG_MAX];
+	u32 rst_pad[PAD_CONFIG_MAX];
+	u32 clk_pad[PAD_CONFIG_MAX];
+	u32 clk_delay[CLK_DELAY_CONFIG_MAX];
+	u32 drive_strength[DS_CONFIG_MAX];
+} hailo15_phy_config;
+struct hailo_priv {
+	/* hailo specified optional clocks */
+	struct clk *div_clk_bypass;
+	bool is_clk_divider_bypass;
+	hailo15_phy_config sdio_phy_config;
+	u64 data_error_count;
+};
 struct dwcmshc_priv {
 	struct clk	*bus_clk;
 	int vendor_specific_area1; /* P_VENDOR_SPECIFIC_AREA reg */
 	void *priv; /* pointer to SoC private stuff */
 };
-
+static void dwcmshc_hailo15_phy_config(struct sdhci_host *host);
 /*
  * If DMA addr spans 128MB boundary, we split the DMA transfer into two
  * so that each DMA transfer doesn't exceed the boundary.
@@ -171,7 +267,28 @@ static void dwcmshc_hs400_enhanced_strobe(struct mmc_host *mmc,
 
 	sdhci_writel(host, vendor, reg);
 }
+static int dwcmshc_hailo15_set_clock_divider_bypass(struct sdhci_host *host, bool is_bypass)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+	struct hailo_priv *priv = dwc_priv->priv;
+	struct device *dev = mmc_dev(host->mmc);
+	int ret = 0;
 
+	if ((is_bypass) & (!priv->is_clk_divider_bypass)) {
+		ret = clk_prepare_enable(priv->div_clk_bypass);
+    		if (ret) {
+			dev_err(dev, "clk_divider bypass enable failed: ret[%d]\n", ret);
+			return ret;
+		}
+		priv->is_clk_divider_bypass = true;
+	} else if ((!is_bypass) & (priv->is_clk_divider_bypass)) {
+		clk_disable_unprepare(priv->div_clk_bypass);
+		priv->is_clk_divider_bypass = false;
+	}
+
+	return 0;
+}
 static void dwcmshc_rk3568_set_clock(struct sdhci_host *host, unsigned int clock)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -255,6 +372,119 @@ static void dwcmshc_rk3568_set_clock(struct sdhci_host *host, unsigned int clock
 	sdhci_writel(host, extra, DWCMSHC_EMMC_DLL_STRBIN);
 }
 
+static u16 sdhci_hailo15_calc_clk(struct sdhci_host *host, unsigned int clock,
+				   unsigned int *actual_clock)
+{
+	u16 clk = 0;
+	int div = 2;
+	struct device *dev = mmc_dev(host->mmc);
+	bool is_bypass = (host->max_clk <= clock) ? true : false;
+	int ret;
+
+	ret = dwcmshc_hailo15_set_clock_divider_bypass(host, is_bypass);
+	if (ret) {
+		dev_err(dev, "set clock divider bypass failed ret[%d]\n", ret);
+		return 0;
+	}
+	if (is_bypass)
+		div = 1;
+	else {
+		for (div = 2; div < 1023; div++) {
+			if ((host->max_clk / div) <= clock)
+				break;
+
+		}
+	}
+	*actual_clock = host->max_clk / div;
+	clk |= (div & SDHCI_DIV_MASK) << SDHCI_DIVIDER_SHIFT;
+	clk |= ((div & SDHCI_DIV_HI_MASK) >> SDHCI_DIV_MASK_LEN)
+		<< SDHCI_DIVIDER_HI_SHIFT;
+
+	pr_debug("[%s] 'requested clock %d actual clock: %d is_div_bypass %s\n", mmc_hostname(host->mmc), clock, *actual_clock, is_bypass ? "True ": "False");
+	return clk;
+}
+
+static void dwcmshc_hailo15_set_clock(struct sdhci_host *host, unsigned int clock)
+{
+	u16 clk;
+
+	host->mmc->actual_clock = 0;
+
+	sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
+
+	if (clock == 0)
+		return;
+
+	clk = sdhci_hailo15_calc_clk(host, clock, &host->mmc->actual_clock);
+	if (clk == 0) {
+		dev_err(mmc_dev(host->mmc), "%s: set clk failed\n", __func__);
+		return;
+	}
+
+	sdhci_enable_clk(host, clk);
+}
+static int dwcmshc_hailo15_get_phy_config_from_dts(struct device *dev, struct hailo_priv *hailo_priv)
+{
+	struct device_node *phy_config_node;
+	phy_config_node = of_find_node_by_name(dev->of_node, "phy-config");
+	if (!phy_config_node){
+		dev_err(dev, "%s: No phy configuration property found.\n", __func__);
+		return EINVAL;
+	}
+	
+	of_property_read_u32(phy_config_node, "card-is-emmc", &hailo_priv->sdio_phy_config.card_is_emmc);
+	of_property_read_u32_array(phy_config_node, "cmd-pad-values", hailo_priv->sdio_phy_config.cmd_pad, PAD_CONFIG_MAX);
+	of_property_read_u32_array(phy_config_node, "dat-pad-values", hailo_priv->sdio_phy_config.dat_pad, PAD_CONFIG_MAX);
+	of_property_read_u32_array(phy_config_node, "rst-pad-values", hailo_priv->sdio_phy_config.rst_pad, PAD_CONFIG_MAX);
+	of_property_read_u32_array(phy_config_node, "clk-pad-values", hailo_priv->sdio_phy_config.clk_pad, PAD_CONFIG_MAX);
+	of_property_read_u32_array(phy_config_node, "sdclkdl-cnfg", hailo_priv->sdio_phy_config.clk_delay, CLK_DELAY_CONFIG_MAX);
+	of_property_read_u32_array(phy_config_node, "drive-strength", hailo_priv->sdio_phy_config.drive_strength, DS_CONFIG_MAX);
+	of_node_put(phy_config_node);
+	return 0;
+}
+static u64 hailo15_dwcmshc_get_data_error_count(struct sdhci_host *host){
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+	struct hailo_priv *hailo_priv = dwc_priv->priv;
+	
+	return hailo_priv->data_error_count;
+}
+
+static void hailo15_dwcmshc_increase_data_error_count(struct sdhci_host *host){
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+
+	struct hailo_priv *hailo_priv = dwc_priv->priv;
+	hailo_priv->data_error_count++;
+}
+
+static void hailo15_dwcmshc_hw_reset(struct sdhci_host *host)
+{
+	dwcmshc_hailo15_phy_config(host);
+}
+
+static unsigned int hailo15_dwcmshc_get_min_clock(struct sdhci_host *host)
+{
+	/* TODO:
+		we should return dwcmshc_get_max_clock(host) / 1023
+		we need to investigate why we get unwanted responses in lower frequency
+		see MSW-2498
+	*/
+	return 800000;
+}
+
+static int hailo15_dwcmshc_execute_tuning(struct mmc_host *mmc, u32 opcode)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	int err;
+
+	err = sdhci_execute_tuning(mmc, opcode);
+	if (!err && !host->tuning_err)
+		pr_info("%s Tuning Success!\n", mmc_hostname(host->mmc));
+
+	return err;
+}
+
 static const struct sdhci_ops sdhci_dwcmshc_ops = {
 	.set_clock		= sdhci_set_clock,
 	.set_bus_width		= sdhci_set_bus_width,
@@ -270,12 +500,33 @@ static const struct sdhci_ops sdhci_dwcmshc_rk3568_ops = {
 	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
 	.get_max_clock		= sdhci_pltfm_clk_get_max_clock,
 	.reset			= sdhci_reset,
+	.adma_write_desc	= dwcmshc_adma_write_desc,	
+};
+
+static const struct sdhci_ops hailo15_dwcmshc_ops = {
+	.set_clock		= dwcmshc_hailo15_set_clock,
+	.set_bus_width		= sdhci_set_bus_width,
+	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
+	.get_max_clock		= dwcmshc_get_max_clock,
+	.get_min_clock		= hailo15_dwcmshc_get_min_clock,
+	.reset			= sdhci_reset,
 	.adma_write_desc	= dwcmshc_adma_write_desc,
+	.hw_reset = hailo15_dwcmshc_hw_reset,
+	.get_data_error_count = hailo15_dwcmshc_get_data_error_count,
+	.increase_data_error_count = hailo15_dwcmshc_increase_data_error_count,
 };
 
 static const struct sdhci_pltfm_data sdhci_dwcmshc_pdata = {
 	.ops = &sdhci_dwcmshc_ops,
 	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
+	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
+};
+
+static const struct sdhci_pltfm_data hailo_sdhci_dwcmshc_pdata = {
+	.ops = &hailo15_dwcmshc_ops,
+	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
+		SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
+		SDHCI_QUIRK_BROKEN_CARD_DETECTION,
 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
 };
 
@@ -330,6 +581,14 @@ static const struct of_device_id sdhci_dwcmshc_dt_ids[] = {
 		.compatible = "snps,dwcmshc-sdhci",
 		.data = &sdhci_dwcmshc_pdata,
 	},
+	{
+		.compatible = "hailo,dwcmshc-sdhci-0",
+		.data = &hailo_sdhci_dwcmshc_pdata,
+	},
+	{
+		.compatible = "hailo,dwcmshc-sdhci-1",
+		.data = &hailo_sdhci_dwcmshc_pdata,
+	},
 	{},
 };
 MODULE_DEVICE_TABLE(of, sdhci_dwcmshc_dt_ids);
@@ -341,6 +600,220 @@ static const struct acpi_device_id sdhci_dwcmshc_acpi_ids[] = {
 };
 #endif
 
+static void dwcmshc_hailo15_phy_config(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+	struct hailo_priv *hailo_priv = dwc_priv->priv;
+	hailo15_phy_config *sdio_phy_config = &hailo_priv->sdio_phy_config;
+	u32       reg32 = 0;
+	u16       reg16 = 0;
+	u8	  reg8 = 0;
+
+	reg32 = sdhci_readl(host, DWCMSHC_EMMC_CTRL_R);
+	reg32 &= ~DWCMSHC_EMMC_CTRL_R__CARD_IS_EMMC;
+	if (sdio_phy_config->card_is_emmc) {
+		reg32 |= DWCMSHC_EMMC_CTRL_R__CARD_IS_EMMC;
+	}
+	sdhci_writel(host, reg32, DWCMSHC_EMMC_CTRL_R);
+	
+	/* CMD PAD configuration */
+	reg16 = sdhci_readw(host, DWCMSHC_CMDPAD_CNFG);
+	reg16 &= ~DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_N;
+	reg16 |= FIELD_PREP(DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_N, sdio_phy_config->cmd_pad[TXSLEW_CTRL_N]);
+	reg16 &= ~DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_P;
+	reg16 |= FIELD_PREP(DWCMSHC_CMDPAD_CNFG__TXSLEW_CTRL_P, sdio_phy_config->cmd_pad[TXSLEW_CTRL_P]);
+	reg16 &= ~DWCMSHC_CMDPAD_CNFG__WEAKPULL_EN;
+	reg16 |= FIELD_PREP(DWCMSHC_CMDPAD_CNFG__WEAKPULL_EN, sdio_phy_config->cmd_pad[WEAKPULL_EN]);
+	reg16 &= ~DWCMSHC_CMDPAD_CNFG__RXSEL;
+	reg16 |= FIELD_PREP(DWCMSHC_CMDPAD_CNFG__RXSEL, sdio_phy_config->cmd_pad[RXSEL]);
+	sdhci_writew(host, reg16, DWCMSHC_CMDPAD_CNFG);
+	
+	/* DAT PAD configuration */
+	reg16 = sdhci_readw(host, DWCMSHC_DATPAD_CNFG);
+	reg16 &= ~DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_N;
+	reg16 |= FIELD_PREP(DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_N, sdio_phy_config->dat_pad[TXSLEW_CTRL_N]);
+	reg16 &= ~DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_P;
+	reg16 |= FIELD_PREP(DWCMSHC_DATPAD_CNFG__TXSLEW_CTRL_P, sdio_phy_config->dat_pad[TXSLEW_CTRL_P]);
+	reg16 &= ~DWCMSHC_DATPAD_CNFG__WEAKPULL_EN;
+	reg16 |= FIELD_PREP(DWCMSHC_DATPAD_CNFG__WEAKPULL_EN, sdio_phy_config->dat_pad[WEAKPULL_EN]);
+	reg16 &= ~DWCMSHC_DATPAD_CNFG__RXSEL;
+	reg16 |= FIELD_PREP(DWCMSHC_DATPAD_CNFG__RXSEL, sdio_phy_config->dat_pad[RXSEL]);
+	sdhci_writew(host, reg16, DWCMSHC_DATPAD_CNFG);
+	
+	/* RST PAD configuration */
+	reg16 = sdhci_readw(host, DWCMSHC_RSTNPAD_CNFG);
+	reg16 &= ~DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_N;
+	reg16 |= FIELD_PREP(DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_N, sdio_phy_config->rst_pad[TXSLEW_CTRL_N]);
+	reg16 &= ~DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_P;
+	reg16 |= FIELD_PREP(DWCMSHC_RSTNPAD_CNFG__TXSLEW_CTRL_P, sdio_phy_config->rst_pad[TXSLEW_CTRL_P]);
+	reg16 &= ~DWCMSHC_RSTNPAD_CNFG__WEAKPULL_EN;
+	reg16 |= FIELD_PREP(DWCMSHC_RSTNPAD_CNFG__WEAKPULL_EN, sdio_phy_config->rst_pad[WEAKPULL_EN]);
+	reg16 &= ~DWCMSHC_RSTNPAD_CNFG__RXSEL;
+	reg16 |= FIELD_PREP(DWCMSHC_RSTNPAD_CNFG__RXSEL, sdio_phy_config->rst_pad[RXSEL]);
+	sdhci_writew(host, reg16, DWCMSHC_RSTNPAD_CNFG);
+
+	/* CLK PAD configuration */
+	reg16 = sdhci_readw(host, DWCMSHC_CLKPAD_CNFG);
+	reg16 &= ~DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_N;
+	reg16 |= FIELD_PREP(DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_N, sdio_phy_config->clk_pad[TXSLEW_CTRL_N]);
+	reg16 &= ~DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_P;
+	reg16 |= FIELD_PREP(DWCMSHC_CLKPAD_CNFG__TXSLEW_CTRL_P, sdio_phy_config->clk_pad[TXSLEW_CTRL_P]);
+	reg16 &= ~DWCMSHC_CLKPAD_CNFG__WEAKPULL_EN;
+	reg16 |= FIELD_PREP(DWCMSHC_CLKPAD_CNFG__WEAKPULL_EN, sdio_phy_config->clk_pad[WEAKPULL_EN]);
+	reg16 &= ~DWCMSHC_CLKPAD_CNFG__RXSEL;
+	reg16 |= FIELD_PREP(DWCMSHC_CLKPAD_CNFG__RXSEL, sdio_phy_config->clk_pad[RXSEL]);
+	sdhci_writew(host, reg16, DWCMSHC_CLKPAD_CNFG);
+	/* wait for phy power good */
+	while (!(sdhci_readw(host, DWCMSHC_PHY_CNFG) & DWCMSHC_PHY_CNFG__PHY_PWRGOOD));
+	
+	/* de-assert phy reset */
+	reg32 = sdhci_readl(host, DWCMSHC_PHY_CNFG);
+	reg32 &= ~DWCMSHC_PHY_CNFG__PHY_RSTN;
+	reg32 |= DWCMSHC_PHY_CNFG__PHY_RSTN;
+	sdhci_writel(host, reg32, DWCMSHC_PHY_CNFG);
+	
+	/* enable pll */
+	reg16 = sdhci_readw(host, DWCMSHC_CLK_CTRL_R);
+	reg16 &= ~DWCMSHC_CLK_CTRL_R__PLL_ENABLE;
+	reg16 |= DWCMSHC_CLK_CTRL_R__PLL_ENABLE;
+	sdhci_writew(host, reg16, DWCMSHC_CLK_CTRL_R);
+
+	/* Adding Clock delay for SD */
+	reg8 = sdhci_readb(host, DWCMSHC_SDCLKDL_CNFG);
+	reg8 &= ~DWCMSHC_SDCLKDL_CNFG__EXTDLY_EN;
+	if (sdio_phy_config->clk_delay[EXTDLY_EN]) {
+		reg8 |= DWCMSHC_SDCLKDL_CNFG__EXTDLY_EN;
+	}
+	sdhci_writeb(host, reg8, DWCMSHC_SDCLKDL_CNFG);
+	reg16 = sdhci_readw(host, DWCMSHC_SDCLKDL_DC);
+	reg16 &= ~DWCMSHC_SDCLKDL_DC__CCKDL_DC;
+	reg16 |= FIELD_PREP(DWCMSHC_SDCLKDL_DC__CCKDL_DC, sdio_phy_config->clk_delay[CCKDL_DC]);
+	sdhci_writew(host, reg16, DWCMSHC_SDCLKDL_DC); 
+
+	/* PHY configuration - NMOS, PMOS TX drive strength control */
+	reg32 = sdhci_readl(host, DWCMSHC_PHY_CNFG);
+	reg32 &= ~DWCMSHC_PHY_CNFG__PAD_SP;
+	reg32 |= FIELD_PREP(DWCMSHC_PHY_CNFG__PAD_SP, sdio_phy_config->drive_strength[PAD_SP]);
+	reg32 &= ~DWCMSHC_PHY_CNFG__PAD_SN;
+	reg32 |= FIELD_PREP(DWCMSHC_PHY_CNFG__PAD_SN, sdio_phy_config->drive_strength[PAD_SN]);
+	sdhci_writel(host, reg32, DWCMSHC_PHY_CNFG);
+
+	/* In case CMD19(tuning) will be sent - BLOCKSIZE_R, BLOCKCOUNT_R BLOCK_COUNT_ENABLE must be set */	
+	reg16 = sdhci_readw(host, DWCMSHC_BLOCKSIZE_R);
+	reg16 &= ~DWCMSHC_BLOCKSIZE_R__XFER_BLOCK_SIZE;
+	reg16 |= FIELD_PREP(DWCMSHC_BLOCKSIZE_R__XFER_BLOCK_SIZE, 0x200);
+	sdhci_writew(host, reg16, DWCMSHC_BLOCKSIZE_R);
+
+	sdhci_writew(host, (u16)0x1, DWCMSHC_BLOCKCOUNT_R);
+	
+	reg16 = sdhci_readw(host, DWCMSHC_XFER_MODE_R);
+	reg16 &= ~DWCMSHC_XFER_MODE_R__BLOCK_COUNT_ENABLE;
+	reg16 |= DWCMSHC_XFER_MODE_R__BLOCK_COUNT_ENABLE;
+	reg16 &= ~DWCMSHC_XFER_MODE_R__DATA_XFER_DIR;
+	reg16 |= DWCMSHC_XFER_MODE_R__DATA_XFER_DIR;
+	reg16 &= ~DWCMSHC_XFER_MODE_R__MULTI_BLK_SEL;
+	reg16 |= DWCMSHC_XFER_MODE_R__MULTI_BLK_SEL;
+	sdhci_writew(host, reg16, DWCMSHC_XFER_MODE_R);
+
+	/* Sampling window threshold value is 31 out of 128 taps */
+	reg32 = sdhci_readl(host, DWCMSHC_AT_CTRL_R);
+	reg32 &= ~DWCMSHC_AT_CTRL_R__SWIN_TH_EN;
+	reg32 |= DWCMSHC_AT_CTRL_R__SWIN_TH_EN;
+	reg32 &= ~DWCMSHC_AT_CTRL_R__SWIN_TH_VAL;
+	reg32 |= FIELD_PREP(DWCMSHC_AT_CTRL_R__SWIN_TH_VAL,0x1f);
+	sdhci_writel(host, reg32, DWCMSHC_AT_CTRL_R);
+
+	pr_debug("%s phy configuration for %s mode done\n", mmc_hostname(host->mmc), sdio_phy_config->card_is_emmc ? "EMMC ": "SD");
+}
+
+static int dwcmshc_hailo_init(struct sdhci_host *host, struct dwcmshc_priv *dwc_priv)
+{
+	struct hailo_priv *priv = dwc_priv->priv;
+	struct device *dev = mmc_dev(host->mmc);
+	struct reset_control *sdio_cd_input = NULL;
+	int err = 0;
+	priv->is_clk_divider_bypass = false;
+
+	/* In case card detection interrupt support - select card detect input pads_pinmux */
+	if ((!(host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)) &&
+        (mmc_card_is_removable(host->mmc)) && (!mmc_can_gpio_cd(host->mmc))) {
+		sdio_cd_input = devm_reset_control_get(dev,"sdio-cd-input");
+		if (IS_ERR(sdio_cd_input)) {
+			err = PTR_ERR(sdio_cd_input);
+			dev_err_probe(dev, err, "failed to get cd input: %d\n", err);
+			return err;
+		}
+		err = reset_control_deassert(sdio_cd_input);
+		if (err < 0) {
+			dev_err(dev, "Failed deasserting card detect input, err %d\n", err);
+			return err;
+		}
+
+	}
+	
+	err = dwcmshc_hailo15_get_phy_config_from_dts(dev, priv);
+	if (err)
+		return err;
+	
+	priv->div_clk_bypass = devm_clk_get(dev, "clk_div_bypass");
+    	if (IS_ERR(priv->div_clk_bypass)){
+		dev_err(dev, "Failed to get div_clk_bypass\n");
+		return PTR_ERR(priv->div_clk_bypass);
+	}
+
+	/* In order to enable low clock frequency at init */
+	err = dwcmshc_hailo15_set_clock_divider_bypass(host, false);
+	if (err) {
+		dev_err(dev, "set clock divider bypass failed ret[%d]\n", err);
+		return err;
+	}
+
+	/* SDIO delay line (DLL) has 128 taps */
+	host->tuning_loop_count = 128;
+	return 0;
+}
+
+static int set_sdio_8_bit_mux(struct device *dev)
+{
+	struct reset_control *sdio_reset = NULL;
+	int err;
+	bool is_sdio_8_bit_mux = of_property_read_bool(dev->of_node, "8-bit-mux-mode");
+	sdio_reset = devm_reset_control_get(dev, "sdio1-8bit-mux");
+	if (IS_ERR(sdio_reset)) {
+		if (PTR_ERR(sdio_reset) != -EPROBE_DEFER) {
+			dev_err(dev, "failed to get sdio reset, error = %pe.\n", sdio_reset);
+		}
+		return PTR_ERR(sdio_reset);
+	}
+
+	if (is_sdio_8_bit_mux){
+		err = reset_control_deassert(sdio_reset);
+    		if (err < 0) {
+        		dev_err(dev, "Failed deasserting sdio 8 bit mux, err %d\n", err);
+        		return err;
+		}
+    	} else {
+		err = reset_control_assert(sdio_reset);
+    		if (err < 0) {
+        		dev_err(dev, "Failed asserting sdio 8 bit mux, err %d\n", err);
+        		return err;
+		}
+	}
+	return 0;
+}
+static int hailo_init_sdio_pins_and_muxes(struct device *dev)
+{
+	int err = 0;
+	if (of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-1")) {
+		err = set_sdio_8_bit_mux(dev);
+		if(err)
+			return err;
+	}
+	return err;
+}
+
+
 static int dwcmshc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -348,18 +821,27 @@ static int dwcmshc_probe(struct platform_device *pdev)
 	struct sdhci_host *host;
 	struct dwcmshc_priv *priv;
 	struct rk3568_priv *rk_priv = NULL;
+	struct hailo_priv *hailo_priv = NULL;
 	const struct sdhci_pltfm_data *pltfm_data;
 	int err;
 	u32 extra;
+	bool is_hailo_sdhci = false;
 
-	pltfm_data = of_device_get_match_data(&pdev->dev);
+	pltfm_data = of_device_get_match_data(dev);
 	if (!pltfm_data) {
-		dev_err(&pdev->dev, "Error: No device match data found\n");
+		dev_err(dev, "Error: No device match data found\n");
 		return -ENODEV;
 	}
 
-	host = sdhci_pltfm_init(pdev, pltfm_data,
-				sizeof(struct dwcmshc_priv));
+	if (of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-0")||
+	    of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-1")) {
+		is_hailo_sdhci = true;
+		err = hailo_init_sdio_pins_and_muxes(dev);
+		if(err)
+			return err;
+	}
+	
+	host = sdhci_pltfm_init(pdev, pltfm_data, sizeof(struct dwcmshc_priv));
 	if (IS_ERR(host))
 		return PTR_ERR(host);
 
@@ -370,7 +852,6 @@ static int dwcmshc_probe(struct platform_device *pdev)
 	if (extra > SDHCI_MAX_SEGS)
 		extra = SDHCI_MAX_SEGS;
 	host->adma_table_cnt += extra;
-
 	pltfm_host = sdhci_priv(host);
 	priv = sdhci_pltfm_priv(pltfm_host);
 
@@ -378,7 +859,7 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		pltfm_host->clk = devm_clk_get(dev, "core");
 		if (IS_ERR(pltfm_host->clk)) {
 			err = PTR_ERR(pltfm_host->clk);
-			dev_err(dev, "failed to get core clk: %d\n", err);
+			dev_err_probe(dev, err, "failed to get core clk: %d\n", err);
 			goto free_pltfm;
 		}
 		err = clk_prepare_enable(pltfm_host->clk);
@@ -389,7 +870,6 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		if (!IS_ERR(priv->bus_clk))
 			clk_prepare_enable(priv->bus_clk);
 	}
-
 	err = mmc_of_parse(host->mmc);
 	if (err)
 		goto err_clk;
@@ -397,13 +877,12 @@ static int dwcmshc_probe(struct platform_device *pdev)
 	sdhci_get_of_property(pdev);
 
 	priv->vendor_specific_area1 =
-		sdhci_readl(host, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK;
-
+	sdhci_readl(host, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK;
 	host->mmc_host_ops.request = dwcmshc_request;
 	host->mmc_host_ops.hs400_enhanced_strobe = dwcmshc_hs400_enhanced_strobe;
-
+	
 	if (pltfm_data == &sdhci_dwcmshc_rk3568_pdata) {
-		rk_priv = devm_kzalloc(&pdev->dev, sizeof(struct rk3568_priv), GFP_KERNEL);
+		rk_priv = devm_kzalloc(dev, sizeof(struct rk3568_priv), GFP_KERNEL);
 		if (!rk_priv) {
 			err = -ENOMEM;
 			goto err_clk;
@@ -415,13 +894,31 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		if (err)
 			goto err_clk;
 	}
+	if (is_hailo_sdhci) {
+		hailo_priv = devm_kzalloc(dev, sizeof(struct hailo_priv), GFP_KERNEL);
+		if (!hailo_priv) {
+			dev_err(dev, "Error: devm_kzalloc fail for hailo_priv \n");
+			err = -ENOMEM;
+			goto err_clk;
+		}
+		priv->priv = hailo_priv;
+		err = dwcmshc_hailo_init(host, priv);
+		if (err) {
+			dev_err_probe(dev, err, "dwcmshc_hailo_init failed ret[%d]\n", err);
+			return err;
+		}
+		host->mmc_host_ops.execute_tuning = hailo15_dwcmshc_execute_tuning;
+	}
 
 	host->mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
-
+	host->timeout_clk = DIV_ROUND_UP(clk_get_rate(pltfm_host->clk), 1000);
 	err = sdhci_add_host(host);
 	if (err)
 		goto err_clk;
 
+	if (is_hailo_sdhci) {
+		dwcmshc_hailo15_phy_config(host);
+	}
 	return 0;
 
 err_clk:
@@ -441,6 +938,12 @@ static int dwcmshc_remove(struct platform_device *pdev)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
 	struct rk3568_priv *rk_priv = priv->priv;
+	const struct sdhci_pltfm_data *pltfm_data;
+	pltfm_data = of_device_get_match_data(&pdev->dev);
+	if (!pltfm_data) {
+		dev_err(&pdev->dev, "Error: No device match data found\n");
+		return -ENODEV;
+	}
 
 	sdhci_remove_host(host, 0);
 

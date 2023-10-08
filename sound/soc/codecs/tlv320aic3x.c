@@ -81,6 +81,7 @@ struct aic3x_priv {
 	int master;
 	int gpio_reset;
 	int power;
+	int source_clk;
 	u16 model;
 
 	/* Selects the micbias voltage */
@@ -1233,6 +1234,9 @@ static int aic3x_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 	struct snd_soc_component *component = codec_dai->component;
 	struct aic3x_priv *aic3x = snd_soc_component_get_drvdata(component);
 
+	if (aic3x->source_clk != -1) {
+		clk_id = aic3x->source_clk;
+	}
 	/* set clock on MCLK or GPIO2 or BCLK */
 	snd_soc_component_update_bits(component, AIC3X_CLKGEN_CTRL_REG, PLLCLK_IN_MASK,
 				clk_id << PLLCLK_IN_SHIFT);
@@ -1756,6 +1760,7 @@ int aic3x_probe(struct device *dev, struct regmap *regmap, kernel_ulong_t driver
 	struct device_node *np = dev->of_node;
 	int ret, i;
 	u32 value;
+	const char *source_clk_str;
 
 	aic3x = devm_kzalloc(dev, sizeof(struct aic3x_priv), GFP_KERNEL);
 	if (!aic3x)
@@ -1815,6 +1820,19 @@ int aic3x_probe(struct device *dev, struct regmap *regmap, kernel_ulong_t driver
 			}
 		} else {
 			aic3x->micbias_vg = AIC3X_MICBIAS_OFF;
+		}
+
+		aic3x->source_clk = -1;
+		if (!of_property_read_string(np, "ai3x-source-clk", &source_clk_str)) {
+			if (!strncmp(source_clk_str, "mclk", 4)) {
+				aic3x->source_clk = CLKIN_MCLK;
+			} else if (!strncmp(source_clk_str, "bclk", 4)) {
+				aic3x->source_clk = CLKIN_BCLK;
+			} else if (!strncmp(source_clk_str, "gpio2", 5)) {
+				aic3x->source_clk = CLKIN_GPIO2;
+			} else {
+				dev_err(dev, "Unsuitable ai3x-source-clk found in DT, using default mclk\n");
+			}
 		}
 
 	} else {

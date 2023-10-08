@@ -15,10 +15,13 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
+#include <linux/of_device.h>
+#include <linux/of_address.h>
 #include <sound/designware_i2s.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -101,6 +104,7 @@ static inline void i2s_enable_irqs(struct dw_i2s_dev *dev, u32 stream,
 static irqreturn_t i2s_irq_handler(int irq, void *dev_id)
 {
 	struct dw_i2s_dev *dev = dev_id;
+	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
 	bool irq_valid = false;
 	u32 isr[4];
 	int i;
@@ -132,12 +136,18 @@ static irqreturn_t i2s_irq_handler(int irq, void *dev_id)
 
 		/* Error Handling: TX */
 		if (isr[i] & ISR_TXFO) {
+			if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15) {
+				data->hw_tx_overrun++;
+			}
 			dev_err(dev->dev, "TX overrun (ch_id=%d)\n", i);
 			irq_valid = true;
 		}
 
 		/* Error Handling: TX */
 		if (isr[i] & ISR_RXFO) {
+			if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15) {
+				data->hw_rx_overrun++;
+			}
 			dev_err(dev->dev, "RX overrun (ch_id=%d)\n", i);
 			irq_valid = true;
 		}
@@ -625,6 +635,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 	int ret, irq;
 	struct snd_soc_dai_driver *dw_i2s_dai;
 	const char *clk_id;
+	struct i2s_config_data *match;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -689,6 +700,23 @@ static int dw_i2s_probe(struct platform_device *pdev)
 	}
 
 	dev_set_drvdata(&pdev->dev, dev);
+
+	/* Must executed after dev_set_drvdata(...) */
+	match = (struct i2s_config_data*)of_device_get_match_data(&pdev->dev);
+	if (!match) {
+		dev_err(&pdev->dev, "unexpected device type\n");
+		goto err_clk_disable;
+	}
+
+	dev->cfg_id = match->cfg_id;
+	if (match->extra_probe) {
+		ret = match->extra_probe(pdev);
+		if (ret != 0) {
+			dev_err(&pdev->dev, "extra probe ended with failure\n");
+			goto err_clk_disable;
+		}
+	}
+
 	ret = devm_snd_soc_register_component(&pdev->dev, &dw_i2s_component,
 					 dw_i2s_dai, 1);
 	if (ret != 0) {
@@ -714,6 +742,11 @@ static int dw_i2s_probe(struct platform_device *pdev)
 	}
 
 	pm_runtime_enable(&pdev->dev);
+
+	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+		hailo15_proc_entries_create(pdev);
+	}
+
 	return 0;
 
 err_clk_disable:
@@ -726,6 +759,10 @@ static int dw_i2s_remove(struct platform_device *pdev)
 {
 	struct dw_i2s_dev *dev = dev_get_drvdata(&pdev->dev);
 
+	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+		hailo15_proc_entries_remove(pdev);
+	}
+
 	if (dev->capability & DW_I2S_MASTER)
 		clk_disable_unprepare(dev->clk);
 
@@ -734,8 +771,24 @@ static int dw_i2s_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_OF
+static const struct i2s_config_data  hailo15_i2s_scu_dma_config_data = {
+	.cfg_id = CONFIG_ID_DW_I2S_HAILO15_SCU_DMA,
+	.extra_probe = hailo15_extra_probe,
+};
+static const struct i2s_config_data  hailo15_i2s_config_data = {
+	.cfg_id = CONFIG_ID_DW_I2S_HAILO15,
+	.extra_probe = hailo15_extra_probe,
+};
+
+static const struct i2s_config_data  snps_i2s_config_data = {
+	.cfg_id = CONFIG_ID_DW_I2S_SNPS,
+	.extra_probe = NULL,
+};
+
 static const struct of_device_id dw_i2s_of_match[] = {
-	{ .compatible = "snps,designware-i2s",	 },
+	{ .compatible = "snps,designware-i2s",	 .data = (void*)&snps_i2s_config_data},
+	{ .compatible = "hailo,hailo15-designware-i2s",	.data = (void*)&hailo15_i2s_config_data},
+	{ .compatible = "hailo,hailo15-designware-i2s-scu-dma",	.data = (void*)&hailo15_i2s_scu_dma_config_data},
 	{},
 };
 

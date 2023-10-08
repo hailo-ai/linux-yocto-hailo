@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-evb-2-camera-vpu.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-evb-security-camera.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-ginger-imaging-imx334.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-ginger-imaging-ov2775.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-ginger-soc-sdio0.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-ginger-soc.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-lavender-dsp.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-lavender-encoder.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-lavender.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-veloce.dtb
+dtb-$(CONFIG_ARCH_HAILO15) += hailo15-vp.dtb

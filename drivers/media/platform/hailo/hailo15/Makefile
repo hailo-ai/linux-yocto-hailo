@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+ISP_CTRL_OBJS += isp_ctrl/hailo15_isp_ctrl.o
+ISP_CTRL_OBJS += isp_ctrl/ae/aev2/hailo15_isp_aev2.o
+ISP_CTRL_OBJS += isp_ctrl/wb/wb/hailo15_isp_wb.o
+ISP_CTRL_OBJS += isp_ctrl/2dnr/2dnr/hailo15_isp_2dnr.o
+ISP_CTRL_OBJS += isp_ctrl/3dnr/3dnr_v2/hailo15_isp_3dnrv2.o
+ISP_CTRL_OBJS += isp_ctrl/awb/awb_0410/hailo15_isp_awb0410.o
+ISP_CTRL_OBJS += isp_ctrl/bls/bls/hailo15_isp_bls.o
+ISP_CTRL_OBJS += isp_ctrl/ca/ca/hailo15_isp_ca.o
+ISP_CTRL_OBJS += isp_ctrl/cac/cac/hailo15_isp_cac.o
+ISP_CTRL_OBJS += isp_ctrl/cproc/cproc/hailo15_isp_cproc.o
+ISP_CTRL_OBJS += isp_ctrl/dci/dci/hailo15_isp_dci.o
+ISP_CTRL_OBJS += isp_ctrl/dg/dg/hailo15_isp_dg.o
+ISP_CTRL_OBJS += isp_ctrl/dmsc/dmsc_v2/hailo15_isp_dmscv2.o
+ISP_CTRL_OBJS += isp_ctrl/dpcc/dpcc/hailo15_isp_dpcc.o
+ISP_CTRL_OBJS += isp_ctrl/dpf/dpf/hailo15_isp_dpf.o
+ISP_CTRL_OBJS += isp_ctrl/ee/ee/hailo15_isp_ee.o
+ISP_CTRL_OBJS += isp_ctrl/gc/gc_v2/hailo15_isp_gcv2.o
+
+hailo15-isp-objs += hailo15-isp-hw.o hailo15-isp-v4l.o hailo15-events.o $(ISP_CTRL_OBJS)
+hailo15-video-cap-objs += hailo15-vid-cap.o hailo15-events.o
+obj-y         += common.o
+obj-m         += hailo15-video-cap.o
+obj-$(CONFIG_VIDEO_HAILO15_PIX_MUX)    += hailo15-pixel-mux.o
+obj-$(CONFIG_VIDEO_HAILO15_RXWRAPPER)     += hailo15-rxwrapper.o
+obj-$(CONFIG_VIDEO_HAILO15_ISP)            += hailo15-isp.o

@@ -135,6 +135,13 @@ config GPIO_ALTERA
 
 	  If driver is built as a module it will be called gpio-altera.
 
+config GPIO_CMSDK
+	tristate "ARM CoreLink CMSDK GPIO support"
+	select IRQ_DOMAIN
+	select GPIOLIB_IRQCHIP
+	help
+	  Say yes here to support the ARM CoreLink CMSDK GPIO device
+
 config GPIO_AMDPT
 	tristate "AMD Promontory GPIO support"
 	depends on ACPI

@@ -9,6 +9,12 @@ menuconfig POWER_RESET
 
 if POWER_RESET
 
+config POWER_RESET_HAILO15
+	bool "Hailo-15 reset driver"
+	depends on ARCH_HAILO15
+	help
+	  This driver supports Hailo-15 reset.
+
 config POWER_RESET_AS3722
 	bool "ams AS3722 power-off driver"
 	depends on MFD_AS3722

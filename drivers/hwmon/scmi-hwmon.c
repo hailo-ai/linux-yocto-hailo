@@ -14,10 +14,14 @@
 #include <linux/thermal.h>
 
 static const struct scmi_sensor_proto_ops *sensor_ops;
+static const struct scmi_notify_ops *notify_ops;
 
 struct scmi_sensors {
 	const struct scmi_protocol_handle *ph;
 	const struct scmi_sensor_info **info[hwmon_max];
+	struct notifier_block notifier_block;
+	struct device *dev;
+	struct device *hwdev;
 };
 
 static inline u64 __pow10(u8 x)
@@ -67,20 +71,113 @@ static int scmi_hwmon_scale(const struct scmi_sensor_info *sensor, u64 *value)
 static int scmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			   u32 attr, int channel, long *val)
 {
-	int ret;
+	int ret = 0;
 	u64 value;
 	const struct scmi_sensor_info *sensor;
 	struct scmi_sensors *scmi_sensors = dev_get_drvdata(dev);
 
+	dev_dbg(scmi_sensors->dev,
+		 "scmi_hwmon_read: sensor_type[%d], attr[%x], sensor_id[%d]\n",
+		 type, attr, channel);
+
 	sensor = *(scmi_sensors->info[type] + channel);
-	ret = sensor_ops->reading_get(scmi_sensors->ph, sensor->id, &value);
-	if (ret)
-		return ret;
 
-	ret = scmi_hwmon_scale(sensor, &value);
-	if (!ret)
+	switch (attr) {
+	case hwmon_temp_input:
+		ret = sensor_ops->reading_get(scmi_sensors->ph, sensor->id,
+					      &value);
+		if (ret) {
+			return ret;
+		}
+		ret = scmi_hwmon_scale(sensor, &value);
+		if (!ret) {
+			*val = value;
+		}
+		dev_dbg(
+			scmi_sensors->dev,
+			"scmi_hwmon_read: sensor_type[%d], attr[%x], sensor_id[%d], val[%lx]\n",
+			type, attr, channel, *val);
+		break;
+	case hwmon_temp_max:
+		value = 0;
 		*val = value;
+		break;
+	default:
+		return -EINVAL;
+	}
 
+	return ret;
+}
+
+static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
+					   unsigned long event, void *data)
+{
+	int ret;
+	struct scmi_sensor_trip_point_report *trip_point_report = data;
+	struct scmi_sensors *scmi_sensors =
+		container_of(nb, struct scmi_sensors, notifier_block);
+	const struct scmi_sensor_info *sensor_info = sensor_ops->info_get(
+		scmi_sensors->ph, trip_point_report->sensor_id);
+
+	dev_dbg(
+		scmi_sensors->dev,
+		"trip_point_cb: event[%lu] from: agent_id[%x], sensor_id[%x], trip_point_desc[%x]\n",
+		event, trip_point_report->agent_id,
+		trip_point_report->sensor_id,
+		trip_point_report->trip_point_desc);
+
+	switch (sensor_info->type) {
+	case TEMPERATURE_C:
+	case TEMPERATURE_F:
+	case TEMPERATURE_K:
+		if (event == SCMI_EVENT_SENSOR_TRIP_POINT_EVENT) {
+			ret = hwmon_notify_event(scmi_sensors->hwdev,
+						 hwmon_temp, hwmon_temp_crit,
+						 trip_point_report->sensor_id);
+			if (ret != 0) {
+				dev_warn(
+					scmi_sensors->dev,
+					"trip_point_cb: notify sensor[%d] event to hwmon device failed\n",
+					trip_point_report->sensor_id);
+				return NOTIFY_OK;
+			}
+		}
+		break;
+	default:
+		dev_dbg(scmi_sensors->dev,
+			"trip_point_cb: unhandled event: type[%x], sensor[%d]\n",
+			sensor_info->type, trip_point_report->sensor_id);
+	}
+
+	return NOTIFY_OK;
+}
+
+static int scmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
+			    u32 attr, int channel, long val)
+{
+	int ret = 0;
+	const struct scmi_sensor_info *sensor;
+	struct scmi_sensors *scmi_sensors = dev_get_drvdata(dev);
+
+	sensor = *(scmi_sensors->info[type] + channel);
+
+	dev_dbg(
+		scmi_sensors->dev,
+		"scmi_hwmon_write: sensor_type[%d], attr[%x], ch[%d], val[%lx]\n",
+		type, attr, channel, val);
+
+	switch (attr) {
+	case hwmon_temp_max:
+		ret = sensor_ops->trip_point_config(scmi_sensors->ph,
+						    sensor->id, 0, val);
+		if (ret) {
+			dev_err(scmi_sensors->dev, "scmi_hwmon_write: ret = %d\n", ret);
+			return ret;
+		}
+		break;
+	default:
+		return -EINVAL;
+	}
 	return ret;
 }
 
@@ -105,8 +202,18 @@ scmi_hwmon_is_visible(const void *drvdata, enum hwmon_sensor_types type,
 	const struct scmi_sensors *scmi_sensors = drvdata;
 
 	sensor = *(scmi_sensors->info[type] + channel);
-	if (sensor)
-		return 0444;
+	if (sensor) {
+		switch (attr) {
+		case hwmon_temp_input:
+			return 0444;
+			break;
+		case hwmon_temp_max:
+			return 0600;
+			break;
+		default:
+			return 0;
+		}
+	}
 
 	return 0;
 }
@@ -114,6 +221,7 @@ scmi_hwmon_is_visible(const void *drvdata, enum hwmon_sensor_types type,
 static const struct hwmon_ops scmi_hwmon_ops = {
 	.is_visible = scmi_hwmon_is_visible,
 	.read = scmi_hwmon_read,
+	.write = scmi_hwmon_write,
 	.read_string = scmi_hwmon_read_string,
 };
 
@@ -150,7 +258,7 @@ static enum hwmon_sensor_types scmi_types[] = {
 
 static u32 hwmon_attributes[hwmon_max] = {
 	[hwmon_chip] = HWMON_C_REGISTER_TZ,
-	[hwmon_temp] = HWMON_T_INPUT | HWMON_T_LABEL,
+	[hwmon_temp] = HWMON_T_INPUT | HWMON_T_LABEL | HWMON_T_MAX,
 	[hwmon_in] = HWMON_I_INPUT | HWMON_I_LABEL,
 	[hwmon_curr] = HWMON_C_INPUT | HWMON_C_LABEL,
 	[hwmon_power] = HWMON_P_INPUT | HWMON_P_LABEL,
@@ -159,7 +267,7 @@ static u32 hwmon_attributes[hwmon_max] = {
 
 static int scmi_hwmon_probe(struct scmi_device *sdev)
 {
-	int i, idx;
+	int i, idx, ret;
 	u16 nr_sensors;
 	enum hwmon_sensor_types type;
 	struct scmi_sensors *scmi_sensors;
@@ -179,6 +287,8 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 	if (IS_ERR(sensor_ops))
 		return PTR_ERR(sensor_ops);
 
+	notify_ops = handle->notify_ops;
+
 	nr_sensors = sensor_ops->count_get(ph);
 	if (!nr_sensors)
 		return -EIO;
@@ -188,6 +298,7 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 		return -ENOMEM;
 
 	scmi_sensors->ph = ph;
+	scmi_sensors->dev = dev;
 
 	for (i = 0; i < nr_sensors; i++) {
 		sensor = sensor_ops->info_get(ph, i);
@@ -241,6 +352,18 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 			return -ENOMEM;
 	}
 
+	scmi_sensors->notifier_block.notifier_call = scmi_hwmon_sensor_trip_point_cb;
+	ret = notify_ops->event_notifier_register(sdev->handle,
+				SCMI_PROTOCOL_SENSOR, SCMI_EVENT_SENSOR_TRIP_POINT_EVENT,
+				NULL, //&sensor->id,
+				&scmi_sensors->notifier_block);
+	if (ret) {
+		dev_err(dev,
+			"Error in registering sensor update notifier for sensor %s err %d",
+			sdev->name, ret);
+		return ret;
+	}
+
 	for (i = nr_sensors - 1; i >= 0 ; i--) {
 		sensor = sensor_ops->info_get(ph, i);
 		if (!sensor)
@@ -262,6 +385,7 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 	hwdev = devm_hwmon_device_register_with_info(dev, "scmi_sensors",
 						     scmi_sensors, chip_info,
 						     NULL);
+	scmi_sensors->hwdev = hwdev;
 
 	return PTR_ERR_OR_ZERO(hwdev);
 }

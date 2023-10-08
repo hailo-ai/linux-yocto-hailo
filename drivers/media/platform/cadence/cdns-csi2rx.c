@@ -14,11 +14,14 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/of_platform.h>
 
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
+
+#define RES_MIN
 
 #define CSI2RX_DEVICE_CFG_REG			0x000
 
@@ -29,21 +32,52 @@
 #define CSI2RX_STATIC_CFG_REG			0x008
 #define CSI2RX_STATIC_CFG_DLANE_MAP(llane, plane)	((plane) << (16 + (llane) * 4))
 #define CSI2RX_STATIC_CFG_LANES_MASK			GENMASK(11, 8)
+#define CSI2RX_STATIC_CFG_EXTENDED_VC_EN BIT(4)
+
+#define CSI2RX_DPHY_LANE_CTRL_REG 0x40
+#define CSI2RX_DPHY_LANE_CTRL_RESET_LANES 0x1f
+#define CSI2RX_DPHY_LANE_CTRL_ENABLE_LANES 0x1f01f
 
 #define CSI2RX_STREAM_BASE(n)		(((n) + 1) * 0x100)
 
 #define CSI2RX_STREAM_CTRL_REG(n)		(CSI2RX_STREAM_BASE(n) + 0x000)
 #define CSI2RX_STREAM_CTRL_START			BIT(0)
+#define CSI2RX_STREAM_CTRL_STOP     		 BIT(1)
+#define CSI2RX_STREAM_CTRL_SOFT_RESET            BIT(4)
+
+#define CSI2RX_STREAM_STATUS_REG(n) 	(CSI2RX_STREAM_BASE(n) + 0x004)
+#define CSI2RX_STREAM_STATUS_RUNNING        BIT(31)
+#define CSI2RX_STREAM_STATUS_MAX_RETRIES    50 // 1 sec = MAX_RETRIES * SLEEP_MSECS
+#define CSI2RX_STREAM_STATUS_SLEEP_MSECS    20
 
 #define CSI2RX_STREAM_DATA_CFG_REG(n)		(CSI2RX_STREAM_BASE(n) + 0x008)
 #define CSI2RX_STREAM_DATA_CFG_EN_VC_SELECT		BIT(31)
 #define CSI2RX_STREAM_DATA_CFG_VC_SELECT(n)		BIT((n) + 16)
+#define CSI2RX_STREAM_DATA_CFG_DT0_RAW10        0x2b
+#define CSI2RX_STREAM_DATA_CFG_DT0_RAW12        0x2c
+#define CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE BIT(7)
 
 #define CSI2RX_STREAM_CFG_REG(n)		(CSI2RX_STREAM_BASE(n) + 0x00c)
 #define CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF		(1 << 8)
 
+#define CSI2RX_STREAM_MONITOR_CTRL_REG(n)       (CSI2RX_STREAM_BASE(n) + 0x010)
+
 #define CSI2RX_LANES_MAX	4
 #define CSI2RX_STREAMS_MAX	4
+
+#define CSI2RX_DPHY_LANE_CONTROL_REG_ADDR 0x40
+#define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_ENABLE 0x1f01f
+#define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_RESET  0x0001f
+
+#define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT0_ADDR_OFFSET (0xb00)
+#define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT2_ADDR_OFFSET (0xb08)
+#define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT2_VAL (0xaaaaaaaa)
+#define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT3_ADDR_OFFSET (0xb0c)
+#define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT3_VAL (0x2aa)
+#define CDNS_MIPI_DPHY_RX_CMN_DIG_TBIT2_ADDR_OFFSET (0x020)
+#define CDNS_MIPI_DPHY_RX_CMN_DIG_TBIT2_VAL (0x429)
+#define CDNS_MIPI_DPHY_RX_PCS_TX_DIG_TBIT0__BAND_CTL_REG_L__SHIFT                         0x00000000
+#define CDNS_MIPI_DPHY_RX_PCS_TX_DIG_TBIT0__BAND_CTL_REG_R__SHIFT                         0x00000005
 
 enum csi2rx_pads {
 	CSI2RX_PAD_SINK,
@@ -65,10 +99,12 @@ struct csi2rx_priv {
 	struct mutex			lock;
 
 	void __iomem			*base;
+	void __iomem			*internal_dphy_base;
 	struct clk			*sys_clk;
 	struct clk			*p_clk;
 	struct clk			*pixel_clk[CSI2RX_STREAMS_MAX];
 	struct phy			*dphy;
+	struct device_node  *internal_dphy;
 
 	u8				lanes[CSI2RX_LANES_MAX];
 	u8				num_lanes;
@@ -83,12 +119,61 @@ struct csi2rx_priv {
 	/* Remote source */
 	struct v4l2_subdev		*source_subdev;
 	int				source_pad;
+
+	// link frequency in which to configure the internal dphy, if exists
+	u64 link_freq;
 };
 
 static inline
 struct csi2rx_priv *v4l2_subdev_to_csi2rx(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct csi2rx_priv, subdev);
+}
+
+static int cdns_dphy_rx_band_control_select(u64 data_rate)
+{
+	unsigned int i;
+	u64 data_rate_mbps = data_rate / 1000000;
+	static const int data_rates_mbps[] = { 80,   100,  120,	 160,  200,
+					       240,  280,  320,	 360,  400,
+					       480,  560,  640,	 720,  800,
+					       880,  1040, 1200, 1350, 1500,
+					       1750, 2000, 2250, 2500 };
+
+	static const int data_rates_mbps_num_elements =
+		sizeof(data_rates_mbps) / sizeof(data_rates_mbps[0]);
+	for (i = 0; i < data_rates_mbps_num_elements - 2; i++)
+		if (data_rate_mbps >= data_rates_mbps[i] &&
+		    data_rate_mbps < data_rates_mbps[i + 1])
+			return i;
+	return 0;
+}
+
+static void cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
+{
+	void __iomem *internal_dphy_base = csi2rx->internal_dphy_base;
+	u64 data_rate = csi2rx->link_freq;
+	u32 phy_band_control = 0;
+	u32 clock_selection = 0;
+
+	writel(CDNS_MIPI_DPHY_RX_TX_DIG_TBIT2_VAL,
+	       internal_dphy_base + CDNS_MIPI_DPHY_RX_TX_DIG_TBIT2_ADDR_OFFSET);
+	writel(CDNS_MIPI_DPHY_RX_TX_DIG_TBIT3_VAL,
+	       internal_dphy_base + CDNS_MIPI_DPHY_RX_TX_DIG_TBIT3_ADDR_OFFSET);
+	writel(CDNS_MIPI_DPHY_RX_CMN_DIG_TBIT2_VAL,
+	       internal_dphy_base +
+		       CDNS_MIPI_DPHY_RX_CMN_DIG_TBIT2_ADDR_OFFSET);
+
+	clock_selection = cdns_dphy_rx_band_control_select(data_rate);
+	phy_band_control =
+		(clock_selection
+		 << CDNS_MIPI_DPHY_RX_PCS_TX_DIG_TBIT0__BAND_CTL_REG_R__SHIFT) |
+		(clock_selection
+		 << CDNS_MIPI_DPHY_RX_PCS_TX_DIG_TBIT0__BAND_CTL_REG_L__SHIFT);
+	writel(phy_band_control,
+	       internal_dphy_base + CDNS_MIPI_DPHY_RX_TX_DIG_TBIT0_ADDR_OFFSET);
+
+	dev_dbg(csi2rx->dev, "finished cdns_dphy_rx_init");
 }
 
 static void csi2rx_reset(struct csi2rx_priv *csi2rx)
@@ -114,6 +199,12 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 
 	csi2rx_reset(csi2rx);
 
+	if (csi2rx->has_internal_dphy)
+	{
+		writel(CSI2RX_DPHY_LANE_CTRL_RESET_LANES , csi2rx->base + CSI2RX_DPHY_LANE_CTRL_REG);
+		cdns_dphy_rx_init(csi2rx);
+		writel(CSI2RX_DPHY_LANE_CTRL_ENABLE_LANES, csi2rx->base + CSI2RX_DPHY_LANE_CTRL_REG);
+	}
 	reg = csi2rx->num_lanes << 8;
 	for (i = 0; i < csi2rx->num_lanes; i++) {
 		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, csi2rx->lanes[i]);
@@ -132,9 +223,9 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 		set_bit(idx, &lanes_used);
 		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, i + 1);
 	}
+	reg |= CSI2RX_STATIC_CFG_EXTENDED_VC_EN;
 
 	writel(reg, csi2rx->base + CSI2RX_STATIC_CFG_REG);
-
 	ret = v4l2_subdev_call(csi2rx->source_subdev, video, s_stream, true);
 	if (ret)
 		goto err_disable_pclk;
@@ -154,23 +245,23 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 		if (ret)
 			goto err_disable_pixclk;
 
+		writel(CSI2RX_STREAM_CTRL_SOFT_RESET, csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
 		writel(CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF,
 		       csi2rx->base + CSI2RX_STREAM_CFG_REG(i));
 
 		writel(CSI2RX_STREAM_DATA_CFG_EN_VC_SELECT |
-		       CSI2RX_STREAM_DATA_CFG_VC_SELECT(i),
+				CSI2RX_STREAM_DATA_CFG_VC_SELECT(i) |
+				CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE |
+				CSI2RX_STREAM_DATA_CFG_DT0_RAW12,
 		       csi2rx->base + CSI2RX_STREAM_DATA_CFG_REG(i));
-
 		writel(CSI2RX_STREAM_CTRL_START,
 		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
 	}
-
 	ret = clk_prepare_enable(csi2rx->sys_clk);
 	if (ret)
 		goto err_disable_pixclk;
 
 	clk_disable_unprepare(csi2rx->p_clk);
-
 	return 0;
 
 err_disable_pixclk:
@@ -186,12 +277,27 @@ err_disable_pclk:
 static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 {
 	unsigned int i;
+	unsigned int status_reg_val;
+	unsigned int ctrl_reg_val;
+	int retry;
 
 	clk_prepare_enable(csi2rx->p_clk);
 	clk_disable_unprepare(csi2rx->sys_clk);
 
 	for (i = 0; i < csi2rx->max_streams; i++) {
-		writel(0, csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+		ctrl_reg_val = readl(csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+		writel(ctrl_reg_val | CSI2RX_STREAM_CTRL_STOP, csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+
+		retry = 0;
+		status_reg_val = readl(csi2rx->base + CSI2RX_STREAM_STATUS_REG(i));
+		while((status_reg_val & CSI2RX_STREAM_STATUS_RUNNING) > 0 && retry++ < CSI2RX_STREAM_STATUS_MAX_RETRIES) {
+			msleep(CSI2RX_STREAM_STATUS_SLEEP_MSECS);
+			status_reg_val = readl(csi2rx->base + CSI2RX_STREAM_STATUS_REG(i));
+		}
+
+		if (retry > CSI2RX_STREAM_STATUS_MAX_RETRIES) {
+			dev_err(csi2rx->dev, "Stream stop exceeded number of retries\n");
+		}
 
 		clk_disable_unprepare(csi2rx->pixel_clk[i]);
 	}
@@ -221,16 +327,20 @@ static int csi2rx_s_stream(struct v4l2_subdev *subdev, int enable)
 		}
 
 		csi2rx->count++;
-	} else {
-		csi2rx->count--;
+	} 
+	else {
+		if (csi2rx->count) {
+			      csi2rx->count--;
+               } else {
+                  goto out;
+           }
 
 		/*
 		 * Let the last user turn off the lights.
 		 */
 		if (!csi2rx->count)
 			csi2rx_stop(csi2rx);
-	}
-
+       }
 out:
 	mutex_unlock(&csi2rx->lock);
 	return ret;
@@ -280,6 +390,7 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 				struct platform_device *pdev)
 {
 	struct resource *res;
+	struct platform_device *internal_dphy_pdev;
 	unsigned char i;
 	u32 dev_cfg;
 	int ret;
@@ -306,7 +417,7 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 		dev_err(&pdev->dev, "Couldn't get external D-PHY\n");
 		return PTR_ERR(csi2rx->dphy);
 	}
-
+	
 	/*
 	 * FIXME: Once we'll have external D-PHY support, the check
 	 * will need to be removed.
@@ -341,13 +452,25 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 
 	csi2rx->has_internal_dphy = dev_cfg & BIT(3) ? true : false;
 
-	/*
-	 * FIXME: Once we'll have internal D-PHY support, the check
-	 * will need to be removed.
-	 */
 	if (csi2rx->has_internal_dphy) {
-		dev_err(&pdev->dev, "Internal D-PHY not supported yet\n");
-		return -EINVAL;
+		csi2rx->internal_dphy = of_get_child_by_name(pdev->dev.of_node, "dphy");
+		if (csi2rx->internal_dphy) {
+			
+			internal_dphy_pdev = of_device_alloc(csi2rx->internal_dphy, NULL ,&pdev->dev);
+			if (!internal_dphy_pdev) {
+				dev_err(&pdev->dev, "of_device_alloc failed\n");
+				return PTR_ERR(internal_dphy_pdev);			
+			}
+			res = platform_get_resource(internal_dphy_pdev, IORESOURCE_MEM, 0);
+			csi2rx->internal_dphy_base = devm_ioremap_resource(&internal_dphy_pdev->dev, res);
+			if (IS_ERR(csi2rx->internal_dphy_base)) {
+				dev_err(&pdev->dev, "devm_ioremap_resource failed\n");
+				return PTR_ERR(csi2rx->internal_dphy_base);
+			}
+
+			of_node_put(csi2rx->internal_dphy);
+			kfree(internal_dphy_pdev);
+		} 
 	}
 
 	for (i = 0; i < csi2rx->max_streams; i++) {
@@ -362,6 +485,35 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 	}
 
 	return 0;
+}
+
+static void csi2rx_parse_v4l2_remote_ep(struct csi2rx_priv *csi2rx)
+{
+	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
+	struct fwnode_handle *fwh;
+	struct device_node *ep;
+	struct fwnode_handle *remote_ep;
+	int ret;
+	
+	ep = of_graph_get_endpoint_by_regs(csi2rx->dev->of_node, 0, 0);
+	if (!ep)
+		return;	
+	fwh = of_fwnode_handle(ep);
+	remote_ep = fwnode_graph_get_remote_endpoint(fwh);
+	ret = v4l2_fwnode_endpoint_alloc_parse(remote_ep, &v4l2_ep);
+	if (ret) {
+		dev_info(csi2rx->dev, "Could not parse v4l2 remote endpoint\n");
+		of_node_put(ep);
+		v4l2_fwnode_endpoint_free(&v4l2_ep);
+		return;
+	}
+	if (v4l2_ep.nr_of_link_frequencies > 1) {
+		dev_err(csi2rx->dev, "No support for multiple link frequencies yet");
+		return;
+	}	
+	csi2rx->link_freq = v4l2_ep.link_frequencies[0]; 
+	of_node_put(ep);	
+	v4l2_fwnode_endpoint_free(&v4l2_ep);
 }
 
 static int csi2rx_parse_dt(struct csi2rx_priv *csi2rx)
@@ -400,6 +552,8 @@ static int csi2rx_parse_dt(struct csi2rx_priv *csi2rx)
 		of_node_put(ep);
 		return -EINVAL;
 	}
+
+	csi2rx_parse_v4l2_remote_ep(csi2rx);
 
 	v4l2_async_notifier_init(&csi2rx->notifier);
 
@@ -464,10 +618,12 @@ static int csi2rx_probe(struct platform_device *pdev)
 		goto err_cleanup;
 
 	dev_info(&pdev->dev,
-		 "Probed CSI2RX with %u/%u lanes, %u streams, %s D-PHY\n",
+		 "Probed CSI2RX with %u/%u lanes, %u streams, %s D-PHY with link frequency of %llu bps\n",
 		 csi2rx->num_lanes, csi2rx->max_lanes, csi2rx->max_streams,
-		 csi2rx->has_internal_dphy ? "internal" : "no");
-
+		 csi2rx->has_internal_dphy ? "internal" : "no",
+		 csi2rx->link_freq
+		 );
+	
 	return 0;
 
 err_cleanup:

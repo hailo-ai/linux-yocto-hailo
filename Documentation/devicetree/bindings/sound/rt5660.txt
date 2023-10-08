@@ -26,6 +26,17 @@ Optional properties:
   1: using GPIO2 pin as dmic1 data pin
   2: using IN1P pin as dmic1 data pin
 
+- rt-sysclk-src:
+  Select system source clock.
+  "mclk": MCLK
+  "pll1": PLL
+  "rcclk": Internal clock
+
+- rt-pll-src:
+  Select pll source clock.
+  "mclk": MCLK
+  "bclk": BCLK1
+
 Pins on the device (for linking into audio routes) for RT5660:
 
   * DMIC L1
@@ -39,9 +50,22 @@ Pins on the device (for linking into audio routes) for RT5660:
   * LOUTL
   * LOUTR
 
-Example:
+Example 1:
 
 rt5660 {
 	compatible = "realtek,rt5660";
 	reg = <0x1c>;
+};
+
+
+Example 2:
+
+// Use BCLK as the codec source clk through the codec PLL.
+
+rt5660 {
+	compatible = "realtek,rt5660";
+	reg = <0x1c>;
+
+	rt-sysclk-src = "pll1";
+	rt-pll-src = "bclk";
 };

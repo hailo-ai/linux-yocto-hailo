@@ -1861,6 +1861,24 @@ config SENSORS_INA2XX
 	  This driver can also be built as a module. If so, the module
 	  will be called ina2xx.
 
+config SENSORS_INA2XX_PRECISE
+	tristate "Texas Instruments INA226 and compatibles"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  If you say yes here you get support for INA226,
+	  INA230, and INA231 power monitor chips.
+
+	  The INA2xx_precise driver is configured for the default configuration of
+	  the part as described in the datasheet.
+	  This driver calculates the calibration value for each sensor
+	  and does not use a fixed calibration like ina2xx driver.
+	  The calibration value is calculated using Rshunt and max_current.
+	  Default value for Rshunt is 10 mOhms.
+	  Default value for max_current is 8000 mA.
+	  This driver can also be built as a module. If so, the module
+	  will be called ina2xx_precise.
+
 config SENSORS_INA3221
 	tristate "Texas Instruments INA3221 Triple Power Monitor"
 	depends on I2C
@@ -1868,7 +1886,6 @@ config SENSORS_INA3221
 	help
 	  If you say yes here you get support for  the TI INA3221 Triple Power
 	  Monitor.
-
 	  This driver can also be built as a module. If so, the module
 	  will be called ina3221.
 

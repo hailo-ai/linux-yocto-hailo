@@ -1,0 +1,25 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ *
+ * Header for Hailo15 CPLD-pinctrl device
+ * The CPLD is only applicable for HAILO15-evb.
+ *
+ */
+ 
+#ifndef _HAILO15_CPLD_H
+#define _HAILO15_CPLD_H
+
+#define H15_CPLD_BOARD_CONFIG__ONE_CAMERAS_VPU 0
+#define H15_CPLD_BOARD_CONFIG__ACCELERATOR 0
+#define H15_CPLD_BOARD_CONFIG__TWO_CAMERAS_VPU 1
+#define H15_CPLD_BOARD_CONFIG__PARALLEL_CAMERA 2
+#define H15_CPLD_BOARD_CONFIG__DEBUG_MODE 3
+#define H15_CPLD_BOARD_CONFIG__DEBUG_BUS 4
+#define H15_CPLD_BOARD_CONFIG__AUTOMOTIVE 5
+#define H15_CPLD_BOARD_CONFIG__ALL_GPIO 6
+#define H15_CPLD_BOARD_CONFIG__SOCS_DEFAULT 7
+#define H15_CPLD_BOARD_CONFIG__SECURITY_CAMERA_OPTION_1 8
+#define H15_CPLD_BOARD_CONFIG__SECURITY_CAMERA_OPTION_2 9
+
+#endif /* _HAILO15_CPLD_H */

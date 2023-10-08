@@ -190,6 +190,7 @@ struct mmc_host_ops {
 
 	/* Initialize an SD express card, mandatory for MMC_CAP2_SD_EXP. */
 	int	(*init_sd_express)(struct mmc_host *host, struct mmc_ios *ios);
+	u64 (*get_data_error_count) (struct mmc_host *host);
 };
 
 struct mmc_cqe_ops {

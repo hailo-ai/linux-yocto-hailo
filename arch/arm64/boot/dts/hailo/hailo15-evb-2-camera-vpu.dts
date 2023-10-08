@@ -1,0 +1,220 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo15-evb-base.dtsi"
+#include <dt-bindings/pinctrl/hailo15_cpld.h>
+
+&i2c_2 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c2>, <&pinctrl_i2c2_current_src_en_out>;
+};
+
+/ {
+    sensor_clk: sensor_clk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+};
+
+
+&csi2rx0 {
+    ports {
+        port@0 {
+            csi2rx_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
+&i2c_0 {
+    imx334: camera-sensor@1a {
+        status = "okay";
+        compatible = "sony,imx334";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <0>;
+        reset-gpios = <&gpio0 0 0>;
+        port {
+            sensor_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+		        link-frequencies = /bits/ 64 <891000000>;
+            };
+        };
+     };
+};
+
+&sdio0 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_sdio0_CD_in>;
+    broken-cd;
+};
+
+&sdio0_reserved {
+    status = "okay";
+};
+
+&pinctrl {
+    i2c-bus = <&i2c_1>;
+    board-config = <H15_CPLD_BOARD_CONFIG__TWO_CAMERAS_VPU>;
+
+    pinctrl_i2c2: i2c2 {
+        function = "i2c2";
+        groups = "i2c2_1_grp";
+    };
+
+    pinctrl_i2c0_current_src_en_out: i2c0_current_src_en_out {
+        function = "i2c0_current_src_en_out";
+        groups = "i2c0_current_src_en_out_3_grp";
+    };
+
+    pinctrl_i2c1_current_src_en_out: i2c1_current_src_en_out {
+        function = "i2c1_current_src_en_out";
+        groups = "i2c1_current_src_en_out_4_grp";
+    };
+
+    pinctrl_i2c2_current_src_en_out: i2c2_current_src_en_out {
+        function = "i2c2_current_src_en_out";
+        groups = "i2c2_current_src_en_out_3_grp";
+    };
+
+    pinctrl_sdio0_gp_in: sdio0_gp_in {
+        function = "sdio0_gp_in";
+        groups = "sdio0_gp_in_grp";
+    };
+
+    pinctrl_sdio1_gp_in: sdio1_gp_in {
+        function = "sdio1_gp_in";
+        groups = "sdio1_gp_in_grp";
+    };
+
+    pinctrl_sdio0_CD_in: sdio0_CD_in {
+        function = "sdio0_CD_in";
+        groups = "sdio0_CD_in_grp";
+    };
+
+    pinctrl_sdio1_CD_in: sdio1_CD_in {
+        function = "sdio1_CD_in";
+        groups = "sdio1_CD_in_grp";
+    };
+
+    pinctrl_uart0_cts_rts: uart0_cts_rts {
+        function = "uart0_cts_rts";
+        groups = "uart0_cts_rts_1_grp";
+    };
+};
+
+&gpio0 {
+    gpio-ranges = <&pinctrl 0 0 16>;
+
+    gpio-line-names =
+        "cam0_reset_n",
+        "cam1_reset_n",
+        "DSI_RST",
+        "CAM_TRIG",
+        "PCIe_ref_clk_en",
+        "gpio_in_out_5",
+        "Low_power_in",
+        "Low_power_out",
+        "Ext_wakeUp",
+        "sdio0_gp_in",
+        "sdio0_cd_in",
+        "usb_overcurrent_n_in",
+        "usb_drive_vbus_out",
+        "sdio1_gp_in",
+        "sdio1_cd_in_n",
+        "pcie_mperst_out";
+
+    pin_cam1_reset_n {
+        gpio-hog;
+        gpios = <1 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "cam1_reset_n";
+    };
+
+    pin_DSI_RST {
+        gpio-hog;
+        gpios = <2 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "DSI_RST";
+    };
+
+    pin_CAM_TRIG {
+        gpio-hog;
+        gpios = <3 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "CAM_TRIG";
+    };
+
+    pin_PCIe_ref_clk_en {
+        gpio-hog;
+        gpios = <4 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "PCIe_ref_clk_en";
+    };
+
+    pin_Low_power_in {
+        gpio-hog;
+        gpios = <6 GPIO_ACTIVE_HIGH>;
+        input;
+        line-name = "Low_power_in";
+    };
+
+    pin_Low_power_out {
+        gpio-hog;
+        gpios = <7 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "Low_power_out";
+    };
+
+    pin_Ext_wakeUp {
+        gpio-hog;
+        gpios = <8 GPIO_ACTIVE_HIGH>;
+        input;
+        line-name = "Ext_wakeUp";
+    };
+};
+
+&gpio1 {
+    gpio-ranges = <&pinctrl 0 16 16>;
+
+    gpio-line-names =
+        "gpio_in_out_16",
+        "WiFi_BT_disable_n",
+        "timer_ext_in0",
+        "timer_ext_in1",
+        "shut_down_out",
+        "gpio_in_out_21",
+        "i2c2_sda_in_out",
+        "i2c2_scl_out",
+        "i2c2_current_src_en_out",
+        "i2c0_current_src_en_out",
+        "i2c1_current_src_en_out",
+        "gpio_in_out_27",
+        "gpio_in_out_28",
+        "DSI_INTR",
+        "uart0_cts_pad_in",
+        "uart0_rts_pad_out";
+
+    pin_WiFi_BT_disable_n {
+        gpio-hog;
+        gpios = <1 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "WiFi_BT_disable_n";
+    };
+
+    pin_DSI_INTR {
+        gpio-hog;
+        gpios = <13 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "DSI_INTR";
+    };
+};

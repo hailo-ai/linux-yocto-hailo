@@ -28,13 +28,16 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
 #include <linux/timer.h>
+#include <linux/bitrev.h>
 
 #define CQSPI_NAME			"cadence-qspi"
 #define CQSPI_MAX_CHIPSELECT		16
+#define CQSPI_DEFAULT_SMALL_FIFO_SIZE (32)
 
 /* Quirks */
 #define CQSPI_NEEDS_WR_DELAY		BIT(0)
 #define CQSPI_DISABLE_DAC_MODE		BIT(1)
+#define CQSPI_DISABLE_DMA		BIT(3)
 
 /* Capabilities */
 #define CQSPI_SUPPORTS_OCTAL		BIT(0)
@@ -81,6 +84,12 @@ struct cqspi_st {
 	u32			trigger_address;
 	u32			wr_delay;
 	bool			use_direct_mode;
+	bool			disable_dma;
+	unsigned remaining_message_rx_bytes;
+	u32		small_fifo_size;
+	void		*tx_buf;
+	void		*rx_buf;
+
 	struct cqspi_flash_pdata f_pdata[CQSPI_MAX_CHIPSELECT];
 };
 
@@ -105,10 +114,17 @@ struct cqspi_driver_platdata {
 
 #define CQSPI_STIG_DATA_LEN_MAX			8
 
+#define CQSPI_OPCODE_LENGTH			(1)
+#define CQSPI_ADDRESS_LENGTH		(4)
+#define CQSPI_MAX_DATA_LENGTH		(4 * 1024)
+#define CQSPI_MAX_MESSAGE_LENGTH	(CQSPI_OPCODE_LENGTH + CQSPI_ADDRESS_LENGTH + CQSPI_DUMMY_BYTES_MAX + CQSPI_MAX_DATA_LENGTH)
+#define CQSPI_MESSAGE_AMOUNT_TO_WRITE (4)
+
 /* Register map */
 #define CQSPI_REG_CONFIG			0x00
 #define CQSPI_REG_CONFIG_ENABLE_MASK		BIT(0)
 #define CQSPI_REG_CONFIG_ENB_DIR_ACC_CTRL	BIT(7)
+#define CQSPI_REG_CONFIG_LEGACY_MODE		BIT(8)
 #define CQSPI_REG_CONFIG_DECODE_MASK		BIT(9)
 #define CQSPI_REG_CONFIG_CHIPSELECT_LSB		10
 #define CQSPI_REG_CONFIG_DMA_MASK		BIT(15)
@@ -1222,7 +1238,16 @@ static int cqspi_mem_process(struct spi_mem *mem, const struct spi_mem_op *op)
 
 static int cqspi_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
+	struct cqspi_st *cqspi = spi_master_get_devdata(mem->spi->master);
 	int ret;
+	unsigned int reg;
+
+	reg = readl(cqspi->iobase + CQSPI_REG_CONFIG);
+	if (reg & CQSPI_REG_CONFIG_LEGACY_MODE) {
+		/* move to non-legacy mode */
+		reg &= ~CQSPI_REG_CONFIG_LEGACY_MODE;
+		writel(reg, cqspi->iobase + CQSPI_REG_CONFIG);
+	}
 
 	ret = cqspi_mem_process(mem, op);
 	if (ret)
@@ -1321,7 +1346,167 @@ static int cqspi_of_get_pdata(struct cqspi_st *cqspi)
 	if (of_property_read_u32(np, "num-cs", &cqspi->num_chipselect))
 		cqspi->num_chipselect = CQSPI_MAX_CHIPSELECT;
 
+	if (of_property_read_u32(np, "small-fifo-size", &cqspi->small_fifo_size)) {
+		dev_warn(dev, "Couldn't determine small_fifo_size, using default size.\n");
+		cqspi->small_fifo_size = CQSPI_DEFAULT_SMALL_FIFO_SIZE;
+	}
+
 	cqspi->rclk_en = of_property_read_bool(np, "cdns,rclk-en");
+
+	return 0;
+}
+
+/**
+ * cqspi_spi_empty_small_rx_fifo - read from RX FIFO to input buffer
+ */
+ static void *cqspi_spi_empty_small_rx_fifo(struct cqspi_st *cqspi, void *rx_buf, int rx_len)
+{
+	while (rx_len) {
+			memcpy(rx_buf, cqspi->ahb_base, 1);
+			rx_buf++;
+			cqspi->remaining_message_rx_bytes--;
+			rx_len--;
+	}
+
+	return rx_buf;
+}
+
+/**
+ * cqspi_spi_fill_small_tx_fifo - Fills the TX FIFO while making sure RX FIFO doesn't overdlow
+ */
+static void *cqspi_spi_fill_small_tx_fifo(struct cqspi_st *cqspi, const void *tx_buf, void *rx_buf, int tx_len)
+{
+	int amount_to_write = 0;
+
+	while (tx_len) {
+		if (tx_len > CQSPI_MESSAGE_AMOUNT_TO_WRITE)
+			amount_to_write = CQSPI_MESSAGE_AMOUNT_TO_WRITE;
+		else
+			amount_to_write = tx_len;
+
+		memcpy_toio(cqspi->ahb_base, tx_buf, amount_to_write);
+		tx_len -= amount_to_write;
+		tx_buf += amount_to_write;
+
+		cqspi->remaining_message_rx_bytes += amount_to_write;
+		/* if reached 2/3 of small fifo size start empty the rx fifo*/
+		if (cqspi->remaining_message_rx_bytes >= (cqspi->small_fifo_size * 2 / 3)) {
+			rx_buf = cqspi_spi_empty_small_rx_fifo(cqspi, rx_buf, amount_to_write);
+		}
+	}
+	return rx_buf;
+}
+
+/*
+ * cqspi_transfer_one_message - Implementation of transfer_one_message()
+ *
+ * Merge all message transfer's, and send them alltogether
+ */
+static int cqspi_transfer_one_message(struct spi_master *master,
+				    struct spi_message *msg)
+{
+	struct spi_transfer *xfer;
+	int ret = 0;
+	struct spi_statistics *statm = &master->statistics;
+	struct spi_statistics *stats = &msg->spi->statistics;
+	struct cqspi_st *cqspi = spi_master_get_devdata(master);
+	uint8_t *tx_buf = (uint8_t*)cqspi->tx_buf;
+	uint8_t *rx_buf = (uint8_t*)cqspi->rx_buf;
+	unsigned offset = 0;
+	size_t i;
+
+
+	SPI_STATISTICS_INCREMENT_FIELD(statm, messages);
+	SPI_STATISTICS_INCREMENT_FIELD(stats, messages);
+
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		spi_statistics_add_transfer_stats(statm, xfer, master);
+		spi_statistics_add_transfer_stats(stats, xfer, master);
+
+		if (!(xfer->tx_buf || xfer->rx_buf) && xfer->len) {
+			if (xfer->len)
+				dev_err(&msg->spi->dev,
+					"Bufferless transfer has length %u\n",
+					xfer->len);
+		}
+
+		msg->actual_length += xfer->len;
+	}
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		if (offset + xfer->len > CQSPI_MAX_MESSAGE_LENGTH){
+			dev_err(&msg->spi->dev,	"message is too long\n");
+			ret = -ENOBUFS;
+			goto exit;
+		}
+
+		if (xfer->tx_buf) {
+			memcpy(tx_buf + offset , xfer->tx_buf, xfer->len);
+			if (msg->spi->mode & SPI_LSB_FIRST) {
+			    	for (i = 0; i < xfer->len; i++) {
+					tx_buf[offset + i] = bitrev8(tx_buf[offset + i]);
+			    	}
+			}
+		} else {
+			memset(tx_buf + offset, 0, xfer->len);
+		}
+		offset += xfer->len;
+	}
+
+	/* send all tx buffer - this should be atomic action since we don't want the spi clock to be closed */
+	local_irq_disable();
+	rx_buf = cqspi_spi_fill_small_tx_fifo(cqspi, tx_buf, rx_buf, offset);
+	local_irq_enable();
+
+	/* read the rest of rx buffer */
+	cqspi_spi_empty_small_rx_fifo(cqspi, rx_buf, cqspi->remaining_message_rx_bytes);
+
+	rx_buf = cqspi->rx_buf;
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		if (xfer->rx_buf) {
+			if (msg->spi->mode & SPI_LSB_FIRST) {
+	        		for (i = 0; i < xfer->len; i++) {
+					rx_buf[i] = bitrev8(rx_buf[i]);
+				}
+		    	}
+			memcpy(xfer->rx_buf, rx_buf, xfer->len);
+		}
+		rx_buf += xfer->len;
+	}
+
+exit:
+	if (msg->status == -EINPROGRESS)
+		msg->status = ret;
+
+	spi_finalize_current_message(master);
+
+
+	return ret;
+}
+
+int cqspi_prepare_transfer_hardware(struct spi_master *master)
+{
+	struct cqspi_st *cqspi = spi_master_get_devdata(master);
+	unsigned int reg;
+
+	reg = readl(cqspi->iobase + CQSPI_REG_CONFIG);
+	if (!(reg & CQSPI_REG_CONFIG_LEGACY_MODE)) {
+		/* move to legacy mode */
+		reg |= CQSPI_REG_CONFIG_LEGACY_MODE;
+		writel(reg, cqspi->iobase + CQSPI_REG_CONFIG);
+	}
+
+	return 0;
+}
+
+int cqspi_prepare_message(struct spi_master *master, struct spi_message *message)
+{
+	struct cqspi_st *cqspi = spi_master_get_devdata(master);
+	struct cqspi_flash_pdata *f_pdata;
+
+	f_pdata = &cqspi->f_pdata[message->spi->chip_select];
+	cqspi_configure(f_pdata, message->spi->max_speed_hz);
+
+	BUG_ON(cqspi->remaining_message_rx_bytes != 0);
 
 	return 0;
 }
@@ -1422,6 +1607,9 @@ static int cqspi_setup_flash(struct cqspi_st *cqspi)
 		f_pdata->cqspi = cqspi;
 		f_pdata->cs = cs;
 
+		if(of_property_read_bool(np, "hailo,non-flash-device"))
+			continue;
+
 		ret = cqspi_of_get_flash_pdata(pdev, f_pdata, np);
 		if (ret) {
 			of_node_put(np);
@@ -1449,11 +1637,26 @@ static int cqspi_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "spi_alloc_master failed\n");
 		return -ENOMEM;
 	}
-	master->mode_bits = SPI_RX_QUAD | SPI_RX_DUAL;
+	master->mode_bits = SPI_RX_QUAD | SPI_RX_DUAL | SPI_LSB_FIRST;
 	master->mem_ops = &cqspi_mem_ops;
 	master->dev.of_node = pdev->dev.of_node;
+	master->prepare_transfer_hardware = cqspi_prepare_transfer_hardware;
+	master->prepare_message = cqspi_prepare_message;
+	master->transfer_one_message = cqspi_transfer_one_message;
 
 	cqspi = spi_master_get_devdata(master);
+	cqspi->remaining_message_rx_bytes = 0;
+	cqspi->tx_buf = kmalloc(CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
+	if (!cqspi->tx_buf) {
+		dev_err(&pdev->dev, "failed allocate tx fifo\n");
+		return -ENOMEM;
+	}
+
+	cqspi->rx_buf = kmalloc(CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
+	if (!cqspi->rx_buf) {
+		dev_err(&pdev->dev, "failed allocate rx fifo\n");
+		return -ENOMEM;
+	}
 
 	cqspi->pdev = pdev;
 	platform_set_drvdata(pdev, cqspi);
@@ -1548,6 +1751,8 @@ static int cqspi_probe(struct platform_device *pdev)
 			master->mode_bits |= SPI_RX_OCTAL | SPI_TX_OCTAL;
 		if (!(ddata->quirks & CQSPI_DISABLE_DAC_MODE))
 			cqspi->use_direct_mode = true;
+		if (ddata->quirks & CQSPI_DISABLE_DMA)
+			cqspi->disable_dma = true;
 	}
 
 	ret = devm_request_irq(dev, irq, cqspi_irq_handler, 0,
@@ -1570,7 +1775,7 @@ static int cqspi_probe(struct platform_device *pdev)
 		goto probe_setup_failed;
 	}
 
-	if (cqspi->use_direct_mode) {
+	if (cqspi->use_direct_mode && !cqspi->disable_dma) {
 		ret = cqspi_request_mmap_dma(cqspi);
 		if (ret == -EPROBE_DEFER)
 			goto probe_setup_failed;
@@ -1656,6 +1861,11 @@ static const struct cqspi_driver_platdata intel_lgm_qspi = {
 	.quirks = CQSPI_DISABLE_DAC_MODE,
 };
 
+static const struct cqspi_driver_platdata hailo_qspi = {
+	/* TODO: we should either move to indirect mode (MSW-2297), or enable DMA (MSW-2298) */
+	.quirks = CQSPI_DISABLE_DMA
+};
+
 static const struct of_device_id cqspi_dt_ids[] = {
 	{
 		.compatible = "cdns,qspi-nor",
@@ -1672,6 +1882,10 @@ static const struct of_device_id cqspi_dt_ids[] = {
 	{
 		.compatible = "intel,lgm-qspi",
 		.data = &intel_lgm_qspi,
+	},
+	{
+		.compatible = "hailo,qspi-nor",
+		.data = &hailo_qspi,
 	},
 	{ /* end of table */ }
 };

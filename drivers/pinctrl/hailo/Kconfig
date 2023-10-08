@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
+config PINCTRL_HAILO15
+	bool "HAILO15 pinctrl driver"
+	depends on I2C
+	depends on ARCH_HAILO15
+	select PINMUX
+	select GENERIC_PINCONF
+	help
+	  Say yes here to provide support for HAILO15 driver.

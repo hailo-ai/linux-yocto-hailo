@@ -843,9 +843,40 @@ static int rt5660_hw_params(struct snd_pcm_substream *substream,
 	rt5660->lrck[dai->id] = params_rate(params);
 	pre_div = rl6231_get_clk_info(rt5660->sysclk, rt5660->lrck[dai->id]);
 	if (pre_div < 0) {
-		dev_err(component->dev, "Unsupported clock setting %d for DAI %d\n",
-			rt5660->lrck[dai->id], dai->id);
-		return -EINVAL;
+		/* Default clocks scheme: [mclk] -> [div_f1] --(256*FS)--> [dac/adc].
+		 * In case we can't produce 256*FS out of div_f1, lets try to use internal PLL.
+		 */
+		if (rt5660->sysclk_src == RT5660_SCLK_S_MCLK) {
+			/* If clock scheme already configured to use mclk __without__ a PLL: [mclk] -> [div_f1] --(256*FS)--> [dac/adc]:
+			 * 1) __Force__ using PLL: [mclk] -> [pll] -> [div_f1] --(256*FS)--> [dac/adc]:
+			 * 	- Set mclk as source clock to PLL.
+			 * 	- Set PLL as source clock to div_f1.
+			 * 2) Set div_f1 to 1 (pre_div = 0, MX73[14:12]=0).
+			 */
+			dev_warn(dai->dev, "Using mclk, Force using PLL");
+			snd_soc_dai_set_pll(dai, 0, RT5660_PLL1_S_MCLK,
+					    rt5660->sysclk,
+					    rt5660->lrck[dai->id] * 256);
+			snd_soc_dai_set_sysclk(dai, RT5660_SCLK_S_PLL1,
+					       rt5660->lrck[dai->id] * 256, 0);
+			pre_div = 0;
+		} else if (rt5660->sysclk_src == RT5660_SCLK_S_PLL1 &&
+			   rt5660->pll_src == RT5660_PLL1_S_BCLK) {
+			/* If clock scheme already configured to use bclk through internal PLL: [bclk] -> [pll] -> [div_f1] --(256*FS)--> [dac/adc]:
+			 * 1) Update PLL to produce 256*FS Hz.
+			 * 2) Set div_f1 to 1 (pre_div = 0, MX73[14:12]=0).
+			 */
+			dev_dbg(dai->dev, "Using bclk, update PLL");
+			snd_soc_dai_set_pll(dai, 0, rt5660->pll_src,
+					    rt5660->sysclk,
+					    rt5660->lrck[dai->id] * 256);
+			pre_div = 0;
+		} else {
+			dev_err(component->dev,
+				"Unsupported clock setting %d for DAI %d\n",
+				rt5660->lrck[dai->id], dai->id);
+			return -EINVAL;
+		}
 	}
 
 	frame_size = snd_soc_params_to_frame_size(params);
@@ -977,6 +1008,10 @@ static int rt5660_set_dai_sysclk(struct snd_soc_dai *dai,
 	if (freq == rt5660->sysclk && clk_id == rt5660->sysclk_src)
 		return 0;
 
+	if ( rt5660->sysclk_src != -1) {
+		clk_id =  rt5660->sysclk_src;
+	}
+
 	switch (clk_id) {
 	case RT5660_SCLK_S_MCLK:
 		reg_val |= RT5660_SCLK_SRC_MCLK;
@@ -1017,6 +1052,10 @@ static int rt5660_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 	if (source == rt5660->pll_src && freq_in == rt5660->pll_in &&
 		freq_out == rt5660->pll_out)
 		return 0;
+
+	if ( rt5660->pll_src != -1) {
+		source =  rt5660->pll_src;
+	}
 
 	if (!freq_in || !freq_out) {
 		dev_dbg(component->dev, "PLL disabled\n");
@@ -1081,7 +1120,7 @@ static int rt5660_set_bias_level(struct snd_soc_component *component,
 		snd_soc_component_update_bits(component, RT5660_GEN_CTRL1,
 			RT5660_DIG_GATE_CTRL, RT5660_DIG_GATE_CTRL);
 
-		if (IS_ERR(rt5660->mclk))
+		if (IS_ERR_OR_NULL(rt5660->mclk))
 			break;
 
 		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_ON) {
@@ -1273,6 +1312,8 @@ static int rt5660_i2c_probe(struct i2c_client *i2c,
 	struct rt5660_priv *rt5660;
 	int ret;
 	unsigned int val;
+	const char *sysclk_src_str;
+	const char *pll_src_str;
 
 	rt5660 = devm_kzalloc(&i2c->dev, sizeof(struct rt5660_priv),
 		GFP_KERNEL);
@@ -1280,11 +1321,37 @@ static int rt5660_i2c_probe(struct i2c_client *i2c,
 	if (rt5660 == NULL)
 		return -ENOMEM;
 
-	/* Check if MCLK provided */
-	rt5660->mclk = devm_clk_get(&i2c->dev, "mclk");
-	if (PTR_ERR(rt5660->mclk) == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
+	rt5660->sysclk_src = -1;
+	if (!of_property_read_string(i2c->dev.of_node, "rt-sysclk-src", &sysclk_src_str)) {
+		if (!strncmp(sysclk_src_str, "mclk", 4)) {
+			rt5660->sysclk_src = RT5660_SCLK_S_MCLK;
+		} else if (!strncmp(sysclk_src_str, "pll1", 4)) {
+			rt5660->sysclk_src = RT5660_SCLK_S_PLL1;
+		} else if (!strncmp(sysclk_src_str, "rcclk", 5)) {
+			rt5660->sysclk_src = RT5660_SCLK_S_RCCLK;
+		} else {
+			dev_err(&i2c->dev, "Unsuitable rt-sysclk-src found in DT.\n");
+		}
+	}
+	rt5660->pll_src = -1;
+	if (!of_property_read_string(i2c->dev.of_node, "rt-pll-src", &pll_src_str)) {
+		if (!strncmp(pll_src_str, "mclk", 4)) {
+			rt5660->pll_src = RT5660_PLL1_S_MCLK;
+		} else if (!strncmp(pll_src_str, "bclk", 4)) {
+			rt5660->pll_src = RT5660_PLL1_S_BCLK;
+		} else {
+			dev_err(&i2c->dev, "Unsuitable rt-pll-src in DT.\n");
+		}
+	}
 
+	if (rt5660->sysclk_src == RT5660_SCLK_S_MCLK ||
+	    (rt5660->sysclk_src == RT5660_SCLK_S_PLL1 &&
+	     rt5660->pll_src == RT5660_PLL1_S_MCLK)) {
+		/* Check if MCLK provided */
+		rt5660->mclk = devm_clk_get(&i2c->dev, "mclk");
+		if (PTR_ERR(rt5660->mclk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+	}
 	i2c_set_clientdata(i2c, rt5660);
 
 	if (pdata)

@@ -1205,7 +1205,7 @@ config SND_SOC_RT5659
 	depends on I2C
 
 config SND_SOC_RT5660
-	tristate
+	tristate "Realtek RT5660 CODEC"
 	depends on I2C
 
 config SND_SOC_RT5663

@@ -1,0 +1,348 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo15-base.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000001 0x00000000>;
+    };
+};
+
+&i2c_0 {
+    status = "ok";
+    imx334: camera-sensor@1a {
+        status = "ok";
+        compatible = "sony,imx334";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <0>;
+        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+        port {
+            sensor_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+		        link-frequencies = /bits/ 64 <891000000>;
+            };
+        };
+     };
+};
+
+&i2c_1 {
+    status = "ok";
+    ina231_1v8: 1v8@40 {
+        compatible = "ti,ina231_precise";
+        reg = <0x40>;
+        shunt-resistor = <100000>;
+        max-current = <260>;
+    };
+    ina231_DDR_VDDQX: DDR_VDDQX@42 {
+        compatible = "ti,ina231_precise";
+        reg = <0x42>;
+        shunt-resistor = <100000>;
+        max-current = <170>;
+    };
+    ina231_0v8: 0v8@43 {
+        compatible = "ti,ina231_precise";
+        reg = <0x43>;
+        shunt-resistor = <1000>;
+        max-current = <11755>;
+    };
+
+    tmp175_NEAR_H15_SOC: NEAR_H15_SOC@2c {
+        compatible = "ti,tmp175";
+        reg = <0x2c>;
+    };
+
+    codec_tlv320aic3104: tlv320aic3104@18 {
+        #sound-dai-cells = <0>;
+        compatible = "ti,tlv320aic3104";
+        reg = <0x18>;
+        ai3x-source-clk = "bclk";
+        ai3x-micbias-vg = <2>;
+		/* Regulators */
+		AVDD-supply = <&regulator_3p3v>;
+		IOVDD-supply = <&regulator_1p8v>;
+		DRVDD-supply = <&regulator_3p3v>;
+		DVDD-supply = <&regulator_1p8v>;
+    };
+};
+
+&csi2rx0 {
+    status = "ok";
+    ports {
+        port@0 {
+            csi2rx_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
+&csi2rx1 {
+    status = "ok";
+};
+
+&hailo_vid_cap {
+    status = "ok";
+};
+
+&hailo_isp {
+    status = "ok";
+};
+
+&hailo_pixel_mux {
+    status = "ok";
+};
+
+&rxwrapper0 {
+    status = "ok";
+};
+
+&hailo_vc8000e {
+    status = "ok";
+};
+
+&vc8000e_reserved {
+    status = "ok";
+};
+
+&xrp {
+    status = "ok";
+};
+
+&xrp_reserved {
+    status = "ok";
+};
+
+&sdio1 {
+    status = "ok";
+    broken-cd;
+    max-frequency = <100000000>;
+    sdhci-caps= <0 0x01000000>; // Force VOLT33 capability
+    sdhci-caps-mask = <0x00000007 0>; // no high speed
+    phy-config {
+		card-is-emmc = <0x0>;
+		cmd-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+        	sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
+        	drive-strength = <0xC 0xC>; //pad_sp, pad_sn	
+    };
+};
+
+&eth {
+    status = "ok";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_eth>;
+};
+
+&qspi {
+    status = "ok";
+
+    spi0_flash0: flash@0 {
+        /* values for MT25QU01G */
+        spi-max-frequency = <6250000>; /* 90Mhz in DTR, 166Mhz in STR */
+        cdns,read-delay = <7>;
+        cdns,tshsl-ns = <30>;
+        cdns,tsd2d-ns = <30>;
+        cdns,tchsh-ns = <5>;
+        cdns,tslch-ns = <3>;
+    };
+};
+
+&i2s_cpu_master {
+    status = "ok";
+    sample-offset = <82>;
+    sample-pace = <64>;
+};
+
+&audio_card_master {
+    status = "ok";
+    simple-audio-card,bitclock-master = <&cpu_dai_master>;
+    simple-audio-card,frame-master = <&cpu_dai_master>;
+
+    cpu_dai_master: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_master>;
+        system-clock-frequency = <1562500>;
+        system-clock-direction-out;
+    };
+    codec_dai_master: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <1562500>;
+    };
+};
+
+&audio_card_slave_tx {
+    simple-audio-card,bitclock-master = <&codec_dai_tx>;
+    simple-audio-card,frame-master = <&codec_dai_tx>;
+
+    cpu_dai_tx: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_slave_tx>;
+        system-clock-frequency = <12288000>;
+    };
+    codec_dai_tx: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <12288000>;
+    };
+};
+
+&audio_card_slave_rx {
+    simple-audio-card,bitclock-master = <&codec_dai_rx>;
+    simple-audio-card,frame-master = <&codec_dai_rx>;
+
+    cpu_dai_rx: simple-audio-card,cpu {
+        sound-dai = <&i2s_cpu_slave_rx>;
+        system-clock-frequency = <12288000>;
+    };
+    codec_dai_rx: simple-audio-card,codec {
+        sound-dai = <&codec_tlv320aic3104>;
+        system-clock-frequency = <12288000>;
+    };
+};
+
+/ {
+    sensor_clk: sensor_clk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+};
+
+&sdio0_reserved {
+    status = "ok";
+};
+
+&serial0 { 
+ status = "ok"; 
+};
+
+&i2c_2 {
+    status = "ok";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c2>, <&pinctrl_i2c2_current_src_en_out>;
+};
+
+&pinctrl {
+
+    pinctrl_eth: eth {
+        pins = "eth_rgmii_tx_clk",
+               "eth_rgmii_tx_ctl",
+               "eth_rgmii_txd_0",
+               "eth_rgmii_txd_1",
+               "eth_rgmii_txd_2",
+               "eth_rgmii_txd_3";
+        drive-strength = <2>;
+    };
+
+    pinctrl_i2c2: i2c2 {
+        function = "i2c2";
+        groups = "i2c2_1_grp";
+    };
+
+    pinctrl_i2c0_current_src_en_out: i2c0_current_src_en_out {
+        function = "i2c0_current_src_en_out";
+        groups = "i2c0_current_src_en_out_3_grp";
+    };
+
+    pinctrl_i2c1_current_src_en_out: i2c1_current_src_en_out {
+        function = "i2c1_current_src_en_out";
+        groups = "i2c1_current_src_en_out_4_grp";
+    };
+
+    pinctrl_i2c2_current_src_en_out: i2c2_current_src_en_out {
+        function = "i2c2_current_src_en_out";
+        groups = "i2c2_current_src_en_out_3_grp";
+    };
+
+    pinctrl_sdio0_gp_in: sdio0_gp_in {
+        function = "sdio0_gp_in";
+        groups = "sdio0_gp_in_grp";
+    };
+
+    pinctrl_sdio1_gp_in: sdio1_gp_in {
+        function = "sdio1_gp_in";
+        groups = "sdio1_gp_in_grp";
+    };
+
+    pinctrl_sdio0_CD_in: sdio0_CD_in {
+        function = "sdio0_CD_in";
+        groups = "sdio0_CD_in_grp";
+    };
+
+    pinctrl_sdio1_CD_in: sdio1_CD_in {
+        function = "sdio1_CD_in";
+        groups = "sdio1_CD_in_grp";
+    };
+
+    pinctrl_uart0_cts_rts: uart0_cts_rts {
+        function = "uart0_cts_rts";
+        groups = "uart0_cts_rts_1_grp";
+    };
+};
+
+&gpio0 {
+    gpio-ranges = <&pinctrl 0 0 16>;
+
+    gpio-line-names =
+        "SPI_CS2",
+        "SPI_CS2",
+        "DSI_RST",
+        "CAM_TRIG",
+        "cam0_reset_n",
+        "cam1_reset_n",
+        "gpio_in_out_6",
+        "gpio_in_out_7",
+        "gpio_in_out_8",
+        "sdio0_gp_in",
+        "sdio0_cd_in",
+        "usb_overcurrent_n_in",
+        "usb_drive_vbus_out",
+        "sdio1_gp_in",
+        "sdio1_cd_in_n",
+        "RVSD";
+};
+
+&gpio1 {
+    gpio-ranges = <&pinctrl 0 16 16>;
+
+    gpio-line-names =
+        "gpio_in_out_16",
+        "WiFi_BT_disable_n",
+        "timer_ext_in0",
+        "timer_ext_in1",
+        "shut_down_out",
+        "user_LED",
+        "i2c2_sda_in_out",
+        "i2c2_scl_out",
+        "i2c2_current_src_en_out",
+        "i2c0_current_src_en_out",
+        "i2c1_current_src_en_out",
+        "gpio_in_out_27",
+        "gpio_in_out_28",
+        "DSI_INTR",
+        "uart0_cts_pad_in",
+        "uart0_rts_pad_out";
+
+    pin_WiFi_BT_disable_n {
+        gpio-hog;
+        gpios = <1 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "WiFi_BT_disable_n";
+    };
+
+    pin_DSI_INTR {
+        gpio-hog;
+        gpios = <13 GPIO_ACTIVE_HIGH>;
+        output-low;
+        line-name = "DSI_INTR";
+    };
+};

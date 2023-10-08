@@ -49,6 +49,13 @@ config PL320_MBOX
 	  Management Engine, primarily for cpufreq. Say Y here if you want
 	  to use the PL320 IPCM support.
 
+config ARM_PL320_MBOX
+	bool "ARM PL320 Mailbox"
+	depends on OF
+	help
+	  An implementation of the ARM PL320 Interprocessor Communication
+	  Mailbox (IPCM). Say Y here if you want to use the PL320 IPCM support.
+
 config ARMADA_37XX_RWTM_MBOX
 	tristate "Armada 37xx rWTM BIU Mailbox"
 	depends on ARCH_MVEBU || COMPILE_TEST

@@ -2493,6 +2493,13 @@ static void sdhci_hw_reset(struct mmc_host *mmc)
 		host->ops->hw_reset(host);
 }
 
+static u64 sdhci_get_data_error_count(struct mmc_host *mmc)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	if (host->ops && host->ops->get_data_error_count)
+		return host->ops->get_data_error_count(host);
+	return 0;
+}
 static void sdhci_enable_sdio_irq_nolock(struct sdhci_host *host, int enable)
 {
 	if (!(host->flags & SDHCI_DEVICE_DEAD)) {
@@ -2802,7 +2809,7 @@ static int __sdhci_execute_tuning(struct sdhci_host *host, u32 opcode)
 
 	}
 
-	pr_info("%s: Tuning failed, falling back to fixed sampling clock\n",
+	pr_debug("%s: Tuning failed, falling back to fixed sampling clock\n",
 		mmc_hostname(host->mmc));
 	sdhci_reset_tuning(host);
 	return -EAGAIN;
@@ -2991,6 +2998,7 @@ static const struct mmc_host_ops sdhci_ops = {
 	.execute_tuning			= sdhci_execute_tuning,
 	.card_event			= sdhci_card_event,
 	.card_busy	= sdhci_card_busy,
+	.get_data_error_count = sdhci_get_data_error_count,
 };
 
 /*****************************************************************************\
@@ -3376,8 +3384,12 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 			host->ops->adma_workaround(host, intmask);
 	}
 
-	if (host->data->error)
+	if (host->data->error) {
 		sdhci_finish_data(host);
+
+		if (host->ops && host->ops->increase_data_error_count)
+			host->ops->increase_data_error_count(host);
+	}
 	else {
 		if (intmask & (SDHCI_INT_DATA_AVAIL | SDHCI_INT_SPACE_AVAIL))
 			sdhci_transfer_pio(host);
@@ -4365,8 +4377,11 @@ int sdhci_setup_host(struct sdhci_host *host)
 					     1000);
 		}
 
-		if (override_timeout_clk)
+        pr_debug("Timeout Clk 0x%08x", host->timeout_clk);
+		if (override_timeout_clk){
 			host->timeout_clk = override_timeout_clk;
+		}	
+		pr_debug("Timeout Clk after override change 0x%08x", host->timeout_clk);
 
 		mmc->max_busy_timeout = host->ops->get_max_timeout_count ?
 			host->ops->get_max_timeout_count(host) : 1 << 27;

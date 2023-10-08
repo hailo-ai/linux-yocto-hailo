@@ -1,0 +1,170 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo15-evb-base.dtsi"
+#include "hailo15-evb-security-camera-sensor.h"
+#include <dt-bindings/pinctrl/hailo15_cpld.h>
+
+/ {
+    sensor_clk: sensor_clk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+};
+
+
+&csi2rx0 {
+    ports {
+        port@0 {
+            csi2rx_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
+&i2c_0 {
+#ifdef SENSOR_IMX678
+    imx678: camera-sensor@1a {
+        status = "okay";
+        compatible = "sony,imx678";
+#else
+        imx334: camera-sensor@1a {
+            status = "okay";
+            compatible = "sony,imx334";
+#endif
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <0>;
+        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+        port {
+            sensor_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+		        link-frequencies = /bits/ 64 <891000000>;
+            };
+        };
+     };
+};
+
+&sdio0 {
+    broken-cd;
+};
+
+&sdio0_reserved {
+    status = "okay";
+};
+
+&serial0 { 
+ status = "okay"; 
+}; 
+
+&serial2 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_uart2>;
+};
+
+&serial3 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_uart3>;
+};
+
+&i2c_2 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c2>;
+};
+
+&pwm {
+    status = "okay";
+    hailo15_pwm,supported-channels = <2 3>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_pwm1>;
+};
+
+&pinctrl {
+    i2c-bus = <&i2c_1>;
+    board-config = <H15_CPLD_BOARD_CONFIG__SECURITY_CAMERA_OPTION_1>;
+
+    pinctrl_i2c2: i2c2 {
+        function = "i2c2";
+        groups = "i2c2_0_grp";
+    };
+
+    pinctrl_uart2: serial2 {
+        function = "uart2";
+        groups = "uart2_3_grp";
+    };
+
+    pinctrl_uart3: serial3 {
+        function = "uart3";
+        groups = "uart3_3_grp";
+    };
+
+    pinctrl_pwm1: pwm1 {
+        function = "pwm1";
+        groups = "pwm1_grp";
+    };
+};
+
+&gpio0 {
+    gpio-ranges = <&pinctrl 0 0 16>;
+
+    gpio-line-names =
+        "gpio_in_out_0",
+        "gpio_in_out_1",
+        "pwm_2",
+        "pwm_3",
+        "cam0_reset_n",
+        "gpio_in_out_5",
+        "i2c2_sda_in_out",
+        "i2c2_scl_out",
+        "uart2_rxd_pad_in",
+        "uart2_txd_pad_out",
+        "uart0_cts_pad_in",
+        "uart0_rts_pad_out",
+        "uart3_rxd_pad_in",
+        "uart3_txd_pad_out",
+        "gpio_in_out_14",
+        "pcie_mperst_out";
+};
+
+&qspi {
+    test_device@1 {
+        compatible = "hailo,hailo-spi-slave-test";
+        spi-max-frequency = <100000>;
+        reg = <1>;
+        hailo,non-flash-device;
+        spi-lsb-first;
+    };
+};
+
+&gpio1 {
+    gpio-ranges = <&pinctrl 0 16 16>;
+
+    gpio-line-names =
+        "gpio_in_out_16",
+        "gpio_in_out_17",
+        "gpio_in_out_18",
+        "gpio_in_out_19",
+        "shut_down_out",
+        "gpio_in_out_21",
+        "gpio_in_out_22",
+        "gpio_in_out_23",
+        "gpio_in_out_24",
+        "gpio_in_out_25",
+        "gpio_in_out_26",
+        "gpio_in_out_27",
+        "gpio_in_out_28",
+        "gpio_in_out_29",
+        "gpio_in_out_30",
+        "gpio_in_out_31";
+};

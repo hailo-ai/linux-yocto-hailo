@@ -12,6 +12,8 @@
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/types.h>
+#include <linux/proc_fs.h>
+#include <hailo15_i2s.h>
 #include <sound/dmaengine_pcm.h>
 #include <sound/pcm.h>
 #include <sound/designware_i2s.h>
@@ -81,6 +83,17 @@
 #define MAX_CHANNEL_NUM		8
 #define MIN_CHANNEL_NUM		2
 
+enum i2s_config_id {
+	CONFIG_ID_DW_I2S_SNPS = 0x1,
+	CONFIG_ID_DW_I2S_HAILO15,
+	CONFIG_ID_DW_I2S_HAILO15_SCU_DMA,
+};
+
+struct i2s_config_data {
+	enum i2s_config_id cfg_id;
+	int (*extra_probe)(struct platform_device *pdev);
+};
+
 union dw_i2s_snd_dma_data {
 	struct i2s_dma_data pd;
 	struct snd_dmaengine_dai_dma_data dt;
@@ -112,11 +125,15 @@ struct dw_i2s_dev {
 	unsigned int (*tx_fn)(struct dw_i2s_dev *dev,
 			struct snd_pcm_runtime *runtime, unsigned int tx_ptr,
 			bool *period_elapsed);
+
 	unsigned int (*rx_fn)(struct dw_i2s_dev *dev,
 			struct snd_pcm_runtime *runtime, unsigned int rx_ptr,
 			bool *period_elapsed);
 	unsigned int tx_ptr;
 	unsigned int rx_ptr;
+
+	enum i2s_config_id cfg_id;
+	void *priv;
 };
 
 #if IS_ENABLED(CONFIG_SND_DESIGNWARE_PCM)

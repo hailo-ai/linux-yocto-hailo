@@ -1,7 +1,7 @@
 DesignWare I2S controller
 
 Required properties:
- - compatible : Must be "snps,designware-i2s"
+ - compatible : Must be "snps,designware-i2s" or "hailo15,designware-i2s"
  - reg : Must contain the I2S core's registers location and length
  - clocks : Pairs of phandle and specifier referencing the controller's
    clocks. The controller expects one clock: the clock used as the sampling
@@ -11,6 +11,16 @@ Required properties:
    the core. The core expects one or two dma channels: one for transmit and
    one for receive.
  - dma-names : "tx" for the transmit channel, "rx" for the receive channel.
+
+Required properties for hailo15,designware-i2s only:
+ - rx-sample-pace : recording fix samples offsets pattern
+ - rx-sample-cmp-to : comparison options for samples paces pattern synchronization:
+   expected pattern samples value to sync:
+   * "zero" : Compare current sample to zero.
+   * "prev-val" : Compare current sample to the previous sample.
+ - tx-sample-offset : playback start samples pattern fixes starting from sample <xxx>.
+ - tx-sample-pace: playback fix samples offsets pattern.
+ - rx-sample-pace-pattern-repetitions: number of consecutive pattern repetitions required for recording synchronization.
 
 Optional properties:
  - interrupts: The interrupt line number for the I2S controller. Add this
@@ -22,7 +32,7 @@ properties please check:
 	* clock/clock-bindings.txt
 	* dma/dma.txt
 
-Example:
+Examples #1:
 
 	soc_i2s: i2s@7ff90000 {
 		compatible = "snps,designware-i2s";
@@ -33,3 +43,27 @@ Example:
 		dmas = <&dma0 5>;
 		dma-names = "tx";
 	};
+
+
+Examples #2:
+	// Recording:
+	// - Fix samples offsets pattern 59, 59, 58
+	// - Comparison options for samples paces pattern "zero"
+	// Playback:
+	// - Fix samples offsets pattern 58, 58, 57
+	// - Start samples pattern fixes starting from sample 7
+
+	soc_i2s: i2s@7ff90000 {
+		compatible = "hailo,hailo15-designware-i2s-scu-dma";
+		reg = <0x0 0x7ff90000 0x0 0x1000>;
+		clocks = <&scpi_i2sclk 0>;
+		clock-names = "i2sclk";
+		#sound-dai-cells = <0>;
+
+		rx-sample-pace = <59 59 58>;
+		rx-sample-cmp-to = "zero";
+		tx-sample-offset = <7>;
+		tx-sample-pace = <58 58 57>;
+		rx-sample-pace-pattern-repetitions = <2>;
+	};
+

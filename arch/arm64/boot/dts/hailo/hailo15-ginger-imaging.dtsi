@@ -1,0 +1,34 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+
+#include "hailo15-base.dtsi"
+
+/ {
+    sensor_clk: sensor_clk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000000 0x80000000>;
+    };
+};
+
+
+&csi2rx0 {
+    status = "disabled";
+    ports {
+        port@0 {
+            csi2rx_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
