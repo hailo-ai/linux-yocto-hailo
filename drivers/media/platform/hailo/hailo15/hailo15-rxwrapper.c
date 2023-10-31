@@ -2,6 +2,7 @@
 #include <linux/clk.h>
 #include <linux/clk/clk-conf.h>
 #include <linux/dma-mapping.h>
+#include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -26,6 +27,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
+#include <linux/delay.h>
 #include <media/v4l2-fwnode.h>
 #include "common.h"
 
@@ -41,6 +43,22 @@
 #define RXWRAPPER_CSI_IP_CTRL_OFFSET 0x78
 #define RXWRAPPER_CSI_OUT_LINE_BUF_CFG_OFFSET 0xcc
 
+#define RXWRAPPER_CFG_CREDIT_HANDLER_EN_OFFSET 0x150
+#define RXWRAPPER_CFG_CREDIT_HANDLER_LINE_SIZE_OFFSET 0x160
+#define RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_HEIGHT_OFFSET 0x170
+#define RXWRAPPER_CFG_CREDIT_HANDLER_BUFFER_FRAMES_OFFSET 0x180
+#define RXWRAPPER_CFG_CREDIT_HANDLER_DMA_PAGE_SIZE_OFFSET 0x190
+#define RXWRAPPER_CFG_CREDIT_HANDLER_TU_CREDIT_EN_OFFSET 0x1a0
+#define RXWRAPPER_CFG_CREDIT_HANDLER_TU_CREDIT_SIZE_OFFSET 0x1b0
+#define RXWRAPPER_CFG_CREDIT_HANDLER_TU_SIZE_IN_DMA_PAGES_OFFSET 0x1c0
+#define RXWRAPPER_CFG_CREDIT_HANDLER_INT_CREDIT_EN_OFFSET 0x1e0
+#define RXWRAPPER_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_OFFSET 0x1f0
+#define RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_EN_OFFSET 0x200
+#define RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_TH_OFFSET 0x210
+#define RXWRAPPER_CFG_CREDIT_HANDLER_ALMOST_FULL_TH_OFFSET 0x220
+#define RXWRAPPER_CFG_CREDIT_HANDLER_COUNT_OVERFLOW_FRAMES_OFFSET 0x240
+#define RXWRAPPER_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_OFFSET 0x2c0
+
 #define RXWRAPPER_CSI_RX_ERR_IRQ_MASK_OFFSET 0xe0
 #define RXWRAPPER_CSI_RX_FSM_ERR_INT_MASK_OFFSET 0xe8
 #define RXWRAPPER_CSI_RX_IRQ_MASK_OFFSET 0xf8
@@ -54,9 +72,32 @@
 #define RXWRAPPER_CSI_OUT_LINE_BUF_CFG 0x13
 
 #define RAW12_DT 0x2c
-#define RES_4K_2FRAME_LINE_NUM 0x10e0
+#define RES_4K_FRAME_LINE_NUM 0x870
+#define RES_4K_RING_BUFFER_FRAMES HAILO15_NUM_P2A_BUFFERS
 #define RES_4K_STRIDE 0x4000
-#define RXWRAPPER_BASE_RAW_BUF_SIZE RES_4K_2FRAME_LINE_NUM *RES_4K_STRIDE
+#define RXWRAPPER_BASE_RAW_BUF_SIZE                                            \
+	RES_4K_RING_BUFFER_FRAMES *RES_4K_FRAME_LINE_NUM *RES_4K_STRIDE
+
+// size in AXI beats - AXI is 8B -> 3840 pixels * 4B (raw12 padded) = 15360B -> in AXI beats = 1920 (0x780)
+#define RXWRAPPER_DEFAULT_CREDITS_LINE_SIZE 0x780
+
+// num of lines in frame = 2160 (0x870)
+#define RXWRAPPER_DEFAULT_CREDITS_FRAME_HEIGHT 0x870
+
+// num of frames in the ring buffer
+#define RXWRAPPER_DEFAULT_CREDITS_BUFFER_FRAMES RES_4K_RING_BUFFER_FRAMES
+
+// 0 = 512B
+#define RXWRAPPER_DEFAULT_CREDITS_DMA_PAGE_SIZE 0x0
+
+// num of lines in tu = 2160 (0x870)
+#define RXWRAPPER_DEFAULT_CREDITS_TU_CREDIT_SIZE 0x870
+
+// num of DMA pages in tu -> 1 DMA page = 512B, 1 tu = lines * line size = 2160 * 15360B = 33177600B -> in DMA pages = 64800 (0xfd20)
+#define RXWRAPPER_DEFAULT_CREDITS_TU_SIZE_IN_DMA_PAGES 0xfd20
+
+#define RXWRAPPER_DEFAULT_CREDITS_FRAME_DROP_TH RES_4K_RING_BUFFER_FRAMES
+#define RXWRAPPER_DEFAULT_CREDITS_ALMOST_FULL_TH RES_4K_RING_BUFFER_FRAMES - 1
 
 #define RXWRAPPER_PIPES_DATA_CFG_DTYPE_SHIFT (3)
 #define RXWRAPPER_PIPES_DATA_CFG_DTYPE_WIDTH (6)
@@ -120,6 +161,17 @@ struct hailo15_rxwrapper_pipe_cfg {
 	uint32_t lines_nr;
 };
 
+struct hailo15_rxwrapper_credits_cfg {
+	uint32_t line_size;
+	uint32_t frame_height;
+	uint32_t buffer_frames;
+	uint32_t dma_page_size;
+	uint32_t tu_credit_size;
+	uint32_t tu_size_in_dma_pages;
+	uint32_t frame_drop_th;
+	uint32_t almost_full_th;
+};
+
 struct hailo15_rxwrapper_priv {
 	struct device *dev;
 	struct v4l2_subdev sd;
@@ -135,13 +187,82 @@ struct hailo15_rxwrapper_priv {
 	struct hailo15_rxwrapper_pipe_cfg pipe_cfg[RXWRAPPER_NUM_PIPES];
 	struct clk *rxwrapper0_p_clk;
 	struct clk *rxwrapper0_data_clk;
+	struct hailo15_p2a_buffer_regs_addr p2a_buf_regs;
+	struct hailo15_buf_ctx *buf_ctx;
+	struct hailo15_buffer *cur_buf;
+	void *private_data;
+	int queue_empty;
+	int irq;
 };
 
 struct hailo15_rxwrapper_pipe_cfg rxwrapper_default_pipe_cfg = {
 	.dtype = RAW12_DT,
-	.lines_nr = RES_4K_2FRAME_LINE_NUM,
+	.lines_nr = RES_4K_FRAME_LINE_NUM * RES_4K_RING_BUFFER_FRAMES,
 	.stride = RES_4K_STRIDE,
 };
+
+struct hailo15_rxwrapper_credits_cfg rxwrapper_default_credits_cfg = {
+	.line_size = RXWRAPPER_DEFAULT_CREDITS_LINE_SIZE,
+	.frame_height = RXWRAPPER_DEFAULT_CREDITS_FRAME_HEIGHT,
+	.buffer_frames = RXWRAPPER_DEFAULT_CREDITS_BUFFER_FRAMES,
+	.dma_page_size = RXWRAPPER_DEFAULT_CREDITS_DMA_PAGE_SIZE,
+	.tu_credit_size = RXWRAPPER_DEFAULT_CREDITS_TU_CREDIT_SIZE,
+	.tu_size_in_dma_pages = RXWRAPPER_DEFAULT_CREDITS_TU_SIZE_IN_DMA_PAGES,
+	.frame_drop_th = RXWRAPPER_DEFAULT_CREDITS_FRAME_DROP_TH,
+	.almost_full_th = RXWRAPPER_DEFAULT_CREDITS_ALMOST_FULL_TH,
+};
+
+inline void
+hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
+{
+	struct hailo15_buffer *buf;
+	struct hailo15_dma_ctx *ctx =
+		v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+	uint32_t unprocessed_frames;
+	uint32_t overflow_frames;
+	uint32_t dropped_frames;
+
+	// read cfg_credit_handler_ext_unprocessed_cnt
+	unprocessed_frames =
+		readl(hailo15_rxwrapper->base +
+		      RXWRAPPER_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_OFFSET);
+	if (unprocessed_frames > 0 &&
+	    unprocessed_frames < RXWRAPPER_DEFAULT_CREDITS_FRAME_DROP_TH) {
+		buf = hailo15_rxwrapper->cur_buf;
+		hailo15_rxwrapper->cur_buf = NULL;
+
+		hailo15_dma_buffer_done(ctx, buf, VID_GRP_P2A);
+
+		writel(1,
+		       hailo15_rxwrapper->base +
+			       RXWRAPPER_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_OFFSET);
+	} else {
+		overflow_frames = readl(
+			hailo15_rxwrapper->base +
+			RXWRAPPER_CFG_CREDIT_HANDLER_COUNT_OVERFLOW_FRAMES_OFFSET);
+		dropped_frames = readl(
+			hailo15_rxwrapper->base +
+			RXWRAPPER_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_OFFSET);
+		pr_warn("%s - unprocessed frames = %u, overflow_frames = %u, dropped_frames = %u\n",
+			__func__, unprocessed_frames, overflow_frames,
+			dropped_frames);
+	}
+}
+
+static irqreturn_t hailo15_rxwrapper_irq_handler(int irq, void *arg)
+{
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
+		(struct hailo15_rxwrapper_priv *)arg;
+
+	uint32_t val = readl(
+		hailo15_rxwrapper->p2a_buf_regs.buffer_ready_ap_int_status_addr);
+
+	hailo15_rxwrapper_buffer_done(hailo15_rxwrapper);
+	writel(val,
+	       hailo15_rxwrapper->p2a_buf_regs.buffer_ready_ap_int_w1c_addr);
+
+	return IRQ_HANDLED;
+}
 
 static u32
 hailo15_rxwrapper_read_reg(struct hailo15_rxwrapper_priv *hailo15_rxwrapper,
@@ -265,6 +386,129 @@ static int hailo15_rxwrapper_pipe_set_stride(
 					    RXWRAPPER_PIPES_STRIDE_SHIFT,
 					    RXWRAPPER_PIPES_STRIDE_WIDTH,
 					    stride);
+}
+
+static int __maybe_unused hailo15_rxwrapper_pipe_enable_credits(
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 pipe,
+	struct hailo15_rxwrapper_credits_cfg *credits_cfg)
+{
+	int ret;
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_LINE_SIZE_OFFSET, 0, 12,
+		credits_cfg->line_size);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_LINE_SIZE failed\n", __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_HEIGHT_OFFSET, 0, 12,
+		credits_cfg->frame_height);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_FRAME_HEIGHT failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_BUFFER_FRAMES_OFFSET, 0, 16,
+		credits_cfg->buffer_frames);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_BUFFER_FRAMES failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_DMA_PAGE_SIZE_OFFSET, 0, 3,
+		credits_cfg->dma_page_size);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_DMA_PAGE_SIZE failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_TU_CREDIT_EN_OFFSET, 0, 1, 0x1);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_TU_CREDIT_EN failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_TU_CREDIT_SIZE_OFFSET, 0, 12,
+		credits_cfg->tu_credit_size);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_TU_CREDIT_SIZE failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_TU_SIZE_IN_DMA_PAGES_OFFSET, 0, 17,
+		credits_cfg->tu_size_in_dma_pages);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_TU_SIZE_IN_DMA_PAGES failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_INT_CREDIT_EN_OFFSET, 0, 1, 0x1);
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_TU_SIZE_IN_DMA_PAGES failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_TH_OFFSET, 0, 23,
+		credits_cfg->frame_drop_th);
+	if (ret) {
+		pr_err("%s - RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_TH_OFFSET failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_ALMOST_FULL_TH_OFFSET, 0, 23,
+		credits_cfg->almost_full_th);
+	if (ret) {
+		pr_err("%s - RXWRAPPER_CFG_CREDIT_HANDLER_ALMOST_FULL_TH_OFFSET failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe,
+		RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_EN_OFFSET, 0, 1, 0x1);
+	if (ret) {
+		pr_err("%s - RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_EN_OFFSET failed\n",
+		       __func__);
+		return ret;
+	}
+
+	ret = hailo15_rxwrapper_pipe_write(
+		hailo15_rxwrapper, pipe, RXWRAPPER_CFG_CREDIT_HANDLER_EN_OFFSET,
+		0, 1, 0x1); // enable
+	if (ret) {
+		pr_err("%s - CFG_CREDIT_HANDLER_EN failed\n", __func__);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address(
@@ -460,6 +704,9 @@ int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
 		subdev->grp_id = sd->grp_id;
 		if (subdev->grp_id == VID_GRP_P2A) {
 			if (enable) {
+				hailo15_rxwrapper_pipe_enable_credits(
+					hailo15_rxwrapper, pipe,
+					&rxwrapper_default_credits_cfg);
 				hailo15_rxwrapper_pipe_set_data_address(
 					hailo15_rxwrapper, pipe,
 					hailo15_rxwrapper->raw_image_buf_phys);
@@ -474,11 +721,20 @@ int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
 					hailo15_rxwrapper, pipe);
 				hailo15_rxwrapper_pipe_reset(hailo15_rxwrapper,
 							     pipe);
+				hailo15_rxwrapper->queue_empty = 0;
+				hailo15_rxwrapper->cur_buf = NULL;
+				dma_free_coherent(
+					hailo15_rxwrapper->dev,
+					RXWRAPPER_BASE_RAW_BUF_SIZE,
+					hailo15_rxwrapper->raw_image_buf_virt,
+					hailo15_rxwrapper->raw_image_buf_phys);
+				hailo15_rxwrapper->raw_image_buf_phys = 0;
 			}
 		} else
 			v4l2_subdev_call(subdev, video, s_stream, enable);
 	}
 	ret = 0;
+
 	/* TODO: MSW-2716: This code section is unused */
 	/*
 	goto finish;
@@ -510,7 +766,6 @@ static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		v4l2_subdev_to_hailo15_rxwrapper(sd);
-	pr_info("hailo15_rxwrapper: set_pad_format called\n");
 
 	if (!hailo15_rxwrapper)
 		return -EINVAL;
@@ -536,6 +791,8 @@ static int hailo15_rxwrapper_async_bound(struct v4l2_async_notifier *notifier,
 	}
 
 	hailo15_rxwrapper->source_subdev = s_subdev;
+	v4l2_subdev_call(s_subdev, core, ioctl, VIDEO_GET_P2A_REGS,
+			 &hailo15_rxwrapper->p2a_buf_regs);
 
 	return media_create_pad_link(
 		&hailo15_rxwrapper->source_subdev->entity,
@@ -647,13 +904,84 @@ static int hailo15_rxwrapper_get_fbuf(struct hailo15_dma_ctx *ctx,
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		(struct hailo15_rxwrapper_priv *)ctx->dev;
+	if (!hailo15_rxwrapper->raw_image_buf_phys) {
+		hailo15_rxwrapper->raw_image_buf_virt = dma_alloc_coherent(
+			hailo15_rxwrapper->dev, RXWRAPPER_BASE_RAW_BUF_SIZE,
+			&hailo15_rxwrapper->raw_image_buf_phys, GFP_USER);
+		if (!hailo15_rxwrapper->raw_image_buf_virt) {
+			pr_err("hailo15_rxwrapper - failed to allocate raw frames buffer\n");
+			return -ENOMEM;
+		}
+	}
 	fbuf->base = (void *)hailo15_rxwrapper->raw_image_buf_phys;
-	fbuf->fmt.sizeimage = RXWRAPPER_BASE_RAW_BUF_SIZE;
+	fbuf->fmt.sizeimage =
+		RXWRAPPER_BASE_RAW_BUF_SIZE / RES_4K_RING_BUFFER_FRAMES;
+	return 0;
+}
+
+static int hailo15_rxwrapper_buffer_process(struct hailo15_dma_ctx *ctx,
+					    struct hailo15_buffer *buf)
+{
+	struct v4l2_subdev *sd;
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper;
+
+	sd = buf->sd;
+	hailo15_rxwrapper = container_of(sd, struct hailo15_rxwrapper_priv, sd);
+	hailo15_rxwrapper->cur_buf = buf;
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_set_private_data(struct hailo15_dma_ctx *ctx,
+					      int grp_id, void *data)
+{
+	struct hailo15_rxwrapper_priv *rxwrapper_dev =
+		(struct hailo15_rxwrapper_priv *)ctx->dev;
+
+	if (grp_id != VID_GRP_P2A)
+		return -EINVAL;
+
+	rxwrapper_dev->private_data = data;
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_get_private_data(struct hailo15_dma_ctx *ctx,
+					      int grp_id, void **data)
+{
+	struct hailo15_rxwrapper_priv *rxwrapper_dev =
+		(struct hailo15_rxwrapper_priv *)ctx->dev;
+
+	if (!data)
+		return -EINVAL;
+
+	if (grp_id != VID_GRP_P2A)
+		return -EINVAL;
+
+	*data = rxwrapper_dev->private_data;
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
+					 int grp_id)
+{
+	struct hailo15_rxwrapper_priv *rxwrapper_dev =
+		(struct hailo15_rxwrapper_priv *)ctx->dev;
+
+	if (grp_id != VID_GRP_P2A)
+		return -EINVAL;
+
+	rxwrapper_dev->queue_empty = 1;
 	return 0;
 }
 
 static struct hailo15_buf_ops hailo15_rxwrapper_buf_ops = {
 	.get_fbuf = hailo15_rxwrapper_get_fbuf,
+	.buffer_process = hailo15_rxwrapper_buffer_process,
+	.set_private_data = hailo15_rxwrapper_set_private_data,
+	.get_private_data = hailo15_rxwrapper_get_private_data,
+	.queue_empty = hailo15_rxwrapper_queue_empty,
 };
 
 static int
@@ -699,11 +1027,6 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	hailo15_rxwrapper->base = devm_ioremap_resource(&pdev->dev, res);
 	pr_info("hailo15_rxwrapper base is %llx first 4 bytes \n",
 		(u64)hailo15_rxwrapper->base);
-
-	hailo15_rxwrapper->raw_image_buf_virt =
-		dma_alloc_coherent(&pdev->dev, RXWRAPPER_BASE_RAW_BUF_SIZE,
-				   &hailo15_rxwrapper->raw_image_buf_phys,
-				   GFP_USER);
 
 	hailo15_rxwrapper->rxwrapper0_p_clk =
 		devm_clk_get(&pdev->dev, "rxwrapper0_p_clk");
@@ -753,7 +1076,7 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	ret = hailo15_rxwrapper_parse_dt(hailo15_rxwrapper);
 	if (ret) {
 		pr_err("hailo15_rxwrapper: failed to parse dt ret=%d\n", ret);
-		goto error_free_dma;
+		goto error_free_dev;
 	}
 
 	snprintf(hailo15_rxwrapper->sd.name, sizeof(hailo15_rxwrapper->sd.name),
@@ -796,18 +1119,32 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 		goto error_init_dma_ctx;
 	}
 
+	hailo15_rxwrapper->irq = platform_get_irq(pdev, 0);
+	if (hailo15_rxwrapper->irq < 0) {
+		pr_err("can't get irq resource\n");
+		goto error_init_irq;
+	}
+
+	ret = devm_request_irq(hailo15_rxwrapper->dev, hailo15_rxwrapper->irq,
+			       hailo15_rxwrapper_irq_handler, 0,
+			       dev_name(hailo15_rxwrapper->dev),
+			       hailo15_rxwrapper);
+
+	if (ret) {
+		pr_err("request irq error\n");
+		goto error_init_irq;
+	}
+
 	return 0;
 
+error_init_irq:
+	hailo15_rxwrapper_clean_dma_ctx(ctx);
 error_init_dma_ctx:
 	kfree(ctx);
 error_alloc_dma_ctx:
 	mutex_destroy(&hailo15_rxwrapper->lock);
 error_clean_notifier:
 	v4l2_async_notifier_cleanup(&hailo15_rxwrapper->notifier);
-error_free_dma:
-	dma_free_coherent(&pdev->dev, RXWRAPPER_BASE_RAW_BUF_SIZE,
-			  hailo15_rxwrapper->raw_image_buf_virt,
-			  hailo15_rxwrapper->raw_image_buf_phys);
 error_free_dev:
 	kfree(hailo15_rxwrapper);
 	return -EINVAL;
@@ -820,9 +1157,10 @@ int hailo15_rxwrapper_remove(struct platform_device *pdev)
 	struct hailo15_dma_ctx *ctx =
 		v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
 
-	dma_free_coherent(&pdev->dev, RXWRAPPER_BASE_RAW_BUF_SIZE,
-			  hailo15_rxwrapper->raw_image_buf_virt,
-			  hailo15_rxwrapper->raw_image_buf_phys);
+	if (hailo15_rxwrapper->raw_image_buf_phys)
+		dma_free_coherent(&pdev->dev, RXWRAPPER_BASE_RAW_BUF_SIZE,
+				  hailo15_rxwrapper->raw_image_buf_virt,
+				  hailo15_rxwrapper->raw_image_buf_phys);
 	mutex_destroy(&hailo15_rxwrapper->lock);
 	v4l2_async_unregister_subdev(&hailo15_rxwrapper->sd);
 	kfree(hailo15_rxwrapper);

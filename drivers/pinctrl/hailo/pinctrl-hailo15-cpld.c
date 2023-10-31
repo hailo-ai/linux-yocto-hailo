@@ -15,21 +15,19 @@
  */
 
 struct hailo15_cpld_of_overlay {
-	const char *name;
 	void *begin;
 	void *end;
 };
 
-#define HAILO15_CPLD_OF_DTB(type, rev)     \
-	extern char __dtb_hailo15_cpld_of_##type##_##rev##_begin[];	\
-	extern char __dtb_hailo15_cpld_of_##type##_##rev##_end[];	\
+#define HAILO15_CPLD_OF_DTB(type, property)     \
+	extern char __dtb_hailo15_cpld_of_##type##_##property##_begin[];	\
+	extern char __dtb_hailo15_cpld_of_##type##_##property##_end[];	\
 
 
-#define HAILO15_CPLD_OF_OVERLAY(type, rev)					\
+#define HAILO15_CPLD_OF_OVERLAY(type, property)					\
 	{								\
-		.name = "evb-"#rev,			\
-		.begin = __dtb_hailo15_cpld_of_##type##_##rev##_begin,	\
-		.end = __dtb_hailo15_cpld_of_##type##_##rev##_end,		\
+		.begin = __dtb_hailo15_cpld_of_##type##_##property##_begin,	\
+		.end = __dtb_hailo15_cpld_of_##type##_##property##_end,		\
 	}
 
 /* -----------------------------------------------------------------------------
@@ -38,11 +36,19 @@ struct hailo15_cpld_of_overlay {
 
 HAILO15_CPLD_OF_DTB(evb, rev1);
 HAILO15_CPLD_OF_DTB(evb, rev2);
+HAILO15_CPLD_OF_DTB(evb, sdio8bit);
+
+enum overlay_type_id {
+	EVB_REV1 = 0, 
+	EVB_REV2,
+	EVB_SDIO_8BIT
+};
 
 static const struct hailo15_cpld_of_overlay hailo15_cpld_of_overlays[] __initconst = {
-	HAILO15_CPLD_OF_OVERLAY(evb, rev1),
-	HAILO15_CPLD_OF_OVERLAY(evb, rev2),
-	{ /* Sentinel */ },
+       HAILO15_CPLD_OF_OVERLAY(evb, rev1),
+       HAILO15_CPLD_OF_OVERLAY(evb, rev2),
+       HAILO15_CPLD_OF_OVERLAY(evb, sdio8bit),
+       { /* Sentinel */ },
 };
 
 #define HAILO15_CPLD_LOG_FORMAT(file, format, ...) do { \
@@ -118,18 +124,35 @@ struct hailo15_cpld_registers {
 	} sdio_route_status;
 };
 
-static int __init hailo15_cpld_of_apply_overlay(const struct hailo15_cpld_of_overlay *dtbs,
-					   uint8_t rev_id)
+static bool hailo15_cpld_is_sdio1_8_bit(struct hailo15_cpld_registers *registers){
+	uint8_t sdio_0_route_status = (registers->sdio_route_status.sdio_0 & H15_CPLD__SDIO_ROUTE_MASK);
+	uint8_t sdio_1_route_status = (registers->sdio_route_status.sdio_1 & H15_CPLD__SDIO_ROUTE_MASK);
+	
+	if ((strcmp(hailo15_cpld_sdio_route[sdio_0_route_status],"eMMC")== 0) &&
+		strcmp(hailo15_cpld_sdio_route[sdio_1_route_status],"eMMC")== 0) {
+		
+		return true;
+	}
+	 
+	return false;
+}
+
+static int __init hailo15_cpld_of_apply_overlay(const struct hailo15_cpld_of_overlay *dtbs, struct hailo15_cpld_registers *registers)
 {
 	const struct hailo15_cpld_of_overlay *dtb = NULL;
 	int ovcs_id;
-
-	if(rev_id < ARRAY_SIZE(hailo15_cpld_of_overlays)) {
-		dtb = &dtbs[rev_id]; 
+	int board_version = registers->version.board;
+	
+	if (board_version == 0) {
+		dtb = &dtbs[EVB_REV1];
+	} else {
+		/* Getting Swich state is Not supported in EVB REV 1 */
+		if (hailo15_cpld_is_sdio1_8_bit(registers)) {
+			dtb = &dtbs[EVB_SDIO_8BIT];
+		} else {
+			dtb = &dtbs[EVB_REV2];
+		}
 	}
-	if (!dtb)
-		return -ENODEV;
-
 	ovcs_id = 0;
 	return of_overlay_fdt_apply(dtb->begin, dtb->end - dtb->begin,
 				    &ovcs_id);
@@ -440,13 +463,11 @@ int hailo15_cpld_init(struct hailo15_pinctrl *pinctrl, struct device_node *node)
 		return ret;
 	}
 
-	ret = hailo15_cpld_of_apply_overlay(hailo15_cpld_of_overlays, registers.version.board);
+	ret = hailo15_cpld_of_apply_overlay(hailo15_cpld_of_overlays, &registers);
 	if (ret) {
 		dev_err(pinctrl->dev, "Fail do apply overlay ret %d\n", ret);
 		return ret;
 	}
-
-	pr_info("Identified board as %s\n",  hailo15_cpld_of_overlays[registers.version.board].name);
 
 	hailo15_cpld_print_dip_switches(&registers, NULL);
 

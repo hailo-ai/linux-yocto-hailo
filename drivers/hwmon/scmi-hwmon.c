@@ -13,6 +13,9 @@
 #include <linux/sysfs.h>
 #include <linux/thermal.h>
 
+#define SCMI_SENSOR_TRIP_POINT_EV__TRIP_ID_MASK 0xFF
+#define SCMI_SENSOR_TRIP_POINT_EV__TRIP_DIR_MASK (1 << 16)
+
 static const struct scmi_sensor_proto_ops *sensor_ops;
 static const struct scmi_notify_ops *notify_ops;
 
@@ -95,7 +98,7 @@ static int scmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		}
 		dev_dbg(
 			scmi_sensors->dev,
-			"scmi_hwmon_read: sensor_type[%d], attr[%x], sensor_id[%d], val[%lx]\n",
+			"scmi_hwmon_read: sensor_type[%d], attr[%x], sensor_id[%d], val[%ld]\n",
 			type, attr, channel, *val);
 		break;
 	case hwmon_temp_max:
@@ -112,19 +115,22 @@ static int scmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 					   unsigned long event, void *data)
 {
-	int ret;
+	int ret, trip_point_id;
 	struct scmi_sensor_trip_point_report *trip_point_report = data;
 	struct scmi_sensors *scmi_sensors =
 		container_of(nb, struct scmi_sensors, notifier_block);
 	const struct scmi_sensor_info *sensor_info = sensor_ops->info_get(
 		scmi_sensors->ph, trip_point_report->sensor_id);
 
+	trip_point_id = (trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_ID_MASK);
 	dev_dbg(
 		scmi_sensors->dev,
-		"trip_point_cb: event[%lu] from: agent_id[%x], sensor_id[%x], trip_point_desc[%x]\n",
+		"trip_point_cb: event[%lu] from: agent_id[%x], sensor_id[%x], trip_point_desc[%x] (dir=%s, trip_point_id=%d)\n",
 		event, trip_point_report->agent_id,
 		trip_point_report->sensor_id,
-		trip_point_report->trip_point_desc);
+		trip_point_report->trip_point_desc,
+		(trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_DIR_MASK) ? "cross-positive" : "cross-negative",
+		trip_point_id);
 
 	switch (sensor_info->type) {
 	case TEMPERATURE_C:
@@ -132,8 +138,9 @@ static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 	case TEMPERATURE_K:
 		if (event == SCMI_EVENT_SENSOR_TRIP_POINT_EVENT) {
 			ret = hwmon_notify_event(scmi_sensors->hwdev,
-						 hwmon_temp, hwmon_temp_crit,
-						 trip_point_report->sensor_id);
+						hwmon_temp,
+						hwmon_temp_max,
+						trip_point_report->sensor_id);
 			if (ret != 0) {
 				dev_warn(
 					scmi_sensors->dev,
@@ -150,35 +157,6 @@ static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 	}
 
 	return NOTIFY_OK;
-}
-
-static int scmi_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
-			    u32 attr, int channel, long val)
-{
-	int ret = 0;
-	const struct scmi_sensor_info *sensor;
-	struct scmi_sensors *scmi_sensors = dev_get_drvdata(dev);
-
-	sensor = *(scmi_sensors->info[type] + channel);
-
-	dev_dbg(
-		scmi_sensors->dev,
-		"scmi_hwmon_write: sensor_type[%d], attr[%x], ch[%d], val[%lx]\n",
-		type, attr, channel, val);
-
-	switch (attr) {
-	case hwmon_temp_max:
-		ret = sensor_ops->trip_point_config(scmi_sensors->ph,
-						    sensor->id, 0, val);
-		if (ret) {
-			dev_err(scmi_sensors->dev, "scmi_hwmon_write: ret = %d\n", ret);
-			return ret;
-		}
-		break;
-	default:
-		return -EINVAL;
-	}
-	return ret;
 }
 
 static int
@@ -208,7 +186,7 @@ scmi_hwmon_is_visible(const void *drvdata, enum hwmon_sensor_types type,
 			return 0444;
 			break;
 		case hwmon_temp_max:
-			return 0600;
+			return 0400;
 			break;
 		default:
 			return 0;
@@ -221,7 +199,6 @@ scmi_hwmon_is_visible(const void *drvdata, enum hwmon_sensor_types type,
 static const struct hwmon_ops scmi_hwmon_ops = {
 	.is_visible = scmi_hwmon_is_visible,
 	.read = scmi_hwmon_read,
-	.write = scmi_hwmon_write,
 	.read_string = scmi_hwmon_read_string,
 };
 
@@ -353,7 +330,7 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 	}
 
 	scmi_sensors->notifier_block.notifier_call = scmi_hwmon_sensor_trip_point_cb;
-	ret = notify_ops->event_notifier_register(sdev->handle,
+	ret = notify_ops->devm_event_notifier_register(sdev,
 				SCMI_PROTOCOL_SENSOR, SCMI_EVENT_SENSOR_TRIP_POINT_EVENT,
 				NULL, //&sensor->id,
 				&scmi_sensors->notifier_block);

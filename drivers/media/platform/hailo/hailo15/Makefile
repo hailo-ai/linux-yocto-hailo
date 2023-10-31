@@ -16,6 +16,7 @@ ISP_CTRL_OBJS += isp_ctrl/dpcc/dpcc/hailo15_isp_dpcc.o
 ISP_CTRL_OBJS += isp_ctrl/dpf/dpf/hailo15_isp_dpf.o
 ISP_CTRL_OBJS += isp_ctrl/ee/ee/hailo15_isp_ee.o
 ISP_CTRL_OBJS += isp_ctrl/gc/gc_v2/hailo15_isp_gcv2.o
+ISP_CTRL_OBJS += isp_ctrl/af/afv1/hailo15_isp_afv1.o
 
 hailo15-isp-objs += hailo15-isp-hw.o hailo15-isp-v4l.o hailo15-events.o $(ISP_CTRL_OBJS)
 hailo15-video-cap-objs += hailo15-vid-cap.o hailo15-events.o

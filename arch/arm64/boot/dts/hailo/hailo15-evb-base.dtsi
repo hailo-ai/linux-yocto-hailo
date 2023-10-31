@@ -182,7 +182,6 @@
 };
 &sdio1 {
     non-removable;
-    status = "okay";
     phy-config {
 		card-is-emmc = <0x1>;
         	cmd-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel

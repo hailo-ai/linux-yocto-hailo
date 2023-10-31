@@ -81,7 +81,9 @@ static int hailo15_isp_aev2_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_ROI:
 	case HAILO15_ISP_CID_AE_GAIN:
 	case HAILO15_ISP_CID_AE_INTEGRATION_TIME:
-		pr_info("%s - got s_ctrl with id: 0x%x\n", __func__, ctrl->id);
+	case HAILO15_ISP_CID_AE_IRIS:
+	case HAILO15_ISP_CID_AE_IRIS_LIMITS:
+		pr_debug("%s - got s_ctrl with id: 0x%x\n", __func__, ctrl->id);
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -119,7 +121,9 @@ static int hailo15_isp_aev2_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_ROI:
 	case HAILO15_ISP_CID_AE_GAIN:
 	case HAILO15_ISP_CID_AE_INTEGRATION_TIME:
-		pr_info("%s - got g_ctrl with id: 0x%x\n", __func__, ctrl->id);
+	case HAILO15_ISP_CID_AE_IRIS:
+	case HAILO15_ISP_CID_AE_IRIS_LIMITS:
+		pr_debug("%s - got g_ctrl with id: 0x%x\n", __func__, ctrl->id);
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -353,6 +357,31 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.min = 1,
 		.max = 999999,
 		.def = 1,
+	},
+	{
+		/* float 1.00 ~  999.99*/
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_IRIS,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_iris",
+		.step = 1,
+		.min = 100,
+		.max = 99999,
+		.def = 100,
+	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_IRIS_LIMITS,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_iris_limits",
+		.step = 1,
+		.min = 0,
+		.max = 0xffffffff,
+		.dims = { 2 },
 	},
 };
 

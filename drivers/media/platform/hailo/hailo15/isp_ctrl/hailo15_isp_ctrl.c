@@ -54,6 +54,7 @@
 #include <media/v4l2-ioctl.h>
 #include "hailo15_isp_ctrl.h"
 
+#include "af/afv1/hailo15_isp_afv1.h"
 #include "ae/aev2/hailo15_isp_aev2.h"
 #include "awb/awb_0410/hailo15_isp_awb0410.h"
 #include "gc/gc_v2/hailo15_isp_gcv2.h"
@@ -95,6 +96,7 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	// ctrl_count += hailo15_isp_lsc_ctrl_count(); - lsc not supported yet
 	ctrl_count += hailo15_isp_wb_ctrl_count();
 	ctrl_count += hailo15_isp_dci_ctrl_count();
+	ctrl_count += hailo15_isp_afv1_ctrl_count();
 
 	pr_info("%s - calling v4l2_ctrl_handler_init with count %u\n", __func__,
 		ctrl_count);
@@ -118,7 +120,7 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	// hailo15_isp_lsc_ctrl_create(isp_dev); - lsc not supported yet
 	hailo15_isp_wb_ctrl_create(isp_dev);
 	hailo15_isp_dci_ctrl_create(isp_dev);
-
+	hailo15_isp_afv1_ctrl_create(isp_dev);
 	isp_dev->sd.ctrl_handler = &isp_dev->ctrl_handler;
 
 	return 0;

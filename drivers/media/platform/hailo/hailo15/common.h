@@ -16,12 +16,15 @@ enum hailo15_video_path {
 #define FMT_MAX_PLANES 3
 
 #define HAILO15_MAX_BUFFERS 30
+#define HAILO15_NUM_P2A_BUFFERS 5
 #define HAILO15_EVENT_RESOURCE_SIZE 4096
 
 #define VIDEO_FPS_MONITOR_SUBDEV_IOC 0xdeadbeaf
 #define VIDEO_TUNING_ENABLE_SUBDEV_IOC 0xc001babe
 #define VIDEO_TUNING_DISABLE_SUBDEV_IOC 0xfee1badd
 #define VIDEO_GET_VSM_IOC 0x1337face
+#define VIDEO_GET_P2A_REGS 0xfeedf00d
+#define VIDEO_GET_P2A_BUF_ADDR 0xc0defa57
 
 #define ISPIOC_V4L2_READ_REG                                                   \
 	_IOWR('I', BASE_VIDIOC_PRIVATE + 0, struct isp_reg_data)
@@ -121,6 +124,7 @@ enum hailo15_pix_fmt {
 	YUV422,
 	RGB888,
 	YUV420,
+	RAW12,
 };
 
 enum hailo15_pix_planarity {
@@ -145,6 +149,13 @@ struct hailo15_video_fmt {
 	struct hailo15_video_plane_fmt planes[FMT_MAX_PLANES];
 };
 
+struct hailo15_p2a_buffer_regs_addr {
+	void *buffer_ready_ap_int_mask_addr;
+	void *buffer_ready_ap_int_status_addr;
+	void *buffer_ready_ap_int_w1c_addr;
+	void *buffer_ready_ap_int_w1s_addr;
+};
+
 static const struct hailo15_video_fmt __hailo15_formats[] = {
 	{
 		.fourcc = V4L2_PIX_FMT_YUYV,
@@ -153,6 +164,19 @@ static const struct hailo15_video_fmt __hailo15_formats[] = {
 		.planarity = INTERLEAVED,
 		.num_planes = 1,
 		.width_modulus = 2,
+		.planes = { {
+			.bpp = 2,
+			.vscale_ratio = 1,
+			.hscale_ratio = 1,
+		} },
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_SRGGB12P,
+		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+		.pix_fmt = RAW12,
+		.planarity = INTERLEAVED,
+		.num_planes = 1,
+		.width_modulus = 3840,
 		.planes = { {
 			.bpp = 2,
 			.vscale_ratio = 1,
@@ -310,6 +334,7 @@ struct hailo15_mux_cfg {
 	unsigned int isp1_stream0;
 	unsigned int isp1_stream1;
 	unsigned int isp1_stream2;
+	unsigned int vision_buffer_ready_ap_int_mask;
 };
 
 struct hailo15_mux_interrupt_cfg {

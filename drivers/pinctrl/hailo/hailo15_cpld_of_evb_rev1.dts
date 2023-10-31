@@ -11,3 +11,8 @@
     status = "okay";
     no-1-8-v;
 };
+
+&{/sdio1@78001000} {
+    status = "okay";
+    bus-width = <4>;
+};

@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * hailo15_cpld_of_evb_8bit.dts - Legacy LVDS DT bindings conversion for R8A7796
+ *
+ * Copyright (C) 2018 Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ */
+/dts-v1/;
+/plugin/;
+
+&{/sdio1@78001000} {
+    status = "okay";
+    bus-width = <8>;
+};

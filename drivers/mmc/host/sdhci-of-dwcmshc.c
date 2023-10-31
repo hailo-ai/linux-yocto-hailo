@@ -778,7 +778,10 @@ static int set_sdio_8_bit_mux(struct device *dev)
 {
 	struct reset_control *sdio_reset = NULL;
 	int err;
-	bool is_sdio_8_bit_mux = of_property_read_bool(dev->of_node, "8-bit-mux-mode");
+	u32 bus_width;
+	
+	device_property_read_u32(dev, "bus-width", &bus_width);
+	
 	sdio_reset = devm_reset_control_get(dev, "sdio1-8bit-mux");
 	if (IS_ERR(sdio_reset)) {
 		if (PTR_ERR(sdio_reset) != -EPROBE_DEFER) {
@@ -787,7 +790,7 @@ static int set_sdio_8_bit_mux(struct device *dev)
 		return PTR_ERR(sdio_reset);
 	}
 
-	if (is_sdio_8_bit_mux){
+	if (bus_width == 8){
 		err = reset_control_deassert(sdio_reset);
     		if (err < 0) {
         		dev_err(dev, "Failed deasserting sdio 8 bit mux, err %d\n", err);

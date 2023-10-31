@@ -442,7 +442,6 @@
         status = "disabled";
         compatible = "hailo,hailo15-pixel-mux";
         reg = <0 0x7C01C000 0 2000>;
-        interrupts = <0 HW_INTERRUPTS__VISION_SUBSYS_ERR_INT_IRQ 4>, <0 HW_INTERRUPTS__VISION_BUFFER_READY_AP_INT_IRQ 4>;
         // TODO - remove this when we have the ability to make clocks that are not in the same heirarchy depend on each other (MSW-2254)
         ranges;
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_CSI_RX0_XTAL_CLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_CSI_RX1_XTAL_CLK>;
@@ -471,6 +470,7 @@
        status = "disabled";
        compatible = "hailo,hailo15-rxwrapper";
        reg = <0 0x7C010000 0 0x1000>;
+       interrupts = <0 HW_INTERRUPTS__VISION_BUFFER_READY_AP_INT_IRQ 4>, <0 HW_INTERRUPTS__VISION_SUBSYS_ERR_INT_IRQ 4>;
        ranges;
        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_CSI_RX0_CLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_CSI_RX0_PCLK>;
        clock-names = "rxwrapper0_data_clk", "rxwrapper0_p_clk";
@@ -589,6 +589,7 @@
             memory-region = <&sdio0_reserved>;
             resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_0_CD_FROM_PINMUX>;
             reset-names = "sdio-cd-input";
+            bus-width = <4>;
         };
 
         pinctrl: pinctrl@7c291000 {
@@ -620,11 +621,26 @@
             polling-delay = <0>;
             thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_0>;
             trips {
-                pvt_ts_0_alert_red: trip-point0 {
-                        temperature = <120000>;
-                        hysteresis = <4000>;
-                        type = "critical";
+                pvt_ts_0_alert_light: trip-point-ts-0-light {
+                        temperature = <105000>;
+                        hysteresis = <3000>;
+                        type = "passive";
                 };
+                pvt_ts_0_alert_medium: trip-point-ts-0-medium {
+                        temperature = <110000>;
+                        hysteresis = <3000>;
+                        type = "passive";
+                };
+                pvt_ts_0_alert_heavy: trip-point-ts-0-heavy {
+                        temperature = <115000>;
+                        hysteresis = <3000>;
+                        type = "passive";
+                };
+                pvt_ts_0_alert_critical: trip-point-ts-0-critical {
+                         temperature = <120000>;
+                         hysteresis = <4000>;
+                         type = "critical";
+                 };
             };
         };
         pvt_ts_1: pvt-ts-1 {
@@ -632,11 +648,26 @@
             polling-delay = <0>;
             thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_1>;
             trips {
-                pvt_ts_1_alert_red: trip-point0 {
-                        temperature = <120000>;
-                        hysteresis = <4000>;
-                        type = "critical";
+                pvt_ts_1_alert_light: trip-point-ts-0-light {
+                        temperature = <105000>;
+                        hysteresis = <3000>;
+                        type = "passive";
                 };
+                pvt_ts_1_alert_medium: trip-point-ts-0-medium {
+                        temperature = <110000>;
+                        hysteresis = <3000>;
+                        type = "passive";
+                };
+                pvt_ts_1_alert_heavy: trip-point-ts-0-heavy {
+                        temperature = <115000>;
+                        hysteresis = <3000>;
+                        type = "passive";
+                };
+                pvt_ts_1_alert_critical: trip-point-ts-0-critical {
+                         temperature = <120000>;
+                         hysteresis = <4000>;
+                         type = "critical";
+                 };
             };
         };
     };

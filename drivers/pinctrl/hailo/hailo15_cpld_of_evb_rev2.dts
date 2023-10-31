@@ -10,3 +10,8 @@
 &{/main-bus/sdio0@78000000} {
     status = "okay";
 };
+
+&{/sdio1@78001000} {
+    status = "okay";
+    bus-width = <4>;
+};

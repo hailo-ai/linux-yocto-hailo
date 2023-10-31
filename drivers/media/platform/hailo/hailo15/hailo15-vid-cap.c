@@ -72,6 +72,11 @@ static int hailo15_querycap(struct file *file, void *fh,
 	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING |
 			    V4L2_CAP_DEVICE_CAPS;
 	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING;
+
+	if (vid_node->path == VID_GRP_P2A) {
+		cap->capabilities |= V4L2_CAP_EXT_PIX_FORMAT;
+	}
+
 	return 0;
 }
 
@@ -79,7 +84,7 @@ static int hailo15_video_create_pipeline(struct hailo15_video_node *vid_node)
 {
 	int ret = 0;
 
-	if (vid_node->pipeline_init == 0) {
+	if (vid_node->pipeline_init == 0 && vid_node->path != VID_GRP_P2A) {
 		ret = hailo15_video_post_event_create_pipeline(vid_node);
 		if (ret) {
 			pr_err("%s - post event failed and returned: %d\n",
@@ -265,17 +270,15 @@ static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
 
 	mutex_lock(&vid_node->ioctl_mutex);
 	if (!vid_node->streaming) {
-		if (vid_node->path != VID_GRP_P2A) {
-			ret = vb2_ioctl_streamon(file, priv, i);
-			if (ret) {
-				mutex_unlock(&vid_node->ioctl_mutex);
-				pr_err("%s - ERROR from vb2_ioctl_streamon: %d\n",
-				       __func__, ret);
-				return -EINVAL;
-			}
+		ret = vb2_ioctl_streamon(file, priv, i);
+		if (ret) {
 			mutex_unlock(&vid_node->ioctl_mutex);
-			return 0;
+			pr_err("%s - ERROR from vb2_ioctl_streamon: %d\n",
+			       __func__, ret);
+			return -EINVAL;
 		}
+		mutex_unlock(&vid_node->ioctl_mutex);
+		return 0;
 
 		ret = hailo15_video_node_subdev_set_stream(vid_node, 1);
 		if (!ret) {
@@ -305,11 +308,9 @@ static int hailo15_streamoff(struct file *file, void *priv,
 		return 0;
 	}
 
-	if (vid_node->path != VID_GRP_P2A) {
-		ret = vb2_ioctl_streamoff(file, priv, i);
-		mutex_unlock(&vid_node->ioctl_mutex);
-		return ret;
-	}
+	ret = vb2_ioctl_streamoff(file, priv, i);
+	mutex_unlock(&vid_node->ioctl_mutex);
+	return ret;
 
 	ret = hailo15_video_node_subdev_set_stream(vid_node, 0);
 	if (!ret) {
@@ -419,7 +420,9 @@ int hailo15_reqbufs(struct file *file, void *priv,
 	req.pad = pad->index;
 	req.num_buffers = p->count;
 
-	hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS, &req);
+	if (vid_node->path != VID_GRP_P2A)
+		hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS,
+				    &req);
 	return ret;
 }
 
@@ -559,6 +562,38 @@ static int hailo15_vidioc_querymenu(struct file *file, void *fh,
 	return ret;
 }
 
+static int hailo15_querybuf(struct file *file, void *priv,
+			    struct v4l2_buffer *p)
+{
+	struct hailo15_video_node *vid_node = video_drvdata(file);
+	struct v4l2_framebuffer fb;
+	struct hailo15_dma_ctx *ctx;
+	int ret;
+
+	if (!vid_node || !p) {
+		return -EINVAL;
+	}
+
+	if (vid_node->path != VID_GRP_P2A) {
+		return vb2_ioctl_querybuf(file, priv, p);
+	}
+
+	memset(&fb, 0, sizeof(fb));
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+	ret = hailo15_video_node_get_fbuf(ctx, &fb);
+	if (ret) {
+		pr_err("%s - get fbuf failed\n", __func__);
+		return -EINTR;
+	}
+
+	p->length = 1;
+	p->m.planes[0].length = fb.fmt.sizeimage;
+	p->m.planes[0].m.mem_offset =
+		0 | ((dma_addr_t)fb.base + (p->index * fb.fmt.sizeimage));
+
+	return 0;
+}
+
 static const struct v4l2_ioctl_ops video_ioctl_ops = {
 	.vidioc_querycap = hailo15_querycap,
 	.vidioc_enum_fmt_vid_cap = hailo15_enum_fmt_vid_cap,
@@ -581,7 +616,7 @@ static const struct v4l2_ioctl_ops video_ioctl_ops = {
 	.vidioc_querymenu = hailo15_vidioc_querymenu,
 	.vidioc_expbuf = vb2_ioctl_expbuf,
 	.vidioc_create_bufs = vb2_ioctl_create_bufs,
-	.vidioc_querybuf = vb2_ioctl_querybuf,
+	.vidioc_querybuf = hailo15_querybuf,
 	.vidioc_qbuf = vb2_ioctl_qbuf,
 	.vidioc_dqbuf = vb2_ioctl_dqbuf,
 	.vidioc_expbuf = vb2_ioctl_expbuf,
@@ -684,11 +719,15 @@ static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
 
 	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_ERROR);
 	vid_node->streaming = 0;
-	ret = hailo15_video_post_event_release_pipeline(vid_node);
-	if (ret) {
-		pr_err("%s - post event release pipeline failed\n", __func__);
+
+	if (vid_node->path != VID_GRP_P2A) {
+		ret = hailo15_video_post_event_release_pipeline(vid_node);
+		if (ret) {
+			pr_err("%s - post event release pipeline failed\n",
+			       __func__);
+		}
+		vid_node->pipeline_init = 0;
 	}
-	vid_node->pipeline_init = 0;
 	vid_node->sequence = 0;
 	return ret;
 }
@@ -741,6 +780,7 @@ static int hailo15_video_node_mmap(struct file *file,
 	unsigned long size;
 	struct v4l2_framebuffer fb;
 	struct hailo15_dma_ctx *ctx;
+	unsigned long f_base;
 	int ret;
 
 	memset(&rmem, 0, sizeof(rmem));
@@ -750,10 +790,14 @@ static int hailo15_video_node_mmap(struct file *file,
 
 	ret = hailo15_video_node_get_fbuf(ctx, &fb);
 	if (!ret) {
-		if (vma->vm_pgoff == (((dma_addr_t)fb.base) >> PAGE_SHIFT)) {
-			if (vma->vm_end - vma->vm_start > fb.fmt.sizeimage)
+		f_base = (((dma_addr_t)fb.base) >> PAGE_SHIFT);
+		if (vma->vm_pgoff == f_base ||
+		    (vid_node->path == VID_GRP_P2A &&
+		     (vma->vm_pgoff > f_base &&
+		      vma->vm_pgoff <= f_base + fb.fmt.sizeimage))) {
+			if (vma->vm_end - vma->vm_start > fb.fmt.sizeimage) {
 				return -ENOMEM;
-
+			}
 			return remap_pfn_range(
 				vma, vma->vm_start, vma->vm_pgoff,
 				vma->vm_end - vma->vm_start,
@@ -831,13 +875,17 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 
 	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
 
-	/* ensure MIN_NUM_FRAMES <= *nbuffers <= MAX_NUM_FRAMES */
-	if (*nbuffers < MIN_NUM_FRAMES) {
-		*nbuffers = MIN_NUM_FRAMES;
-	}
+	if (vid_node->path == VID_GRP_P2A) {
+		*nbuffers = HAILO15_NUM_P2A_BUFFERS;
+	} else {
+		/* ensure MIN_NUM_FRAMES <= *nbuffers <= MAX_NUM_FRAMES */
+		if (*nbuffers < MIN_NUM_FRAMES) {
+			*nbuffers = MIN_NUM_FRAMES;
+		}
 
-	if (*nbuffers > MAX_NUM_FRAMES) {
-		*nbuffers = MAX_NUM_FRAMES;
+		if (*nbuffers > MAX_NUM_FRAMES) {
+			*nbuffers = MAX_NUM_FRAMES;
+		}
 	}
 
 	format =
@@ -850,12 +898,15 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 	*nplanes = format->num_planes;
 	line_length = ALIGN_UP(vid_node->fmt.fmt.pix_mp.width, STRIDE_ALIGN);
 	height = vid_node->fmt.fmt.pix_mp.height;
-
-	for (plane = 0; plane < format->num_planes; ++plane) {
-		bytesperline = hailo15_plane_get_bytesperline(
-			format, line_length, plane);
-		sizes[plane] = hailo15_plane_get_sizeimage(format, height,
-							   bytesperline, plane);
+	if (vid_node->path == VID_GRP_P2A) {
+		sizes[0] = 1;
+	} else {
+		for (plane = 0; plane < format->num_planes; ++plane) {
+			bytesperline = hailo15_plane_get_bytesperline(
+				format, line_length, plane);
+			sizes[plane] = hailo15_plane_get_sizeimage(
+				format, height, bytesperline, plane);
+		}
 	}
 	return 0;
 }
@@ -863,6 +914,8 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 static int hailo15_video_node_buffer_init(struct vb2_buffer *vb)
 {
 	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+	struct v4l2_framebuffer fb;
 	struct vb2_v4l2_buffer *vbuf =
 		container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
 	struct hailo15_buffer *buf =
@@ -871,11 +924,32 @@ static int hailo15_video_node_buffer_init(struct vb2_buffer *vb)
 	int plane;
 
 	memset(buf->dma, 0, sizeof(buf->dma));
-	if (vb->num_planes >= FMT_MAX_PLANES)
+	if (vb->num_planes >= FMT_MAX_PLANES) {
+		pr_info("%s - num of planes too big: %u\n", __func__,
+			vb->num_planes);
 		return -EINVAL;
+	}
 
-	for (plane = 0; plane < vb->num_planes; ++plane) {
-		buf->dma[plane] = vb2_dma_contig_plane_dma_addr(vb, plane);
+	if (vid_node->path == VID_GRP_P2A) {
+		if (vb->index >= HAILO15_NUM_P2A_BUFFERS || vb->index < 0) {
+			pr_err("%s - buffer index out of range: %u\n", __func__,
+			       vb->index);
+			return -EINVAL;
+		}
+
+		if (hailo15_video_node_get_fbuf(ctx, &fb)) {
+			pr_err("%s - fbuf failed\n", __func__);
+			return -EINTR;
+		}
+
+		buf->dma[0] =
+			(dma_addr_t)(fb.base + (vb->index * fb.fmt.sizeimage));
+
+	} else {
+		for (plane = 0; plane < vb->num_planes; ++plane) {
+			buf->dma[plane] =
+				vb2_dma_contig_plane_dma_addr(vb, plane);
+		}
 	}
 
 	pad = media_entity_remote_pad(&vid_node->pad);

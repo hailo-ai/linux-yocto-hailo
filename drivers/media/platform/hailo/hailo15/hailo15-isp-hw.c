@@ -270,6 +270,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	int event_size = 0;
 	int raised_irq_count = 0;
 	int isp_imsc = 0;
+	int mi_ctrl;
 
 	/* clear the hw interrupt*/
 	isp_dev->irq_status.isp_mis = hailo15_isp_read_reg(isp_dev, ISP_MIS);
@@ -296,6 +297,14 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		hailo15_isp_read_reg(isp_dev, MIV2_MIS);
 	hailo15_isp_write_reg(isp_dev, MIV2_ICR,
 			      isp_dev->irq_status.isp_miv2_mis);
+
+	if(isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END){
+			mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
+			mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
+			hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
+			isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
+	}
+
 	if (isp_dev->irq_status.isp_miv2_mis != 0) {
 		hailo15_isp_handle_frame_rx(isp_dev,
 					    isp_dev->irq_status.isp_miv2_mis);

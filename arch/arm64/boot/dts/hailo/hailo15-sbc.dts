@@ -160,9 +160,12 @@
 };
 
 &i2s_cpu_master {
-    status = "ok";
-    sample-offset = <82>;
-    sample-pace = <64>;
+    status = "okay";
+    rx-sample-pace-pattern-repetitions = <2>;
+    rx-sample-pace = <64 64 64>;
+    rx-sample-cmp-to = "prev-val";
+    tx-sample-offset = <81>;
+    tx-sample-pace = <63>;
 };
 
 &audio_card_master {
