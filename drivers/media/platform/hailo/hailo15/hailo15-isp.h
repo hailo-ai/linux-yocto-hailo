@@ -7,6 +7,8 @@
 #include <media/v4l2-ctrls.h>
 #include <linux/of.h>
 #include <linux/interrupt.h>
+#include <linux/workqueue.h>
+#include "hailo15-events.h"
 #include "common.h"
 
 /* We double the needed queue size for safety */
@@ -118,6 +120,9 @@ struct hailo15_isp_device {
 	/* used for empty buffer queue */
 	dma_addr_t fakebuf_phys;
 	void *fakebuf_vaddr;
+	struct hailo15_af_kevent *af_kevent;
+	struct workqueue_struct *af_wq;
+	struct work_struct af_w;
 };
 
 void hailo15_isp_private_entity_init(struct hailo15_isp_device *isp_dev);

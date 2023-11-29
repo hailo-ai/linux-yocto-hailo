@@ -2106,6 +2106,10 @@ static int __init scmi_driver_init(void)
 	scmi_voltage_register();
 	scmi_system_register();
 
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+	scmi_hailo_register();
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
 	return platform_driver_register(&scmi_driver);
 }
 subsys_initcall(scmi_driver_init);
@@ -2121,6 +2125,10 @@ static void __exit scmi_driver_exit(void)
 	scmi_sensors_unregister();
 	scmi_voltage_unregister();
 	scmi_system_unregister();
+
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+	scmi_hailo_unregister();
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
 
 	scmi_bus_exit();
 

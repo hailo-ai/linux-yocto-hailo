@@ -146,7 +146,7 @@ const struct v4l2_ctrl_config hailo15_isp_dci_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_dci_mdoe",
+		.name = "isp_dci_mode",
 		.step = 1,
 		.min = 0,
 		.max = 1,
@@ -157,7 +157,7 @@ const struct v4l2_ctrl_config hailo15_isp_dci_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_dci_curve_mdoe",
+		.name = "isp_dci_curve_mode",
 		.step = 1,
 		.min = 0,
 		.max = 1,

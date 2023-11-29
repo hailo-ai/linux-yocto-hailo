@@ -594,10 +594,9 @@
 
         pinctrl: pinctrl@7c291000 {
             compatible = "hailo15,pinctrl";
-            reg = <0 0x7c2900f4 0 0x4>,
-                  <0 0x7c291000 0 0x1000>,
+            reg = <0 0x7c291000 0 0x1000>,
 				  <0 0x7c292000 0 0x1000>;
-			reg-names = "top_config_bs_interface_select", "general_pads_config_base", "gpio_pads_config_base";
+			reg-names = "general_pads_config_base", "gpio_pads_config_base";
         };
 
     };
@@ -693,6 +692,11 @@
             scmi_reset: protocol@16 {
                 reg = <0x16>;
                 #reset-cells = <1>;
+            };
+
+            scmi_hailo: protocol@81 {
+                reg = <0x81>;
+                #hailo-cells = <1>;
             };
         };
     };

@@ -1,9 +1,27 @@
 #ifndef __HAILO15_EVENTS_H
 #define __HAILO15_EVENTS_H
 
+#include <linux/wait.h>
+#include <linux/sched.h>
+#include <linux/spinlock.h>
+
 #define HAILO15_VIDEO_EVENT_RESOURCE_SIZE 4096
 #define HAILO15_DEAMON_VIDEO_EVENT (V4L2_EVENT_PRIVATE_START + 1000)
 #define HAILO15_DAEMON_ISP_EVENT (V4L2_EVENT_PRIVATE_START + 2000)
+
+struct hailo15_af_kevent {
+	wait_queue_head_t wait_q;
+	struct mutex data_lock;
+	uint32_t sum_a;
+	uint32_t sum_b;
+	uint32_t sum_c;
+	uint32_t lum_a;
+	uint32_t lum_b;
+	uint32_t lum_c;
+	int ready;
+};
+
+extern struct hailo15_af_kevent af_kevent;
 
 enum HAILO15_video_private_event_id {
 	HAILO15_DAEMON_VIDEO_EVENT_CREATE_PIPELINE = 0,

@@ -545,6 +545,17 @@ struct scmi_voltage_proto_ops {
 			 s32 *volt_uV);
 };
 
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+
+#define SCMI_HAILO_FUSE_INFO_SIZE (80)
+
+struct scmi_hailo_proto_ops {
+	int (*get_scu_boot_source)(const struct scmi_protocol_handle *ph, u8 *boot_source);
+	int (*get_fuses_info)(const struct scmi_protocol_handle *ph, u8 info[SCMI_HAILO_FUSE_INFO_SIZE]);
+	int (*set_eth_rmii)(const struct scmi_protocol_handle *ph);
+};
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
 /**
  * struct scmi_notify_ops  - represents notifications' operations provided by
  * SCMI core
@@ -636,6 +647,13 @@ enum scmi_std_protocol {
 	SCMI_PROTOCOL_RESET = 0x16,
 	SCMI_PROTOCOL_VOLTAGE = 0x17,
 };
+
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+enum scmi_ext_hailo_protocol {
+	/* This value must be the same as SCMI_PROTOCOL_ID_HAILO in scu-fw */
+	SCMI_PROTOCOL_HAILO = 0x81,
+};
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
 
 enum scmi_system_events {
 	SCMI_SYSTEM_SHUTDOWN,

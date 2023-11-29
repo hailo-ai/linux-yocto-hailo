@@ -125,9 +125,9 @@ const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_wb_r_gain",
 		.step = 1,
-		.min = 100,
-		.max = 399,
-		.def = 100,
+		.min = 256,
+		.max = 1023,
+		.def = 256,
 	},
 	{
 		/* float 1.0 ~ 3.999 */
@@ -138,9 +138,9 @@ const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_wb_gr_gain",
 		.step = 1,
-		.min = 100,
-		.max = 399,
-		.def = 100,
+		.min = 256,
+		.max = 1023,
+		.def = 256,
 	},
 	{
 		/* float 1.0 ~ 3.999 */
@@ -151,9 +151,9 @@ const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_wb_gb_gain",
 		.step = 1,
-		.min = 100,
-		.max = 399,
-		.def = 100,
+		.min = 256,
+		.max = 1023,
+		.def = 256,
 	},
 	{
 		/* float 1.0 ~ 3.999 */
@@ -164,9 +164,9 @@ const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_wb_b_gain",
 		.step = 1,
-		.min = 100,
-		.max = 399,
-		.def = 100,
+		.min = 256,
+		.max = 1023,
+		.def = 256,
 	},
 	{
 		/* float 9x array */
@@ -179,7 +179,7 @@ const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 		.step = 1,
 		.min = 0,
 		.max = 0xFFFFFFFF,
-		.dims = { 9 },
+		.dims = { 3, 3, 0, 0 },
 	},
 	{
 		.ops = &hailo15_isp_wb_ctrl_ops,

@@ -104,11 +104,6 @@ struct hailo15_pinctrl {
 	struct device *dev;
 
 	/*
-	 * Register address of top_config_bs_interface_select.
-	*/
-	void __iomem *top_config_bs_interface_select;
-
-	/*
 	 * Register base address of general_pads_config.
 	*/
 	void __iomem *general_pads_config_base;

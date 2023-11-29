@@ -70,13 +70,6 @@ static const char *hailo15_cpld_board_revisions[] = {
 	"UNKNOWN (7)"
 };
 
-static const char *hailo15_cpld_boot_options[] = {
-	"Flash",
-	"UART",
-	"PCIe",
-	"N/A"
-};
-
 static const char *hailo15_cpld_sdio_route[] = {
 	"eMMC",
 	"E key",
@@ -114,7 +107,6 @@ struct hailo15_cpld_registers {
 	} reset_status;
 
 	struct {
-		uint8_t io_select;
 		bool power_on_h15_on_power_insert;
 	} bootstrap_status;
 
@@ -202,7 +194,8 @@ int hailo15_cpld_set_board_config(struct hailo15_pinctrl *pinctrl)
 	return ret;
 }
 
-static int hailo15_cpld_get_register(struct hailo15_pinctrl *pinctrl, uint8_t *reg, unsigned int address, char *register_name) {
+static int hailo15_cpld_get_register(struct hailo15_pinctrl *pinctrl, uint8_t *reg, unsigned int address, char *register_name)
+{
 	int ret = 0;
 
 	ret = pinctrl_hailo15_cpld_i2c_read(pinctrl->pinctrl_cpld_i2c_client, address, reg);
@@ -214,7 +207,8 @@ static int hailo15_cpld_get_register(struct hailo15_pinctrl *pinctrl, uint8_t *r
 	return ret;
 }
 
-int hailo15_cpld_get_version(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers* registers) {
+int hailo15_cpld_get_version(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers)
+{
 	uint8_t version = 0;
 	int ret = 0;
 
@@ -229,9 +223,9 @@ int hailo15_cpld_get_version(struct hailo15_pinctrl *pinctrl, struct hailo15_cpl
 	return ret;
 }
 
-int hailo15_cpld_get_bootstrap_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers* registers) {
+int hailo15_cpld_get_bootstrap_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers)
+{
 	uint8_t bootstrap_status = 0;
-	uint32_t bs_interface_select = 0;
 	int ret = 0;
 
 	ret = hailo15_cpld_get_register(pinctrl, &bootstrap_status, H15_CPLD__BOOTSTRAP_STATUS, "boostrap status");
@@ -239,17 +233,14 @@ int hailo15_cpld_get_bootstrap_status(struct hailo15_pinctrl *pinctrl, struct ha
 		return ret;
 	}
 
-	bs_interface_select = readl(pinctrl->top_config_bs_interface_select);
-
-	registers->bootstrap_status.io_select = (bs_interface_select >> H15_CPLD__IO_SELECT_BIT_OFFSET
-		) & H15_CPLD__IO_SELECT_BIT_MASK;
 	registers->bootstrap_status.power_on_h15_on_power_insert = (bootstrap_status >> H15_CPLD__POWER_INSER_BIT_OFFSET
 		) & H15_CPLD__POWER_INSER_BIT_MASK;
 
 	return ret;
 }
 
-int hailo15_cpld_get_power_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers* registers) {
+int hailo15_cpld_get_power_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers)
+{
 	uint8_t power_status = 0;
 	int ret = 0;
 
@@ -264,7 +255,8 @@ int hailo15_cpld_get_power_status(struct hailo15_pinctrl *pinctrl, struct hailo1
 	return ret;
 }
 
-int hailo15_cpld_get_reset_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers* registers, uint8_t board_version) {
+int hailo15_cpld_get_reset_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers, uint8_t board_version)
+{
 	uint8_t reset_status_0 = 0;
 	uint8_t reset_status_1 = 0;
 	int ret = 0;
@@ -299,7 +291,8 @@ int hailo15_cpld_get_reset_status(struct hailo15_pinctrl *pinctrl, struct hailo1
 	return ret;
 }
 
-int hailo15_cpld_get_sdio_route_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers* registers, uint8_t board_version) {
+int hailo15_cpld_get_sdio_route_status(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers, uint8_t board_version)
+{
 	uint8_t sdio_route_status = 0;
 	int ret = 0;
 	if (0 == board_version) {
@@ -315,7 +308,8 @@ int hailo15_cpld_get_sdio_route_status(struct hailo15_pinctrl *pinctrl, struct h
 	return ret;
 }
 
-int hailo15_cpld_get_registers(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers) {
+int hailo15_cpld_get_registers(struct hailo15_pinctrl *pinctrl, struct hailo15_cpld_registers *registers)
+{
 	int board_version = 0;
 	int ret = 0;
 
@@ -350,57 +344,91 @@ int hailo15_cpld_get_registers(struct hailo15_pinctrl *pinctrl, struct hailo15_c
 }
 
 void hailo15_cpld_print_dip_switches(struct hailo15_cpld_registers *registers,
-									  struct seq_file *file) {
+									  struct seq_file *file)
+{
 	int board_version = registers->version.board;
 
 	HAILO15_CPLD_LOG_FORMAT(file, "CPLD DIP switches state:\n");
-	HAILO15_CPLD_LOG_FORMAT(file, "Board revision:\t\t\t\t%s\n", 
-							hailo15_cpld_board_revisions[(registers->version.board) & H15_CPLD__BOARD_VERSION_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "CPLD version:\t\t\t\t%d.%d\n", registers->version.board, registers->version.minor);
 
-	HAILO15_CPLD_LOG_FORMAT(file, "Power enable:\t\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->power_status.power_enable & H15_CPLD__POWER_ENABLE_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "Power good:\t\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->power_status.power_enable & H15_CPLD__POWER_GOOD_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(file, "Board revision:                 %s\n",
+				hailo15_cpld_board_revisions[(registers->version.board) & H15_CPLD__BOARD_VERSION_MASK]);
+
+	HAILO15_CPLD_LOG_FORMAT(file, "CPLD version:                   %d.%d\n",
+				registers->version.board,
+				registers->version.minor);
+
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "Power enable:                   %s\n",
+		hailo15_cpld_switch_state[registers->power_status.power_enable &
+					  H15_CPLD__POWER_ENABLE_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "Power good:                     %s\n",
+		hailo15_cpld_switch_state[registers->power_status.power_enable &
+					  H15_CPLD__POWER_GOOD_MASK]);
 
 	HAILO15_CPLD_LOG_FORMAT(file, "Reset status:\n");
-	HAILO15_CPLD_LOG_FORMAT(file, "\tHailo15:\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.h15 & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tFTDI:\t\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.ftdi & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tCam 0:\t\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.cam_0 & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tCam 1:\t\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.cam_1 & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tDSI to HDMI:\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.dsi_to_hdmi & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tEth PHY:\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.eth_phy & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tUSB hub:\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.usb_hub & H15_CPLD__RESET_STATUS_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tAudio codec:\t\t\t%s\n",
-							hailo15_cpld_switch_state[registers->reset_status.audio_codec & H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Hailo15:                      %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.h15 &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  FTDI:                         %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.ftdi &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Cam 0:                        %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.cam_0 &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Cam 1:                        %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.cam_1 &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  DSI to HDMI:                  %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.dsi_to_hdmi &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Eth PHY:                      %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.eth_phy &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  USB hub:                      %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.usb_hub &
+					  H15_CPLD__RESET_STATUS_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Audio codec:                  %s\n",
+		hailo15_cpld_switch_state[registers->reset_status.audio_codec &
+					  H15_CPLD__RESET_STATUS_MASK]);
 	if (board_version > 0) {
 		/* Not supported in EVB REV 1 */
-		HAILO15_CPLD_LOG_FORMAT(file, "\tFlash:\t\t\t%s\n",
-								hailo15_cpld_switch_state[registers->reset_status.flash & H15_CPLD__RESET_STATUS_MASK]);
-		HAILO15_CPLD_LOG_FORMAT(file, "\teMMC:\t\t\t\t%s\n",
-								hailo15_cpld_switch_state[registers->reset_status.emmc & H15_CPLD__RESET_STATUS_MASK]);
+		HAILO15_CPLD_LOG_FORMAT(
+			file, "  Flash:                        %s\n",
+			hailo15_cpld_switch_state[registers->reset_status.flash &
+						  H15_CPLD__RESET_STATUS_MASK]);
+		HAILO15_CPLD_LOG_FORMAT(
+			file, "  eMMC:                         %s\n",
+			hailo15_cpld_switch_state[registers->reset_status.emmc &
+						  H15_CPLD__RESET_STATUS_MASK]);
 	}
 
 	HAILO15_CPLD_LOG_FORMAT(file, "Bootstrap status:\n");
-	HAILO15_CPLD_LOG_FORMAT(file, "\tSCU booted from:\t\t%s\n",
-							hailo15_cpld_boot_options[registers->bootstrap_status.io_select & H15_CPLD__IO_SELECT_BIT_MASK]);
-	HAILO15_CPLD_LOG_FORMAT(file, "\tPower on H15 on power insert:\t%s\n",
-							hailo15_cpld_switch_state[registers->bootstrap_status.power_on_h15_on_power_insert & H15_CPLD__POWER_INSER_BIT_MASK]);
+	HAILO15_CPLD_LOG_FORMAT(
+		file, "  Power on H15 on power insert: %s\n",
+		hailo15_cpld_switch_state[registers->bootstrap_status.power_on_h15_on_power_insert & H15_CPLD__POWER_INSER_BIT_MASK]);
 
 	if (board_version > 0) {
 		HAILO15_CPLD_LOG_FORMAT(file, "SDIO route:\n");
 		/* Not supported in EVB REV 1 */
-		HAILO15_CPLD_LOG_FORMAT(file, "\tSDIO 0:\t\t\t%s\n",
-								hailo15_cpld_sdio_route[registers->sdio_route_status.sdio_0 & H15_CPLD__SDIO_ROUTE_MASK]);
-		HAILO15_CPLD_LOG_FORMAT(file, "\tSDIO 1:\t\t\t%s\n",
-								hailo15_cpld_sdio_route[registers->sdio_route_status.sdio_1 & H15_CPLD__SDIO_ROUTE_MASK]);
+		HAILO15_CPLD_LOG_FORMAT(
+			file, "  SDIO 0:                       %s\n",
+			hailo15_cpld_sdio_route[registers->sdio_route_status
+							.sdio_0 &
+						H15_CPLD__SDIO_ROUTE_MASK]);
+		HAILO15_CPLD_LOG_FORMAT(
+			file, "  SDIO 1:                       %s\n",
+			hailo15_cpld_sdio_route[registers->sdio_route_status
+							.sdio_1 &
+						H15_CPLD__SDIO_ROUTE_MASK]);
 	}
 }
 

@@ -39,4 +39,9 @@ config VIDEO_HAILO15_ISP
 	help
 		Support for Hailo15 ISP
 
+config VIDEO_HAILO15_AF_MONITOR_EXAMPLE
+	tristate "Hailo15 af monitor example"
+	help
+		Support for Hailo15 AF
+
 endif

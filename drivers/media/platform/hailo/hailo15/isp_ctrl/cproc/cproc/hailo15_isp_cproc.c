@@ -195,8 +195,8 @@ const struct v4l2_ctrl_config hailo15_isp_cproc_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cproc_hue",
 		.step = 1,
-		.min = -9000,
-		.max = 8929,
+		.min = -90,
+		.max = 89,
 	},
 	{
 		/* float 0.3 ~ 1.9921875 */

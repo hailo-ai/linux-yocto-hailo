@@ -15,9 +15,8 @@
 
 #define HAILO_VID_NAME "hailo_video"
 
+#define MIN_BUFFERS_NEEDED 5
 #define MAX_NUM_FRAMES HAILO15_MAX_BUFFERS
-#define MIN_NUM_FRAMES 29
-#define MIN_BUFFERS_NEEDED 2
 #define NUM_PLANES                                                             \
 	1 /*working on packed mode, this should be determined from the format*/
 
@@ -714,7 +713,6 @@ static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
 		dev_err(vid_node->dev,
 			"can't stop stream on node %d with error %d\n",
 			vid_node->id, ret);
-		return ret;
 	}
 
 	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_ERROR);
@@ -860,6 +858,7 @@ static struct v4l2_file_operations video_ops = {
 	.release = hailo15_video_node_release,
 	.unlocked_ioctl = hailo15_video_node_unlocked_ioctl,
 };
+
 static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 			       unsigned int *nplanes, unsigned int sizes[],
 			       struct device *alloc_devs[])
@@ -873,20 +872,13 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 		return -EINVAL;
 	}
 
-	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
-
-	if (vid_node->path == VID_GRP_P2A) {
-		*nbuffers = HAILO15_NUM_P2A_BUFFERS;
-	} else {
-		/* ensure MIN_NUM_FRAMES <= *nbuffers <= MAX_NUM_FRAMES */
-		if (*nbuffers < MIN_NUM_FRAMES) {
-			*nbuffers = MIN_NUM_FRAMES;
-		}
-
-		if (*nbuffers > MAX_NUM_FRAMES) {
-			*nbuffers = MAX_NUM_FRAMES;
-		}
+	if(q->num_buffers >= MAX_NUM_FRAMES){
+		dev_info(vid_node->dev, "already allocated maximum buffers");
+		return -EINVAL;
 	}
+
+	if(*nbuffers > MAX_NUM_FRAMES - q->num_buffers)
+		*nbuffers = MAX_NUM_FRAMES - q->num_buffers;
 
 	format =
 		hailo15_fourcc_get_format(vid_node->fmt.fmt.pix_mp.pixelformat);
@@ -895,17 +887,36 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 		return -EINVAL;
 	}
 
-	*nplanes = format->num_planes;
 	line_length = ALIGN_UP(vid_node->fmt.fmt.pix_mp.width, STRIDE_ALIGN);
 	height = vid_node->fmt.fmt.pix_mp.height;
-	if (vid_node->path == VID_GRP_P2A) {
-		sizes[0] = 1;
-	} else {
-		for (plane = 0; plane < format->num_planes; ++plane) {
+
+	if(*nplanes){
+		if(vid_node->path == VID_GRP_P2A)
+			return -EINVAL;
+
+		if(*nplanes != format->num_planes)
+			return -EINVAL;
+		for(plane = 0; plane < format->num_planes; ++plane){
 			bytesperline = hailo15_plane_get_bytesperline(
 				format, line_length, plane);
-			sizes[plane] = hailo15_plane_get_sizeimage(
-				format, height, bytesperline, plane);
+			if(sizes[plane] != hailo15_plane_get_sizeimage(
+				format, height, bytesperline, plane)){
+				return -EINVAL;
+			}
+		}
+	}
+	else {
+		*nplanes = format->num_planes;
+		if (vid_node->path == VID_GRP_P2A) {
+			*nbuffers = HAILO15_NUM_P2A_BUFFERS;
+			sizes[0] = 1;
+		} else {
+			for (plane = 0; plane < format->num_planes; ++plane) {
+				bytesperline = hailo15_plane_get_bytesperline(
+					format, line_length, plane);
+				sizes[plane] = hailo15_plane_get_sizeimage(
+					format, height, bytesperline, plane);
+			}
 		}
 	}
 	return 0;

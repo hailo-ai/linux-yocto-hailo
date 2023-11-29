@@ -37,6 +37,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/log2.h>
 #include "macb.h"
+#include <linux/soc/hailo/scmi_hailo_protocol.h>
 
 /* This structure is only used for MACB on SiFive FU540 devices */
 struct sifive_fu540_macb_mgmt {
@@ -4551,6 +4552,30 @@ static int fu540_c000_init(struct platform_device *pdev)
 	return macb_init(pdev);
 }
 
+static int hailo15_init(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	const char *pm;
+	const struct scmi_hailo_ops *hailo_protocol_ops;
+
+	of_property_read_string(np, "phy-mode", &pm);
+	if (strcmp(pm, "rmii") == 0) {
+		hailo_protocol_ops = scmi_hailo_get_ops();
+		if (hailo_protocol_ops == NULL) {
+			return -EPROBE_DEFER;
+		}
+		if (IS_ERR(hailo_protocol_ops)) {
+			/* Hailo SCMI ops unreachable, try setting CONFIG_HAILO_SCMI_PROTOCOL=y */
+			dev_err(&pdev->dev, "hailo scmi ops unreachable\n");
+			return PTR_ERR(hailo_protocol_ops);
+		}
+
+		hailo_protocol_ops->set_eth_rmii();
+	}
+
+	return macb_init(pdev);
+}
+
 static const struct macb_usrio_config sama7g5_usrio = {
 	.mii = 0,
 	.rmii = 1,
@@ -4681,7 +4706,7 @@ static const struct macb_config hailo15_config = {
 	.usrio = &macb_default_usrio,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
-	.init = macb_init,
+	.init = hailo15_init,
 	.usrio = &macb_default_usrio,
 	.queue_mask = 1, // working with half duplex with more than 1 queue might result error -> when moving to half duplex this value should be ignored and use value 1 (MSW-2355)
 	.disable_queues_at_init = true,

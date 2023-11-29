@@ -194,7 +194,7 @@ const struct v4l2_ctrl_config hailo15_isp_lsc_ctrls[] = {
 		.step = 1,
 		.min = 0,
 		.max = 0xFFF,
-		.dims = { 289 },
+		.dims = { 17, 17, 0, 0 },
 	},
 	{
 		/* uint16_t 289x array */
@@ -207,7 +207,7 @@ const struct v4l2_ctrl_config hailo15_isp_lsc_ctrls[] = {
 		.step = 1,
 		.min = 0,
 		.max = 0xFFF,
-		.dims = { 289 },
+		.dims = { 17, 17, 0, 0 },
 	},
 	{
 		/* uint16_t 289x array */
@@ -220,7 +220,7 @@ const struct v4l2_ctrl_config hailo15_isp_lsc_ctrls[] = {
 		.step = 1,
 		.min = 0,
 		.max = 0xFFF,
-		.dims = { 289 },
+		.dims = { 17, 17, 0, 0 },
 	},
 	{
 		/* uint16_t 289x array */
@@ -233,7 +233,7 @@ const struct v4l2_ctrl_config hailo15_isp_lsc_ctrls[] = {
 		.step = 1,
 		.min = 0,
 		.max = 0xFFF,
-		.dims = { 289 },
+		.dims = { 17, 17, 0, 0 },
 	},
 };
 

@@ -138,8 +138,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_blue_linear",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		/* float -16 ~ 15.9375*/
@@ -150,8 +150,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_blue_square",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		/* float -16 ~ 15.9375*/
@@ -162,8 +162,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_blue_cubic",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		/* float -16 ~ 15.9375*/
@@ -174,8 +174,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_red_linear",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		/* float -16 ~ 15.9375*/
@@ -186,8 +186,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_red_square",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		/* float -16 ~ 15.9375*/
@@ -198,8 +198,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_red_cubic",
 		.step = 1,
-		.min = -1600,
-		.max = 1593,
+		.min = -256,
+		.max = 255,
 	},
 	{
 		.ops = &hailo15_isp_cac_ctrl_ops,
@@ -209,8 +209,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_h_center_offset",
 		.step = 1,
-		.min = 0,
-		.max = 8191,
+		.min = -2047,
+		.max = 2047,
 	},
 	{
 		.ops = &hailo15_isp_cac_ctrl_ops,
@@ -220,8 +220,8 @@ const struct v4l2_ctrl_config hailo15_isp_cac_ctrls[] = {
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_cac_v_center_offset",
 		.step = 1,
-		.min = 0,
-		.max = 8191,
+		.min = -2047,
+		.max = 2047,
 	},
 };
 

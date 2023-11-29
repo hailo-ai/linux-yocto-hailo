@@ -402,15 +402,6 @@ static int pixel_mux_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = v4l2_async_register_subdev(subdev);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "%s Async register failed, ret=%d\n",
-			__func__, ret);
-		goto probe_err_entity_cleanup;
-	}
-
-	mutex_init(&pixel_mux->lock);
-
 	dma_ctx = devm_kzalloc(&pdev->dev, sizeof(struct hailo15_dma_ctx),
 			       GFP_KERNEL);
 
@@ -425,13 +416,22 @@ static int pixel_mux_probe(struct platform_device *pdev)
 		goto err_init_dma_ctx;
 	}
 
+	ret = v4l2_async_register_subdev(subdev);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "%s Async register failed, ret=%d\n",
+			__func__, ret);
+		goto probe_err_entity_cleanup;
+	}
+
+	mutex_init(&pixel_mux->lock);
+
 	dev_info(&pdev->dev, "%s hailo pixel mux probed succesfully\n",
 		 __func__);
 	return 0;
 
+probe_err_entity_cleanup:
 err_init_dma_ctx:
 err_alloc_dma_ctx:
-probe_err_entity_cleanup:
 	media_entity_cleanup(&subdev->entity);
 	return ret;
 }

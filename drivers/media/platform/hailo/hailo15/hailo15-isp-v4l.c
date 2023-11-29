@@ -17,7 +17,6 @@
 #include <isp_ctrl/hailo15_isp_ctrl.h>
 #include "hailo15-isp.h"
 #include "hailo15-isp-hw.h"
-#include "hailo15-events.h"
 #include "common.h"
 
 #define HAILO15_ISP_NAME "hailo-isp"
@@ -72,7 +71,11 @@ extern void hailo15_isp_configure_frame_base(struct hailo15_isp_device *,
 					     dma_addr_t *, unsigned int);
 extern void hailo15_isp_configure_frame_size(struct hailo15_isp_device *, int);
 extern irqreturn_t hailo15_isp_irq_process(struct hailo15_isp_device *);
+extern void hailo15_isp_handle_afm_int(struct work_struct *);
 extern int hailo15_isp_dma_set_enable(struct hailo15_isp_device *, int, int);
+
+struct hailo15_af_kevent af_kevent;
+EXPORT_SYMBOL(af_kevent);
 
 static irqreturn_t hailo15_isp_irq_handler(int irq, void *isp_dev)
 {
@@ -355,7 +358,7 @@ static int hailo15_vsi_isp_init_events(struct hailo15_isp_device *isp_dev)
 
 	isp_dev->event_resource.phy_addr =
 		virt_to_phys(isp_dev->event_resource.virt_addr);
-	isp_dev->event_resource.size = PAGE_SIZE;
+	isp_dev->event_resource.size = HAILO15_EVENT_RESOURCE_SIZE;
 	memset(isp_dev->event_resource.virt_addr, 0,
 	       isp_dev->event_resource.size);
 	return 0;
@@ -1097,6 +1100,8 @@ static void hailo15_clean_isp_device(struct hailo15_isp_device *isp_dev)
 	hailo15_isp_destroy_async_subdevs(isp_dev);
 	mutex_destroy(&isp_dev->mlock);
 	mutex_destroy(&isp_dev->ctrl_lock);
+	mutex_destroy(&isp_dev->af_kevent->data_lock);
+	destroy_workqueue(isp_dev->af_wq);
 }
 
 /* Initialize the dma context.                                                  */
@@ -1176,9 +1181,23 @@ static int hailo15_isp_probe(struct platform_device *pdev)
 		goto err_register_subdev;
 	}
 
+	init_waitqueue_head(&af_kevent.wait_q);
+	mutex_init(&af_kevent.data_lock);
+	isp_dev->af_kevent = &af_kevent;
+
+	isp_dev->af_wq = create_singlethread_workqueue("af_wq");
+	if (!isp_dev->af_wq) {
+		dev_err(dev, "can't create af workqueue\n");
+		goto err_create_wq;
+	}
+
+	INIT_WORK(&isp_dev->af_w, hailo15_isp_handle_afm_int);
+
 	dev_info(dev, "hailo15 isp driver probed\n");
 	goto out;
 
+err_create_wq:
+	mutex_destroy(&af_kevent.data_lock);
 err_register_subdev:
 	hailo15_isp_ctrl_destroy(isp_dev);
 err_init_ctrl:

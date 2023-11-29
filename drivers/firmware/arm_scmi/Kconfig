@@ -92,4 +92,10 @@ config ARM_SCMI_POWER_DOMAIN
 	  will be called scmi_pm_domain. Note this may needed early in boot
 	  before rootfs may be available.
 
+config HAILO_SCMI_PROTOCOL
+	bool "SCMI Hailo protocol"
+	depends on ARM_SCMI_PROTOCOL
+	default n
+	help
+		This enables support for the Hailo protocol over SCMI.
 endmenu

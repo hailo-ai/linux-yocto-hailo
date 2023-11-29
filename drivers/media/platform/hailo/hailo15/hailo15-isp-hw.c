@@ -265,6 +265,39 @@ static void hailo15_isp_handle_frame_rx(struct hailo15_isp_device *isp_dev,
 	hailo15_isp_handle_frame_rx_sp2(isp_dev, irq_status);
 }
 
+void hailo15_isp_handle_afm_int(struct work_struct *work)
+{
+	struct hailo15_isp_device *isp_dev =
+		(struct hailo15_isp_device *)container_of(
+			work, struct hailo15_isp_device, af_w);
+	uint32_t sum_a, sum_b, sum_c, lum_a, lum_b, lum_c;
+	sum_a = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_A);
+	sum_b = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_B);
+	sum_c = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_C);
+	lum_a = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_A);
+	lum_b = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_B);
+	lum_c = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_C);
+
+	mutex_lock(&isp_dev->af_kevent->data_lock);
+	if (isp_dev->af_kevent->ready == 1) {
+		pr_debug("%s - AF event not handled in time, dropping measurements\n",
+			__func__);
+		mutex_unlock(&isp_dev->af_kevent->data_lock);
+		return;
+	}
+
+	isp_dev->af_kevent->sum_a = sum_a;
+	isp_dev->af_kevent->sum_b = sum_b;
+	isp_dev->af_kevent->sum_c = sum_c;
+	isp_dev->af_kevent->lum_a = lum_a;
+	isp_dev->af_kevent->lum_b = lum_b;
+	isp_dev->af_kevent->lum_c = lum_c;
+	isp_dev->af_kevent->ready = 1;
+	mutex_unlock(&isp_dev->af_kevent->data_lock);
+
+	wake_up_interruptible_all(&isp_dev->af_kevent->wait_q);
+}
+
 static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 {
 	int event_size = 0;
@@ -278,7 +311,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	if (isp_dev->irq_status.isp_mis != 0) {
 		raised_irq_count++;
 
-		if(isp_dev->irq_status.isp_mis & ISP_MIS_DATA_LOSS){
+		if (isp_dev->irq_status.isp_mis & ISP_MIS_DATA_LOSS) {
 			pr_err("fatal: isp data loss detected!\n");
 			isp_imsc = hailo15_isp_read_reg(isp_dev, ISP_IMSC);
 			isp_imsc &= ~(ISP_MIS_DATA_LOSS);
@@ -293,16 +326,24 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 			hailo15_isp_read_reg(isp_dev, ISP_VSM_DELTA_V));
 	}
 
+	if (isp_dev->irq_status.isp_mis &
+	    (ISP_MIS_AFM_SUM_OF | ISP_MIS_AFM_LUM_OF)) {
+		pr_warn("%s - AFM overflow - mis = 0x%x\n", __func__,
+			isp_dev->irq_status.isp_mis);
+	} else if (isp_dev->irq_status.isp_mis & (ISP_MIS_AFM_FIN)) {
+		queue_work(isp_dev->af_wq, &isp_dev->af_w);
+	}
+
 	isp_dev->irq_status.isp_miv2_mis =
 		hailo15_isp_read_reg(isp_dev, MIV2_MIS);
 	hailo15_isp_write_reg(isp_dev, MIV2_ICR,
 			      isp_dev->irq_status.isp_miv2_mis);
 
-	if(isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END){
-			mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
-			mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
-			hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
-			isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
+	if (isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END) {
+		mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
+		mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
+		hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
+		isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
 	}
 
 	if (isp_dev->irq_status.isp_miv2_mis != 0) {

@@ -79,6 +79,17 @@
 #define MP_WR_YUV_STR_SP_MASK 0x0
 #define MP_WR_YUV_STR_P_MASK (BIT(4) | BIT(5))
 
+/*AF Measurments*/
+#define ISP_AFM_SUM_A 0x2024
+#define ISP_AFM_SUM_B 0x2028
+#define ISP_AFM_SUM_C 0x202c
+#define ISP_AFM_LUM_A 0x2030
+#define ISP_AFM_LUM_B 0x2034
+#define ISP_AFM_LUM_C 0x2038
+
+#define ISP_MIS_AFM_SUM_OF BIT(12)
+#define ISP_MIS_AFM_LUM_OF BIT(13)
+#define ISP_MIS_AFM_FIN BIT(14)
 #define ISP_MIS_VSM_DONE BIT(19)
 
 #define ISP_VSM_DELTA_H 0x2f1c

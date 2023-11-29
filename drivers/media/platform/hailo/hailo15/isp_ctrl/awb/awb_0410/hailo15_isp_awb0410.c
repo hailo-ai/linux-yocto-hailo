@@ -70,10 +70,10 @@ static int hailo15_isp_awb0410_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AWB_ILLUM_INDEX:
 	case HAILO15_ISP_CID_AWB_ILLUM_PROFILES:
 	case HAILO15_ISP_CID_AWB_ILLUM_NUM:
-	case HAILO15_ISP_CID_AWB_RB_PROJ_MAX:
-	case HAILO15_ISP_CID_AWB_SKY_RB_PROJ_MAX:
-	case HAILO15_ISP_CID_AWB_INDOOR_RB_PROJ_MIN:
-	case HAILO15_ISP_CID_AWB_OUTDOOR_RB_PROJ_MIN:
+	case HAILO15_ISP_CID_AWB_RG_PROJ_MAX:
+	case HAILO15_ISP_CID_AWB_SKY_RG_PROJ_MAX:
+	case HAILO15_ISP_CID_AWB_INDOOR_RG_PROJ_MIN:
+	case HAILO15_ISP_CID_AWB_OUTDOOR_RG_PROJ_MIN:
 	case HAILO15_ISP_CID_AWB_MEASURE_WINDOWN:
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
@@ -101,10 +101,10 @@ static int hailo15_isp_awb0410_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AWB_ILLUM_INDEX:
 	case HAILO15_ISP_CID_AWB_ILLUM_PROFILES:
 	case HAILO15_ISP_CID_AWB_ILLUM_NUM:
-	case HAILO15_ISP_CID_AWB_RB_PROJ_MAX:
-	case HAILO15_ISP_CID_AWB_SKY_RB_PROJ_MAX:
-	case HAILO15_ISP_CID_AWB_INDOOR_RB_PROJ_MIN:
-	case HAILO15_ISP_CID_AWB_OUTDOOR_RB_PROJ_MIN:
+	case HAILO15_ISP_CID_AWB_RG_PROJ_MAX:
+	case HAILO15_ISP_CID_AWB_SKY_RG_PROJ_MAX:
+	case HAILO15_ISP_CID_AWB_INDOOR_RG_PROJ_MIN:
+	case HAILO15_ISP_CID_AWB_OUTDOOR_RG_PROJ_MIN:
 	case HAILO15_ISP_CID_AWB_MEASURE_WINDOWN:
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
@@ -203,11 +203,11 @@ const struct v4l2_ctrl_config hailo15_isp_awb0410_ctrls[] = {
 	{
 		/*float 0 ~ 5.0 not sure */
 		.ops = &hailo15_isp_awb0410_ctrl_ops,
-		.id = HAILO15_ISP_CID_AWB_RB_PROJ_MAX,
+		.id = HAILO15_ISP_CID_AWB_RG_PROJ_MAX,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_awb_rb_proj_max",
+		.name = "isp_awb_rg_proj_max",
 		.step = 1,
 		.min = 0,
 		.max = 500,
@@ -215,11 +215,11 @@ const struct v4l2_ctrl_config hailo15_isp_awb0410_ctrls[] = {
 	{
 		/*float 0 ~ 5.0 */
 		.ops = &hailo15_isp_awb0410_ctrl_ops,
-		.id = HAILO15_ISP_CID_AWB_SKY_RB_PROJ_MAX,
+		.id = HAILO15_ISP_CID_AWB_SKY_RG_PROJ_MAX,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_awb_sky_rb_proj_max",
+		.name = "isp_awb_sky_rg_proj_max",
 		.step = 1,
 		.min = 0,
 		.max = 500,
@@ -227,11 +227,11 @@ const struct v4l2_ctrl_config hailo15_isp_awb0410_ctrls[] = {
 	{
 		/*float 0 ~ 5.0 */
 		.ops = &hailo15_isp_awb0410_ctrl_ops,
-		.id = HAILO15_ISP_CID_AWB_INDOOR_RB_PROJ_MIN,
+		.id = HAILO15_ISP_CID_AWB_INDOOR_RG_PROJ_MIN,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_awb_indoor_rb_proj_min",
+		.name = "isp_awb_indoor_rg_proj_min",
 		.step = 1,
 		.min = 0,
 		.max = 500,
@@ -239,11 +239,11 @@ const struct v4l2_ctrl_config hailo15_isp_awb0410_ctrls[] = {
 	{
 		/*float 0 ~ 5.0 */
 		.ops = &hailo15_isp_awb0410_ctrl_ops,
-		.id = HAILO15_ISP_CID_AWB_OUTDOOR_RB_PROJ_MIN,
+		.id = HAILO15_ISP_CID_AWB_OUTDOOR_RG_PROJ_MIN,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = "isp_awb_outdoor_rb_proj_min",
+		.name = "isp_awb_outdoor_rg_proj_min",
 		.step = 1,
 		.min = 0,
 		.max = 500,

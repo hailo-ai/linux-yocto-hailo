@@ -467,7 +467,7 @@ const struct v4l2_ctrl_config hailo15_isp_dmscv2_ctrls[] = {
 		.name = "isp_dmsc_sharpen_fac_black",
 		.step = 1,
 		.min = 0,
-		.max = 51,
+		.max = 511,
 		.dims = { 1 },
 	},
 	{

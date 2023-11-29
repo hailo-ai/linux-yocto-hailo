@@ -59,7 +59,7 @@
 #include "awb/awb_0410/hailo15_isp_awb0410.h"
 #include "gc/gc_v2/hailo15_isp_gcv2.h"
 #include "2dnr/2dnr/hailo15_isp_2dnr.h"
-// #include "wdr/wdr_v4/hailo15_isp_wdrv4.h" - wdr not supported yet
+#include "wdr/wdr_v4/hailo15_isp_wdrv4.h"
 #include "ee/ee/hailo15_isp_ee.h"
 #include "cproc/cproc/hailo15_isp_cproc.h"
 #include "ca/ca/hailo15_isp_ca.h"
@@ -70,7 +70,7 @@
 #include "dmsc/dmsc_v2/hailo15_isp_dmscv2.h"
 #include "dpcc/dpcc/hailo15_isp_dpcc.h"
 #include "dpf/dpf/hailo15_isp_dpf.h"
-// #include "lsc/lsc/hailo15_isp_lsc.h" - lsc not supported yet
+#include "lsc/lsc/hailo15_isp_lsc.h"
 #include "wb/wb/hailo15_isp_wb.h"
 #include "dci/dci/hailo15_isp_dci.h"
 
@@ -82,7 +82,7 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	ctrl_count += hailo15_isp_awb0410_ctrl_count();
 	ctrl_count += hailo15_isp_gcv2_ctrl_count();
 	ctrl_count += hailo15_isp_2dnr_ctrl_count();
-	// ctrl_count += hailo15_isp_wdrv4_ctrl_count();  - wdr not supported yet
+	ctrl_count += hailo15_isp_wdrv4_ctrl_count();
 	ctrl_count += hailo15_isp_ee_ctrl_count();
 	ctrl_count += hailo15_isp_cproc_ctrl_count();
 	ctrl_count += hailo15_isp_ca_ctrl_count();
@@ -93,7 +93,7 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	ctrl_count += hailo15_isp_dmscv2_ctrl_count();
 	ctrl_count += hailo15_isp_dpcc_ctrl_count();
 	ctrl_count += hailo15_isp_dpf_ctrl_count();
-	// ctrl_count += hailo15_isp_lsc_ctrl_count(); - lsc not supported yet
+	ctrl_count += hailo15_isp_lsc_ctrl_count();
 	ctrl_count += hailo15_isp_wb_ctrl_count();
 	ctrl_count += hailo15_isp_dci_ctrl_count();
 	ctrl_count += hailo15_isp_afv1_ctrl_count();
@@ -106,7 +106,7 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	hailo15_isp_awb0410_ctrl_create(isp_dev);
 	hailo15_isp_gcv2_ctrl_create(isp_dev);
 	hailo15_isp_2dnr_ctrl_create(isp_dev);
-	// hailo15_isp_wdrv4_ctrl_create(isp_dev); - wdr not supported yet
+	hailo15_isp_wdrv4_ctrl_create(isp_dev);
 	hailo15_isp_ee_ctrl_create(isp_dev);
 	hailo15_isp_cproc_ctrl_create(isp_dev);
 	hailo15_isp_ca_ctrl_create(isp_dev);
@@ -117,11 +117,13 @@ int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev)
 	hailo15_isp_dmscv2_ctrl_create(isp_dev);
 	hailo15_isp_dpcc_ctrl_create(isp_dev);
 	hailo15_isp_dpf_ctrl_create(isp_dev);
-	// hailo15_isp_lsc_ctrl_create(isp_dev); - lsc not supported yet
+	hailo15_isp_lsc_ctrl_create(isp_dev);
 	hailo15_isp_wb_ctrl_create(isp_dev);
 	hailo15_isp_dci_ctrl_create(isp_dev);
 	hailo15_isp_afv1_ctrl_create(isp_dev);
 	isp_dev->sd.ctrl_handler = &isp_dev->ctrl_handler;
+
+	pr_info("%s - done\n", __func__);
 
 	return 0;
 }
