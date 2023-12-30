@@ -5,7 +5,7 @@
 
 /dts-v1/;
 #include "hailo15-evb-base.dtsi"
-#include "hailo15-evb-security-camera-sensor.h"
+#include "hailo15-camera-sensor.h"
 #include <dt-bindings/pinctrl/hailo15_cpld.h>
 
 / {

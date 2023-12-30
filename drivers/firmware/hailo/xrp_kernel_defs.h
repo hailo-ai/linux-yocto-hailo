@@ -42,6 +42,7 @@
 #define XRP_IOCTL_FREE		_IO(XRP_IOCTL_MAGIC, 2)
 #define XRP_IOCTL_QUEUE		_IO(XRP_IOCTL_MAGIC, 3)
 #define XRP_IOCTL_QUEUE_NS	_IO(XRP_IOCTL_MAGIC, 4)
+#define XRP_IOCTL_DMA_SYNC  _IO(XRP_IOCTL_MAGIC, 5)
 
 struct xrp_ioctl_alloc {
     __u32 size;
@@ -80,6 +81,18 @@ struct xrp_ioctl_queue {
     __u64 out_data_addr;
     __u64 buffer_addr;
     __u64 nsid_addr;
+};
+
+enum ioctl_sync_access_time {
+    XRP_FLAG_BUFFER_SYNC_START,
+    XRP_FLAG_BUFFER_SYNC_END,
+};
+
+struct xrp_ioctl_sync_buffer {
+    __u32 direction;
+    __u32 access_time;
+    __u32 size;
+    __u64 addr;
 };
 
 #endif

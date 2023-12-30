@@ -294,7 +294,7 @@ static void xrp_private_free_pool(struct xrp_allocation_pool *pool)
     mutex_unlock(&private_pool_list_lock);
 }
 
-static phys_addr_t xrp_private_offset(const struct xrp_allocation *allocation)
+static phys_addr_t xrp_private_addr(const struct xrp_allocation *allocation)
 {
     struct xrp_private_pool *ppool = container_of(allocation->pool,
                               struct xrp_private_pool,
@@ -306,7 +306,7 @@ static const struct xrp_allocation_ops xrp_private_pool_ops = {
     .alloc = xrp_private_alloc,
     .free = xrp_private_free,
     .free_pool = xrp_private_free_pool,
-    .offset = xrp_private_offset,
+    .addr = xrp_private_addr,
 };
 
 long xrp_init_private_pool(struct xrp_allocation_pool **ppool,

@@ -92,7 +92,7 @@ long xrp_share_dma(
  * be shared back.
  */
 long xrp_share_block(
-    struct xvp *xvp, void *virt, unsigned long size,
+    struct file *filp, void *virt, unsigned long size,
     enum ioctl_buffer_flags flags, phys_addr_t *paddr, uint32_t *dsp_paddr,
     struct xrp_mapping *mapping, enum lut_mapping lut_mapping, bool config_lut);
 
@@ -116,5 +116,8 @@ struct xrp_shared_allocation *xrp_add_shared_allocation(
     struct xrp_allocation *allocation);
 
 void xrp_remove_shared_allocation(struct xrp_shared_allocation *p);
+
+long xrp_ioctl_sync_dma(
+    struct file *filp, struct xrp_ioctl_sync_buffer __user *p);
 
 #endif

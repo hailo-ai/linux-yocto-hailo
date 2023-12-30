@@ -72,6 +72,7 @@ static int hailo15_isp_lsc_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_LSC_GR_DATA_TBL:
 	case HAILO15_ISP_CID_LSC_GB_DATA_TBL:
 	case HAILO15_ISP_CID_LSC_B_DATA_TBL:
+	case HAILO15_ISP_CID_LSC_OPTICAL_ZOOM:
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -100,6 +101,7 @@ static int hailo15_isp_lsc_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_LSC_GR_DATA_TBL:
 	case HAILO15_ISP_CID_LSC_GB_DATA_TBL:
 	case HAILO15_ISP_CID_LSC_B_DATA_TBL:
+	case HAILO15_ISP_CID_LSC_OPTICAL_ZOOM:
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -234,6 +236,19 @@ const struct v4l2_ctrl_config hailo15_isp_lsc_ctrls[] = {
 		.min = 0,
 		.max = 0xFFF,
 		.dims = { 17, 17, 0, 0 },
+	},
+	{
+		/* float 1.0~64.0 */
+		.ops = &hailo15_isp_lsc_ctrl_ops,
+		.id = HAILO15_ISP_CID_LSC_OPTICAL_ZOOM,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_lsc_optical_zoom",
+		.step = 1,
+		.min = 100,
+		.max = 6400,
+		.def = 100,
 	},
 };
 

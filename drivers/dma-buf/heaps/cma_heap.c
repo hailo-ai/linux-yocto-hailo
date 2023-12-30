@@ -9,6 +9,8 @@
  * Copyright (C) 2019 Texas Instruments Incorporated - http://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
  */
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/cma.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
@@ -392,6 +394,29 @@ static int __add_cma_heap(struct cma *cma, void *data)
 	return 0;
 }
 
+static int add_hailo_cma_heaps(void)
+{
+	int ret;
+	struct cma *hailo_cma;
+	struct reserved_mem *rmem;
+	struct device_node *np;
+
+	for_each_node_with_property(np, "linux,cma-hailo") {
+		if (!of_device_is_available(np))
+			continue;
+		rmem = of_reserved_mem_lookup(np);
+		if (!rmem) {
+			return -ENODEV;
+		}
+		hailo_cma = (struct cma *)rmem->priv;
+		if (hailo_cma) {
+			ret = __add_cma_heap(hailo_cma, NULL);
+		}
+	}
+
+	return ret;
+}
+
 static int add_default_cma_heap(void)
 {
 	struct cma *default_cma = dev_get_cma_area(NULL);
@@ -402,6 +427,24 @@ static int add_default_cma_heap(void)
 
 	return ret;
 }
-module_init(add_default_cma_heap);
+
+static int add_cma_heaps(void)
+{
+	int ret = 0;
+
+	ret = add_default_cma_heap();
+	if(ret) {
+		return ret;
+	}
+
+
+	ret = add_hailo_cma_heaps();
+	if(ret) {
+		return ret;
+	}
+
+	return ret;
+}
+module_init(add_cma_heaps);
 MODULE_DESCRIPTION("DMA-BUF CMA Heap");
 MODULE_LICENSE("GPL v2");

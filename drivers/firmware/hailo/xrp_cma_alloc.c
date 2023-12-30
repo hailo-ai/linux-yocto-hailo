@@ -107,7 +107,7 @@ static void xrp_cma_free_pool(struct xrp_allocation_pool *allocation_pool)
     kfree(pool);
 }
 
-static phys_addr_t xrp_cma_offset(const struct xrp_allocation *allocation)
+static phys_addr_t xrp_cma_addr(const struct xrp_allocation *allocation)
 {
     return allocation->start;
 }
@@ -116,7 +116,7 @@ static const struct xrp_allocation_ops xrp_cma_pool_ops = {
     .alloc = xrp_cma_alloc,
     .free = xrp_cma_free,
     .free_pool = xrp_cma_free_pool,
-    .offset = xrp_cma_offset,
+    .addr = xrp_cma_addr,
 };
 
 long xrp_init_cma_pool(struct xrp_allocation_pool **ppool, struct device *dev)

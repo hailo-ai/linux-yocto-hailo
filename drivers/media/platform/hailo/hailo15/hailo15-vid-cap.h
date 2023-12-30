@@ -58,7 +58,6 @@ struct hailo15_video_node {
 	int path;
 	int sequence;
 	int pipeline_init;
-	int tuning;
 };
 
 struct hailo15_vid_cap_device {

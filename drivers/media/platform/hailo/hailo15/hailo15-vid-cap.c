@@ -652,26 +652,6 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 		ret = copy_to_user((void *)arg, &fc, sizeof(fc));
 		mutex_unlock(&vid_node->ioctl_mutex);
 		break;
-	case VIDEO_TUNING_ENABLE_SUBDEV_IOC:
-		pr_info("%s - got VIDEO_TUNING_ENABLE_SUBDEV_IOC\n", __func__);
-		mutex_lock(&vid_node->ioctl_mutex);
-		if (vid_node->streaming) {
-			pr_warn("%s - can't enable tuning while streaming\n",
-				__func__);
-			ret = -EAGAIN;
-		} else {
-			vid_node->tuning = 1;
-			ret = 0;
-		}
-		mutex_unlock(&vid_node->ioctl_mutex);
-		break;
-	case VIDEO_TUNING_DISABLE_SUBDEV_IOC:
-		pr_info("%s - got VIDEO_TUNING_DISABLE_SUBDEV_IOC\n", __func__);
-		mutex_lock(&vid_node->ioctl_mutex);
-		vid_node->tuning = 0;
-		mutex_unlock(&vid_node->ioctl_mutex);
-		ret = 0;
-		break;
 	case VIDEO_GET_VSM_IOC:
 		ret = copy_from_user(&vsm_params, (void *)arg,
 				     sizeof(struct hailo15_get_vsm_params));

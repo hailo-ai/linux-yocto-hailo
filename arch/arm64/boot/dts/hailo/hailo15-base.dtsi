@@ -546,16 +546,26 @@
             alloc-ranges = <0 0xC0000000 0 0x40000000>;
         };
 
-        /* set CMA area to 992MiB */
+        /* set Linux,CMA area to 992MiB */
         cma: linux,cma {
-			compatible = "shared-dma-pool";
-			reusable;
-			size = <0x0 0x3E000000>;
-			linux,cma-default;
+            compatible = "shared-dma-pool";
+            reusable;
+            size = <0x0 0x3E000000>;
+            linux,cma-default;
             /* TODO: allocating outside of the low 32-bit causes hailort driver allocations to be very slow. */
             /* TODO: DSP must not cross 1GiB boundary. this is a quick workaround */
             alloc-ranges = <0 0x80000000 0 0x40000000>;
-		};
+        };
+
+        /* set Hailo,CMA area to 256MiB */
+        hailo_cma: hailo,cma {
+            status = "disabled";
+            compatible = "shared-dma-pool";
+            reusable;
+            size = <0x0 0x10000000>;
+            linux,cma-hailo;
+            alloc-ranges = <0 0xC0000000 0 0x40000000>;
+        };
     };
 
     main-bus {
@@ -744,6 +754,27 @@
         };
     };
 
+    gp_vdma: dma@7c05E000 {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "hailo,hailo15-gp_vdma";
+	reg = <0 0x7c05E000 0 0x200>;
+	ranges;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+	dma-channel@0 {
+		reg = <0x7c05C000 0x20>;
+	};
+	dma-channel@1 {
+		reg = <0x7c05C020 0x20>;
+	};
+	dma-channel@2 {
+		reg = <0x7c05C040 0x20>;
+	};
+	dma-channel@3 {
+		reg = <0x7c05C060 0x20>;
+	};
+
+    };
 
     xrp: xrp@0 {
         status = "disabled";

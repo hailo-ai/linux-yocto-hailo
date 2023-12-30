@@ -41,7 +41,7 @@ struct xrp_allocation_ops {
               u32 size, u32 align, struct xrp_allocation **alloc);
     void (*free)(struct xrp_allocation *allocation);
     void (*free_pool)(struct xrp_allocation_pool *allocation_pool);
-    phys_addr_t (*offset)(const struct xrp_allocation *allocation);
+    phys_addr_t (*addr)(const struct xrp_allocation *allocation);
 };
 
 struct xrp_allocation_pool {
@@ -88,9 +88,9 @@ static inline int xrp_allocation_put(struct xrp_allocation *xrp_allocation)
     return 0;
 }
 
-static inline phys_addr_t xrp_allocation_offset(const struct xrp_allocation *allocation)
+static inline phys_addr_t xrp_allocation_addr(const struct xrp_allocation *allocation)
 {
-    return allocation->pool->ops->offset(allocation);
+    return allocation->pool->ops->addr(allocation);
 }
 
 #endif

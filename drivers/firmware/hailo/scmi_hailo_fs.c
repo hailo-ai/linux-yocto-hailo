@@ -14,6 +14,8 @@ struct __attribute__((packed)) hailo_fuse_file {
 	u8 wafer_id;
 	u8 x_location;
 	u8 y_location;
+
+	u8 sku;
 };
 
 extern struct scmi_hailo_proto_ops *hailo_ops;
@@ -33,6 +35,7 @@ static ssize_t scmi_hailo_fuses_info_file_show(struct device *dev, struct device
 	file_content->wafer_id = user_fuse.wafer_info.wafer_id;
 	file_content->x_location = user_fuse.wafer_info.x_location;
 	file_content->y_location = user_fuse.wafer_info.y_location;
+	file_content->sku = (user_fuse.misc_bits >> HAILO_USER_FUSE_SKU_SHIFT) & HAILO_USER_FUSE_SKU_MASK;
 
 	return sizeof(*file_content);
 }

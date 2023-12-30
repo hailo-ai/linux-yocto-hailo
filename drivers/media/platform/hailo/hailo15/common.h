@@ -19,12 +19,12 @@ enum hailo15_video_path {
 #define HAILO15_NUM_P2A_BUFFERS 5
 #define HAILO15_EVENT_RESOURCE_SIZE 4096 * 4
 
-#define VIDEO_FPS_MONITOR_SUBDEV_IOC 0xdeadbeaf
-#define VIDEO_TUNING_ENABLE_SUBDEV_IOC 0xc001babe
-#define VIDEO_TUNING_DISABLE_SUBDEV_IOC 0xfee1badd
-#define VIDEO_GET_VSM_IOC 0x1337face
-#define VIDEO_GET_P2A_REGS 0xfeedf00d
-#define VIDEO_GET_P2A_BUF_ADDR 0xc0defa57
+#define VIDEO_FPS_MONITOR_SUBDEV_IOC \
+	_IOR('D', BASE_VIDIOC_PRIVATE + 0, uint64_t)
+#define VIDEO_GET_VSM_IOC \
+	_IOWR('D', BASE_VIDIOC_PRIVATE + 1, struct hailo15_get_vsm_params)
+#define VIDEO_GET_P2A_REGS \
+	_IOR('D', BASE_VIDIOC_PRIVATE + 2, struct hailo15_p2a_buffer_regs_addr)
 
 #define ISPIOC_V4L2_READ_REG                                                   \
 	_IOWR('I', BASE_VIDIOC_PRIVATE + 0, struct isp_reg_data)

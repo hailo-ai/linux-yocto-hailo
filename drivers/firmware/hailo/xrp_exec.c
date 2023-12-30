@@ -103,9 +103,10 @@ static long xrp_unmap_request(struct xvp *xvp, struct xrp_request *rq,
     return ret;
 }
 
-static long xrp_map_request(struct xvp *xvp, struct xrp_request *rq,
+static long xrp_map_request(struct file *filp, struct xrp_request *rq,
                 struct mm_struct *mm)
 {
+    struct xvp *xvp = filp->private_data;
     struct xrp_ioctl_buffer __user *buffer;
     size_t n_buffers = rq->ioctl_queue.buffer_size /
         sizeof(struct xrp_ioctl_buffer);
@@ -141,7 +142,7 @@ static long xrp_map_request(struct xvp *xvp, struct xrp_request *rq,
 
     if (rq->ioctl_queue.in_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing in_data\n", __func__);
-        ret = xrp_share_block(xvp, (void *)rq->ioctl_queue.in_data_addr,
+        ret = xrp_share_block(filp, (void *)rq->ioctl_queue.in_data_addr,
                 rq->ioctl_queue.in_data_size, XRP_FLAG_READ, &rq->in_data_phys,
                 &rq->dsp_in_data_phys, &rq->in_data_mapping,
                 LUT_MAPPING_IN_DATA, true);
@@ -163,7 +164,7 @@ static long xrp_map_request(struct xvp *xvp, struct xrp_request *rq,
 
     if (rq->ioctl_queue.out_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing out_data\n", __func__);
-        ret = xrp_share_block(xvp, (void *)rq->ioctl_queue.out_data_addr,
+        ret = xrp_share_block(filp, (void *)rq->ioctl_queue.out_data_addr,
                 rq->ioctl_queue.out_data_size, XRP_FLAG_WRITE, 
                 &rq->out_data_phys, &rq->dsp_out_data_phys,
                 &rq->out_data_mapping, LUT_MAPPING_OUT_DATA, true);
@@ -187,7 +188,7 @@ static long xrp_map_request(struct xvp *xvp, struct xrp_request *rq,
         }
         if (ioctl_buffer.flags & XRP_FLAG_READ_WRITE) {
             dev_dbg(xvp->dev, "%s: sharing buffer %zd\n", __func__, i);
-            ret = xrp_share_block(xvp, (void *)ioctl_buffer.addr,
+            ret = xrp_share_block(filp, (void *)ioctl_buffer.addr,
                 ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys, NULL,
                 rq->buffer_mapping + i, NO_LUT_MAPPING, true);
             if (ret < 0) {
@@ -327,8 +328,9 @@ static long xrp_complete_hw_request(struct xvp *xvp, struct xrp_dsp_cmd __iomem 
 }
 
 
-long xrp_ioctl_submit_sync(struct xvp *xvp, struct xrp_ioctl_queue __user *p)
+long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p)
 {
+    struct xvp *xvp = filp->private_data;
     struct xrp_comm *queue = xvp->queue;
     struct xrp_request *rq;
     long ret = 0;
@@ -365,7 +367,7 @@ long xrp_ioctl_submit_sync(struct xvp *xvp, struct xrp_ioctl_queue __user *p)
 
     mutex_lock(&queue->lock);
 
-    ret = xrp_map_request(xvp, rq, current->mm);
+    ret = xrp_map_request(filp, rq, current->mm);
     if (ret < 0) {
         dev_err(xvp->dev, "%s: map request failed %ld\n", __func__, ret);
         goto mutex_err;

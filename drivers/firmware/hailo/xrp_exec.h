@@ -12,6 +12,6 @@
 
 #include <linux/types.h>
 
-long xrp_ioctl_submit_sync(struct xvp *xvp, struct xrp_ioctl_queue __user *p);
+long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p);
 
 #endif

@@ -89,7 +89,6 @@ struct xvp {
     struct xrp_comm *queue;
     struct xrp_comm **queue_ordered;
     struct comm_buffer comm;
-    phys_addr_t pmem;
 
     struct xrp_allocation_pool *pool;
     int nodeid;

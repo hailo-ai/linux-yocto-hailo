@@ -63,6 +63,7 @@
 #define HAILO15_ISP_CID_LSC_GR_DATA_TBL (HAILO15_ISP_CID_LSC_BASE + 0x0006)
 #define HAILO15_ISP_CID_LSC_GB_DATA_TBL (HAILO15_ISP_CID_LSC_BASE + 0x0007)
 #define HAILO15_ISP_CID_LSC_B_DATA_TBL (HAILO15_ISP_CID_LSC_BASE + 0x0008)
+#define HAILO15_ISP_CID_LSC_OPTICAL_ZOOM    (HAILO15_ISP_CID_LSC_BASE + 0x0009)
 
 int hailo15_isp_lsc_ctrl_count(void);
 int hailo15_isp_lsc_ctrl_create(struct hailo15_isp_device *isp_dev);

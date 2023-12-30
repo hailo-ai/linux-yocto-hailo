@@ -115,7 +115,7 @@ static long xrp_ioctl_alloc(struct file *filp, struct xrp_ioctl_alloc __user *p)
 
     vaddr = vm_mmap(filp, 0, xrp_allocation->size,
             PROT_READ | PROT_WRITE, MAP_SHARED,
-            xrp_allocation_offset(xrp_allocation));
+            xrp_allocation_addr(xrp_allocation));
 
     if (IS_ERR((void *)vaddr)) {
         return PTR_ERR((void *)vaddr);
@@ -143,7 +143,8 @@ static long xrp_ioctl_free(struct file *filp, struct xrp_ioctl_alloc __user *p)
         return -EFAULT;
 
     start = xrp_ioctl_alloc.addr;
-    dev_dbg(xvp->dev, "%s: Request for freeing vaddr: 0x%08lx\n", __func__, start);
+    dev_dbg(
+        xvp->dev, "%s: Request for freeing vaddr: 0x%08lx\n", __func__, start);
 
     mmap_read_lock(mm);
     vma = find_vma(mm, start);
@@ -153,10 +154,13 @@ static long xrp_ioctl_free(struct file *filp, struct xrp_ioctl_alloc __user *p)
         start = vma->vm_start;
         size = vma->vm_end - vma->vm_start;
         mmap_read_unlock(mm);
-        dev_dbg(xvp->dev, "%s: Unmapping vma: vaddr: 0x%08lx, size: %zu\n", __func__, start, size);
+        dev_dbg(
+            xvp->dev, "%s: Unmapping vma: vaddr: 0x%08lx, size: %zu\n",
+            __func__, start, size);
         return vm_munmap(start, size);
     }
-    dev_dbg(xvp->dev, "%s: no vma/bad vma for vaddr: 0x%08lx\n", __func__, start);
+    dev_dbg(
+        xvp->dev, "%s: no vma/bad vma for vaddr: 0x%08lx\n", __func__, start);
     mmap_read_unlock(mm);
 
     return -EINVAL;
@@ -182,7 +186,14 @@ static long xvp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     case XRP_IOCTL_QUEUE:
     case XRP_IOCTL_QUEUE_NS:
         dev_dbg(xvp->dev, "%s: XRP_IOCTL_QUEUE\n", __func__);
-        retval = xrp_ioctl_submit_sync(xvp, (struct xrp_ioctl_queue __user *)arg);
+        retval = xrp_ioctl_submit_sync(
+            filp, (struct xrp_ioctl_queue __user *)arg);
+        break;
+
+    case XRP_IOCTL_DMA_SYNC:
+        dev_dbg(xvp->dev, "%s: XRP_IOCTL_SYNC\n", __func__);
+        retval = xrp_ioctl_sync_dma(
+            filp, (struct xrp_ioctl_sync_buffer __user *)arg);
         break;
 
     default:
@@ -212,13 +223,12 @@ static int xvp_mmap(struct file *filp, struct vm_area_struct *vma)
 {
     int err;
     struct xvp *xvp = filp->private_data;
-    unsigned long pfn = vma->vm_pgoff + PFN_DOWN(xvp->pmem);
+    unsigned long pfn = vma->vm_pgoff;
     struct xrp_allocation *xrp_allocation;
     phys_addr_t paddr = pfn << PAGE_SHIFT;
     size_t size = vma->vm_end - vma->vm_start;
 
-    xrp_allocation =
-        xrp_allocation_dequeue(filp->private_data, paddr, size);
+    xrp_allocation = xrp_allocation_dequeue(xvp, paddr, size);
     if (xrp_allocation) {
         pgprot_t prot = vma->vm_page_prot;
 
@@ -228,8 +238,9 @@ static int xvp_mmap(struct file *filp, struct vm_area_struct *vma)
         }
 
         err = remap_pfn_range(vma, vma->vm_start, pfn, size, prot);
-        dev_dbg(xvp->dev, "%s: Mapped paddr: %pap to vaddr: 0x%08lx, size: %zu\n", __func__, &paddr,
-            vma->vm_start, size);
+        dev_dbg(
+            xvp->dev, "%s: Mapped paddr: %pap to vaddr: 0x%08lx, size: %zu\n",
+            __func__, &paddr, vma->vm_start, size);
 
         vma->vm_private_data = xrp_allocation;
         vma->vm_ops = &xvp_vm_ops;
@@ -316,27 +327,30 @@ static int xrp_init_comm_buffer(struct xvp *xvp)
     int ret;
 
     xvp->comm.size = PAGE_SIZE;
-    xvp->comm.addr = dma_alloc_attrs(xvp->dev, xvp->comm.size, &xvp->comm.dma_addr, 
-                                GFP_KERNEL, 0);
+    xvp->comm.addr = dma_alloc_attrs(
+        xvp->dev, xvp->comm.size, &xvp->comm.dma_addr, GFP_KERNEL, 0);
     if (!xvp->comm.addr) {
         dev_err(xvp->dev, "%s: couldn't allocate comm buffer\n", __func__);
         ret = -ENOMEM;
         goto err;
     }
 
-    ret = xrp_share_dma(xvp, xvp->comm.dma_addr, xvp->comm.size, &xvp->comm.paddr,
-                        &xvp->comm.dsp_paddr, LUT_MAPPING_COMM, false);
+    ret = xrp_share_dma(
+        xvp, xvp->comm.dma_addr, xvp->comm.size, &xvp->comm.paddr,
+        &xvp->comm.dsp_paddr, LUT_MAPPING_COMM, false);
     if(ret < 0) {
         dev_err(xvp->dev, "%s: comm buffer couldn't be shared\n", __func__);
         goto err_free;
     }
 
-    pr_debug("%s: comm = %pap/%p\n", __func__, &xvp->comm.paddr, xvp->comm.addr);
+    pr_debug(
+        "%s: comm = %pap/%p\n", __func__, &xvp->comm.paddr, xvp->comm.addr);
 
     return 0;
 
 err_free:
-    dma_free_attrs(xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
+    dma_free_attrs(
+        xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
 err:
     return ret;
 }
@@ -362,7 +376,8 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
     unsigned i;
     struct xrp_mapping *mapping;
 
-    if (of_reserved_mem_device_init_by_name(xvp->dev, xvp->dev->of_node, "cma") < 0) {
+    if (of_reserved_mem_device_init_by_name(
+            xvp->dev, xvp->dev->of_node, "cma") < 0) {
         ret = -ENODEV;
         goto err;
     }
@@ -376,7 +391,9 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
 
     mapping = kzalloc(sizeof(*mapping), GFP_KERNEL);
     if (!mapping) {
-        dev_err(&pdev->dev, "%s: failed to allocate log buffer mapping\n", __func__);
+        dev_err(
+            &pdev->dev, "%s: failed to allocate log buffer mapping\n",
+            __func__);
         ret = -ENOMEM;
         goto err;
     }
@@ -399,8 +416,6 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
     ret = xrp_init_cma_pool(&xvp->pool, xvp->dev);
     if (ret < 0)
         goto err_free_comm;
-
-    pr_debug("%s: xvp->pmem = %pap\n", __func__, &xvp->pmem);
 
     ret = device_property_read_u32_array(xvp->dev, "queue-priority", NULL,
                          0);
@@ -502,7 +517,8 @@ err_free_id:
 err_free_pool:
     xrp_free_pool(xvp->pool);
 err_free_comm:
-    dma_free_attrs(xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
+    dma_free_attrs(
+        xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
 err_unshare:
     (void)xrp_unshare_kernel(xvp, mapping, XRP_FLAG_READ_WRITE);
 err_free:
@@ -537,7 +553,8 @@ static int xrp_deinit(struct platform_device *pdev)
     misc_deregister(&xvp->miscdev);
     xrp_release_firmware(xvp);
     xrp_free_pool(xvp->pool);
-    dma_free_attrs(xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
+    dma_free_attrs(
+        xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
     ida_simple_remove(&xvp_nodeid, xvp->nodeid);
     (void)xrp_unshare_kernel(xvp, xvp->cyclic_log.mapping, XRP_FLAG_READ_WRITE);
     kfree(xvp->cyclic_log.mapping);    

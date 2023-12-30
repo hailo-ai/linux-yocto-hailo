@@ -23,6 +23,16 @@
 #include <linux/uaccess.h>
 #include <linux/mmap_lock.h>
 #include <linux/highmem.h>
+#include <linux/module.h>
+
+bool user_sync_buffer  = false;
+module_param(user_sync_buffer , bool, 0644);
+MODULE_PARM_DESC(user_sync_buffer,
+    "If enabled, the driver won't sync the buffers before and after DSP access."
+    "Userspace processes must explicitely request the driver to do the sync, "
+    "if needed. "
+    "If disabled, the driver will always sync the buffers "
+    "before and after DSP access");
 
 #ifndef __io_virt
 #define __io_virt(a) ((void __force *)(a))
@@ -253,7 +263,8 @@ static long xrp_writeback_alien_mapping(
 
     switch (alien_mapping->type) {
     case ALIEN_GUP:
-        xrp_dma_sync_for_cpu(xvp, alien_mapping->paddr, alien_mapping->size, flags);
+        xrp_dma_sync_for_cpu(
+            xvp, alien_mapping->paddr, alien_mapping->size, flags);
         pr_debug("%s: dirtying alien GUP @va = %p, pa = %pap\n",
              __func__, (void __user *)alien_mapping->vaddr,
              &alien_mapping->paddr);
@@ -517,16 +528,16 @@ void xrp_dma_sync_for_device(
     struct xvp *xvp, phys_addr_t phys, unsigned long size,
     enum ioctl_buffer_flags flags)
 {
-    dma_sync_single_for_device(xvp->dev, phys_to_dma(xvp->dev, phys), size,
-        xrp_dma_direction(flags));
+    dma_sync_single_for_device(
+        xvp->dev, phys_to_dma(xvp->dev, phys), size, xrp_dma_direction(flags));
 }
 
 void xrp_dma_sync_for_cpu(
     struct xvp *xvp, phys_addr_t phys, unsigned long size,
     enum ioctl_buffer_flags flags)
 {
-    dma_sync_single_for_cpu(xvp->dev, phys_to_dma(xvp->dev, phys), size,
-        xrp_dma_direction(flags));
+    dma_sync_single_for_cpu(
+        xvp->dev, phys_to_dma(xvp->dev, phys), size, xrp_dma_direction(flags));
 }
 
 long xrp_share_dma(
@@ -597,7 +608,7 @@ long xrp_share_kernel(
 }
 
 long xrp_share_block(
-    struct xvp *xvp, void *virt, unsigned long size,
+    struct file *filp, void *virt, unsigned long size,
     enum ioctl_buffer_flags flags, phys_addr_t *paddr, uint32_t *dsp_paddr,
     struct xrp_mapping *mapping, enum lut_mapping lut_mapping, bool config_lut)
 {
@@ -607,12 +618,13 @@ long xrp_share_block(
     struct vm_area_struct *vma;
     bool do_cache = true;
     long rc = -EINVAL;
-    struct file *filp;
+    struct xvp *xvp = filp->private_data;
 
     vma = find_vma(mm, vaddr);
     if (!vma) {
-        pr_debug("%s: no vma for vaddr/size = 0x%08lx/0x%08lx\n",
-             __func__, vaddr, size);
+        dev_err(
+            xvp->dev, "%s: no vma for vaddr/size = 0x%08lx/0x%08lx\n",
+            __func__, vaddr, size);
         return -EINVAL;
     }
     /*
@@ -626,44 +638,38 @@ long xrp_share_block(
      */
     switch (xvp_get_region_vma_count(vaddr, size, vma)) {
     case 0:
-        pr_debug("%s: bad vma for vaddr/size = 0x%08lx/0x%08lx\n",
-             __func__, vaddr, size);
-        pr_debug("%s: vma->vm_start = 0x%08lx, vma->vm_end = 0x%08lx\n",
-             __func__, vma->vm_start, vma->vm_end);
+        dev_err(
+            xvp->dev, "%s: bad vma for vaddr/size = 0x%08lx/0x%08lx\n",
+            __func__, vaddr, size);
+        dev_err(
+            xvp->dev, "%s: vma->vm_start = 0x%08lx, vma->vm_end = 0x%08lx\n",
+            __func__, vma->vm_start, vma->vm_end);
         return -EINVAL;
     case 1:
         break;
     default:
-        pr_debug("%s: multiple vmas cover vaddr/size = 0x%08lx/0x%08lx\n",
-             __func__, vaddr, size);
+        dev_dbg(
+            xvp->dev, "%s: multiple vmas cover vaddr/size = 0x%08lx/0x%08lx\n",
+            __func__, vaddr, size);
         vma = NULL;
         break;
     }
     /*
-     * And it need to be allocated from the same file descriptor, or
-     * at least from a file descriptor managed by the XRP.
+     * And it need to be allocated from the same file descriptor
      */
-    filp = container_of((void *)xvp, struct file, private_data);
-    if (vma &&
-        (vma->vm_file == filp || xrp_is_known_file(vma->vm_file))) {
-        struct xvp *vm_file = vma->vm_file->private_data;
+    if (vma && (vma->vm_file == filp || xrp_is_known_file(vma->vm_file))) {
         struct xrp_allocation *xrp_allocation = vma->vm_private_data;
 
-        phys = vm_file->pmem + (vma->vm_pgoff << PAGE_SHIFT) +
-            vaddr - vma->vm_start;
-        pr_debug("%s: XRP allocation at vaddr: 0x%08lx, paddr: %pap\n",
-             __func__, vaddr, &phys);
-        /*
-         * If it was allocated from a different XRP file it may belong
-         * to a different device and not be directly accessible.
-         * Check if it is.
-         */
+        phys = PFN_PHYS(vma->vm_pgoff) + vaddr - vma->vm_start;
+        dev_dbg(
+            xvp->dev, "%s: XRP allocation at vaddr: 0x%08lx, paddr: %pap\n",
+            __func__, vaddr, &phys);
         
         mapping->type = XRP_MAPPING_NATIVE;
         mapping->native.xrp_allocation = xrp_allocation;
         mapping->native.vaddr = vaddr;
         xrp_allocation_get(xrp_allocation);
-        do_cache = vma_needs_cache_ops(vma);
+        do_cache = !user_sync_buffer && vma_needs_cache_ops(vma);
         rc = 0;
     }
     if (rc < 0) {
@@ -672,19 +678,21 @@ long xrp_share_block(
         unsigned long n_pages = PFN_UP(vaddr + size) - PFN_DOWN(vaddr);
 
         /* Otherwise this is alien allocation. */
-        pr_debug("%s: non-XVP allocation at vaddr: 0x%08lx\n",
-             __func__, vaddr);
+        dev_dbg(
+            xvp->dev, "%s: non-XVP allocation at vaddr: 0x%08lx\n",
+            __func__, vaddr);
 
         /*
          * A range can only be mapped directly if it is either
          * uncached or HW-specific cache operations can handle it.
          */
         if (vma && vma->vm_flags & (VM_IO | VM_PFNMAP)) {
-            rc = xvp_pfn_virt_to_phys(xvp, vma, vaddr, size, &phys, alien_mapping);
+            rc = xvp_pfn_virt_to_phys(
+                    xvp, vma, vaddr, size, &phys, alien_mapping);
             if (rc == 0 && vma_needs_cache_ops(vma) &&
                 !xrp_cacheable(xvp, PFN_DOWN(phys), n_pages)) {
-                pr_debug("%s: needs unsupported cache mgmt\n",
-                     __func__);
+                dev_err(
+                    xvp->dev, "%s: needs unsupported cache mgmt\n", __func__);
                 rc = -EINVAL;
             }
         } else {
@@ -693,8 +701,8 @@ long xrp_share_block(
             if (rc == 0 &&
                 (!vma || vma_needs_cache_ops(vma)) &&
                 !xrp_cacheable(xvp, PFN_DOWN(phys), n_pages)) {
-                pr_debug("%s: needs unsupported cache mgmt\n",
-                     __func__);
+                dev_err(
+                    xvp->dev, "%s: needs unsupported cache mgmt\n", __func__);
                 xrp_put_pages(phys, n_pages);
                 rc = -EINVAL;
             }
@@ -715,7 +723,7 @@ long xrp_share_block(
 
         /* We couldn't share it. Fail the request. */
         if (rc < 0) {
-            pr_debug("%s: couldn't map virt to phys\n", __func__);
+            dev_err(xvp->dev, "%s: couldn't map virt to phys\n", __func__);
             return -EINVAL;
         }
 
@@ -725,7 +733,8 @@ long xrp_share_block(
 
     if (lut_mapping != NO_LUT_MAPPING && dsp_paddr) {
         if (!is_single_lookup_buffer(phys, size)) {
-            dev_err(xvp->dev,
+            dev_err(
+                xvp->dev,
                 "%s: buffer %pap of size 0x%lx requires more than 1 axi lookup",
                 __func__, &phys, size);
             return -EINVAL;
@@ -741,8 +750,9 @@ long xrp_share_block(
 
     *paddr = phys; 
 
-    pr_debug("%s: mapping = %p, mapping->type = %d\n",
-         __func__, mapping, mapping->type);
+    dev_dbg(
+        xvp->dev, "%s: mapping = %p, mapping->type = %d\n",
+        __func__, mapping, mapping->type);
 
     if (do_cache)
         xrp_dma_sync_for_device(xvp, phys, size, flags);
@@ -785,11 +795,10 @@ long xrp_unshare_block(
 
     switch (mapping->type & ~XRP_MAPPING_KERNEL) {
     case XRP_MAPPING_NATIVE:
-        if (flags & XRP_FLAG_WRITE) {
-            xrp_dma_sync_for_cpu(xvp,
-                mapping->native.xrp_allocation->start,
-                mapping->native.xrp_allocation->size,
-                flags);
+        if ((flags & XRP_FLAG_WRITE) && !user_sync_buffer) {
+            xrp_dma_sync_for_cpu(
+                xvp, mapping->native.xrp_allocation->start,
+                mapping->native.xrp_allocation->size, flags);
 
         }
         xrp_allocation_put(mapping->native.xrp_allocation);
@@ -815,4 +824,62 @@ long xrp_unshare_block(
     mapping->type = XRP_MAPPING_NONE;
 
     return ret;
+}
+
+long xrp_ioctl_sync_dma(struct file *filp, struct xrp_ioctl_sync_buffer __user *p)
+{
+    uintptr_t vaddr;
+    phys_addr_t phys;
+    struct vm_area_struct *vma;
+    struct xrp_ioctl_sync_buffer sync_buffer;
+    struct xvp *xvp = filp->private_data;
+
+    if (!user_sync_buffer) {
+        dev_warn_once(
+            xvp->dev,
+            "%s: dma sync is permitted only when user_sync_buffer "
+            "option is turned on\n", __func__);
+        return 0;
+    }
+
+    if (copy_from_user(&sync_buffer, p, sizeof(*p))) {
+        dev_err(xvp->dev, "%s: copy from user failed\n", __func__);
+        return -EFAULT;
+    }
+
+    vaddr = (uintptr_t)sync_buffer.addr;
+
+    mmap_read_lock(current->mm);
+    vma = find_vma(current->mm, vaddr);
+    mmap_read_unlock(current->mm);
+
+    if (!vma) {
+        dev_err(xvp->dev, "%s: no vma for vaddr = 0x%08lx\n", __func__, vaddr);
+        return -EINVAL;
+    }
+
+    if (!(vma && (vma->vm_file == filp || xrp_is_known_file(vma->vm_file)))) {
+        dev_err(
+            xvp->dev,"%s: non-XVP allocation at vaddr: 0x%08lx\n",
+            __func__, vaddr);
+        return -EINVAL;
+    }
+
+    phys = PFN_PHYS(vma->vm_pgoff) + vaddr - vma->vm_start;
+    pr_debug("%s: XRP allocation at vaddr: 0x%08lx, paddr: %pap\n",
+                __func__, vaddr, &phys);
+
+    switch (sync_buffer.access_time) {
+    case XRP_FLAG_BUFFER_SYNC_START:
+	    xrp_dma_sync_for_cpu(
+            xvp, phys, sync_buffer.size, sync_buffer.direction);
+	    break;
+
+    case XRP_FLAG_BUFFER_SYNC_END:
+	    xrp_dma_sync_for_device(
+            xvp, phys, sync_buffer.size, sync_buffer.direction);
+	    break;
+    }
+
+    return 0;
 }

@@ -75,6 +75,8 @@
 #define HAILO15_ISP_CID_AE_EXP_STATUS (HAILO15_ISP_CID_AE_BASE + 0x0012)
 #define HAILO15_ISP_CID_AE_IRIS (HAILO15_ISP_CID_AE_BASE + 0x0013)
 #define HAILO15_ISP_CID_AE_IRIS_LIMITS (HAILO15_ISP_CID_AE_BASE + 0x0014)
+#define HAILO15_ISP_CID_AE_FPS (HAILO15_ISP_CID_AE_BASE + 0x0015)
+#define HAILO15_ISP_CID_AE_CONVERGED (HAILO15_ISP_CID_AE_BASE + 0x0016)
 
 int hailo15_isp_aev2_ctrl_count(void);
 int hailo15_isp_aev2_ctrl_create(struct hailo15_isp_device *isp_dev);

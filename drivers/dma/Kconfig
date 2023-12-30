@@ -30,6 +30,7 @@ config DMADEVICES_VDEBUG
 	  the DMA engine core and drivers.
 
 
+
 if DMADEVICES
 
 comment "DMA Devices"
@@ -63,6 +64,15 @@ config ALTERA_MSGDMA
 	select DMA_ENGINE
 	help
 	  Enable support for Altera / Intel mSGDMA controller.
+
+config HAILO15_GP_VDMA
+	bool "Hailo GP DMA"
+	depends on OF
+	select DMA_ENGINE
+
+config HAILO15_GP_MEMCOPY
+	tristate "Hailo GP DMA Memcopy"
+	depends on HAILO15_GP_VDMA
 
 config AMBA_PL08X
 	bool "ARM PrimeCell PL080 or PL081 support"

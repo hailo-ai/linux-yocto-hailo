@@ -258,13 +258,6 @@ static int hailo15_gpio_pin_set_pull(struct pinctrl_dev *pctldev,
 	raw_spin_lock_irqsave(&pinctrl->register_lock, flags);
 
 	data_reg = readl(pinctrl->gpio_pads_config_base +
-			 GPIO_PADS_CONFIG__GPIO_PE);
-
-	data_reg |= (1 << gpio_pad_index);
-	writel(data_reg,
-	       (pinctrl->gpio_pads_config_base + GPIO_PADS_CONFIG__GPIO_PE));
-
-	data_reg = readl(pinctrl->gpio_pads_config_base +
 			 GPIO_PADS_CONFIG__GPIO_PS);
 
 	data_reg &= (~(1 << gpio_pad_index));
@@ -276,11 +269,41 @@ static int hailo15_gpio_pin_set_pull(struct pinctrl_dev *pctldev,
 	writel(data_reg,
 	       (pinctrl->gpio_pads_config_base + GPIO_PADS_CONFIG__GPIO_PS));
 
+
+	data_reg = readl(pinctrl->gpio_pads_config_base +
+			 GPIO_PADS_CONFIG__GPIO_PE);
+
+	data_reg |= (1 << gpio_pad_index);
+	writel(data_reg,
+	       (pinctrl->gpio_pads_config_base + GPIO_PADS_CONFIG__GPIO_PE));
+
 	raw_spin_unlock_irqrestore(&pinctrl->register_lock, flags);
 
 	pr_debug("gpio_pad_index:%u, %s, data_reg %d\n", gpio_pad_index,
 		 config == PIN_CONFIG_BIAS_PULL_UP ? "PULL_UP" : "PULL_DOWN",
 		 data_reg);
+	return 0;
+}
+
+static int hailo15_gpio_pin_bias_disable(struct pinctrl_dev *pctldev,
+				     unsigned gpio_pad_index)
+{
+	struct hailo15_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
+	unsigned long flags;
+	uint32_t data_reg;
+	raw_spin_lock_irqsave(&pinctrl->register_lock, flags);
+
+	data_reg = readl(pinctrl->gpio_pads_config_base +
+			 GPIO_PADS_CONFIG__GPIO_PE);
+
+	data_reg &= (~(1 << gpio_pad_index));
+	writel(data_reg,
+	       (pinctrl->gpio_pads_config_base + GPIO_PADS_CONFIG__GPIO_PE));
+
+	raw_spin_unlock_irqrestore(&pinctrl->register_lock, flags);
+
+	pr_debug("gpio_pad_index:%u, %s, data_reg %d\n", gpio_pad_index,
+		 "BIAS DISABLED", data_reg);
 	return 0;
 }
 
@@ -291,6 +314,16 @@ static int hailo15_pin_set_pull(struct pinctrl_dev *pctldev, unsigned pin,
 		return hailo15_gpio_pin_set_pull(pctldev, pin, config);
 	} else {
 		pr_err("Error: pull for un-muxable pins is currently not supported");
+		return -ENOTSUPP;
+	}
+}
+
+static int hailo15_pin_bias_disable(struct pinctrl_dev *pctldev, unsigned pin)
+{
+	if (pin < H15_PINMUX_PIN_COUNT) {
+		return hailo15_gpio_pin_bias_disable(pctldev, pin);
+	} else {
+		pr_err("Error: bias disable for un-muxable pins is currently not supported");
 		return -ENOTSUPP;
 	}
 }
@@ -315,6 +348,12 @@ static int hailo15_pin_config_set(struct pinctrl_dev *pctldev, unsigned pin,
 		case PIN_CONFIG_BIAS_PULL_UP:
 		case PIN_CONFIG_BIAS_PULL_DOWN:
 			ret = hailo15_pin_set_pull(pctldev, pin, param);
+			if (ret) {
+				return ret;
+			}
+			break;
+		case PIN_CONFIG_BIAS_DISABLE:
+			ret = hailo15_pin_bias_disable(pctldev, pin);
 			if (ret) {
 				return ret;
 			}

@@ -120,6 +120,8 @@ static int hailo15_isp_aev2_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_EXP_STATUS:
 	case HAILO15_ISP_CID_AE_IRIS:
 	case HAILO15_ISP_CID_AE_IRIS_LIMITS:
+	case HAILO15_ISP_CID_AE_FPS:
+	case HAILO15_ISP_CID_AE_CONVERGED:
 		pr_debug("%s - got g_ctrl with id: 0x%x\n", __func__, ctrl->id);
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
@@ -161,6 +163,18 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.min = 0,
 		.max = 1,
 	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_CONVERGED,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_converged",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+	},
+
 	{
 		.ops = &hailo15_isp_aev2_ctrl_ops,
 		.id = HAILO15_ISP_CID_AE_SEM_MODE,
@@ -369,6 +383,18 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.max = 0xffffffff,
 		.dims = { 2 },
 	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_FPS,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_fps",
+		.step = 1,
+		.min = 0,
+		.max = 100,
+	},
+
 };
 
 int hailo15_isp_aev2_ctrl_count(void)

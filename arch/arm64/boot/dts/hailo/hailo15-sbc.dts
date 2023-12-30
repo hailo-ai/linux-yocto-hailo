@@ -5,6 +5,7 @@
 
 /dts-v1/;
 #include "hailo15-base.dtsi"
+#include "hailo15-camera-sensor.h"
 #include <dt-bindings/gpio/gpio.h>
 
 / {
@@ -16,9 +17,15 @@
 
 &i2c_0 {
     status = "ok";
+#ifdef SENSOR_IMX678
+    imx678: camera-sensor@1a {
+        status = "ok";
+        compatible = "sony,imx678";
+#else
     imx334: camera-sensor@1a {
         status = "ok";
         compatible = "sony,imx334";
+#endif
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
@@ -125,9 +132,7 @@
 &sdio1 {
     status = "ok";
     broken-cd;
-    max-frequency = <100000000>;
     sdhci-caps= <0 0x01000000>; // Force VOLT33 capability
-    sdhci-caps-mask = <0x00000007 0>; // no high speed
     phy-config {
 		card-is-emmc = <0x0>;
 		cmd-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
