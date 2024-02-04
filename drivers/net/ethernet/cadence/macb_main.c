@@ -37,7 +37,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/log2.h>
 #include "macb.h"
-#include <linux/soc/hailo/scmi_hailo_protocol.h>
+#include <linux/soc/hailo/scmi_hailo_ops.h>
 
 /* This structure is only used for MACB on SiFive FU540 devices */
 struct sifive_fu540_macb_mgmt {

@@ -39,7 +39,8 @@ struct xrp_mapping {
     enum { XRP_MAPPING_NONE,
            XRP_MAPPING_NATIVE,
            XRP_MAPPING_ALIEN,
-           XRP_MAPPING_KERNEL = 0x4,
+           XRP_MAPPING_DMABUF,
+           XRP_MAPPING_KERNEL,
     } type;
     union {
         struct {
@@ -52,6 +53,11 @@ struct xrp_mapping {
             uintptr_t vaddr;
             phys_addr_t paddr;
         } kernel;
+        struct {
+            struct dma_buf_attachment *attachment;
+            struct dma_buf *dmabuf;
+            struct sg_table *sgt;
+        } dmabuf;
     };
 };
 
@@ -96,11 +102,7 @@ long xrp_share_block(
     enum ioctl_buffer_flags flags, phys_addr_t *paddr, uint32_t *dsp_paddr,
     struct xrp_mapping *mapping, enum lut_mapping lut_mapping, bool config_lut);
 
-long xrp_unshare_kernel(
-    struct xvp *xvp, struct xrp_mapping *mapping,
-    enum ioctl_buffer_flags flags);
-
-long xrp_unshare_block(
+long xrp_unshare(
     struct xvp *xvp, struct xrp_mapping *mapping,
     enum ioctl_buffer_flags flags);
 
@@ -119,5 +121,7 @@ void xrp_remove_shared_allocation(struct xrp_shared_allocation *p);
 
 long xrp_ioctl_sync_dma(
     struct file *filp, struct xrp_ioctl_sync_buffer __user *p);
+
+long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_buffer_flags flags, dma_addr_t *paddr, struct xrp_mapping *mapping);
 
 #endif

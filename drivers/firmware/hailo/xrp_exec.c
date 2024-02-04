@@ -24,30 +24,52 @@ MODULE_PARM_DESC(support_shadow_copy,
     "If disabled, the driver will fail the request if buffers are not already physically contiguous");
 
 struct xrp_request {
+    // Request data from userspace
     struct xrp_ioctl_queue ioctl_queue;
-    size_t n_buffers;
-    struct xrp_mapping *buffer_mapping;
-    struct xrp_dsp_buffer *dsp_buffer;
-    phys_addr_t in_data_phys;
-    uint32_t dsp_in_data_phys;
-    phys_addr_t out_data_phys;
-    uint32_t dsp_out_data_phys;
-    phys_addr_t buffer_phys;
-    uint32_t dsp_buffer_phys;
 
+    // nsid (inline)
+    u8 nsid[XRP_DSP_CMD_NAMESPACE_ID_SIZE];
+
+    // in_data mapping or inline data
     union {
-        struct xrp_mapping in_data_mapping;
+        struct {
+            phys_addr_t in_data_phys;
+            uint32_t dsp_in_data_phys;
+            struct xrp_mapping in_data_mapping;
+        };
         u8 in_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
     };
+
+    // out_data mapping or inline data
     union {
-        struct xrp_mapping out_data_mapping;
+        struct {
+            phys_addr_t out_data_phys;
+            uint32_t dsp_out_data_phys;
+            struct xrp_mapping out_data_mapping;
+        };
         u8 out_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
     };
+
+    // Number of buffers in request
+    size_t n_buffers;
+
+    // buffers descriptors mapping or inline
     union {
-        struct xrp_mapping dsp_buffer_mapping;
-        struct xrp_dsp_buffer buffer_data[XRP_DSP_CMD_INLINE_BUFFER_COUNT];
+        struct {
+            phys_addr_t buffers_descriptors_phys;
+            uint32_t dsp_buffers_descriptors_phys;
+            struct xrp_mapping buffers_descriptors_mapping;
+        };
+        struct xrp_dsp_buffer
+            buffers_descriptors_data[XRP_DSP_CMD_INLINE_BUFFER_COUNT];
     };
-    u8 nsid[XRP_DSP_CMD_NAMESPACE_ID_SIZE];
+
+    // Pointer to array of mapping of the request buffers (allocated by the driver)
+    struct xrp_mapping *buffers_mapping;
+
+    // Pointer to array of buffers descriptors 
+    // points to buffers_descriptors_data if n_buffers <= XRP_DSP_CMD_INLINE_BUFFER_COUNT or allocated by the driver
+    struct xrp_dsp_buffer *buffers_descriptors;
 };
 
 static long xrp_unmap_request(struct xvp *xvp, struct xrp_request *rq,
@@ -58,12 +80,17 @@ static long xrp_unmap_request(struct xvp *xvp, struct xrp_request *rq,
     long ret = 0;
     long rc;
 
-    if (rq->ioctl_queue.in_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE)
-        xrp_unshare_block(xvp, &rq->in_data_mapping,
+    dev_dbg(xvp->dev, "%s: unsharing request (writeback: %d)\n", __func__, writeback);
+
+    if (rq->ioctl_queue.in_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
+        dev_dbg(xvp->dev, "%s: unsharing in_data\n", __func__);
+        xrp_unshare(xvp, &rq->in_data_mapping,
             writeback ? XRP_FLAG_READ : 0);
+    }
     
     if (rq->ioctl_queue.out_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
-        rc = xrp_unshare_block(xvp, &rq->out_data_mapping,
+        dev_dbg(xvp->dev, "%s: unsharing out_data\n", __func__);
+        rc = xrp_unshare(xvp, &rq->out_data_mapping,
                 writeback ? XRP_FLAG_WRITE : 0);
 
         if (rc < 0) {
@@ -78,13 +105,16 @@ static long xrp_unmap_request(struct xvp *xvp, struct xrp_request *rq,
         }
     }
 
-    if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT)
-        xrp_unshare_kernel(xvp, &rq->dsp_buffer_mapping,
+    if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT) {
+        dev_dbg(xvp->dev, "%s: unsharing buffers descriptors\n", __func__);
+        xrp_unshare(xvp, &rq->buffers_descriptors_mapping,
             writeback ? XRP_FLAG_READ_WRITE : 0);
+    }
 
     for (i = 0; i < n_buffers; ++i) {
-        rc = xrp_unshare_block(xvp, rq->buffer_mapping + i,
-                writeback ?	rq->dsp_buffer[i].flags : 0);
+        dev_dbg(xvp->dev, "%s: unsharing buffer %zd\n", __func__, i);
+        rc = xrp_unshare(xvp, rq->buffers_mapping + i,
+            writeback ? rq->buffers_descriptors[i].flags : 0);
         if (rc < 0) {
             dev_err(xvp->dev, "%s: buffer %zd could not be unshared\n",
                  __func__, i);
@@ -93,9 +123,9 @@ static long xrp_unmap_request(struct xvp *xvp, struct xrp_request *rq,
     }
 
     if (n_buffers) {
-        kfree(rq->buffer_mapping);
+        kfree(rq->buffers_mapping);
         if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT) {
-            kfree(rq->dsp_buffer);
+            kfree(rq->buffers_descriptors);
         }
         rq->n_buffers = 0;
     }
@@ -114,6 +144,7 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
     size_t i;
     long ret = 0;
 
+    // copy nsid from userspace (if exists)
     if ((rq->ioctl_queue.flags & XRP_QUEUE_FLAG_NSID) &&
         copy_from_user(rq->nsid,
                (void __user *)(unsigned long)rq->ioctl_queue.nsid_addr,
@@ -121,25 +152,29 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
         dev_err(xvp->dev, "%s: nsid could not be copied\n ", __func__);
         return -EINVAL;
     }
+
+    // allocate buffers_mapping and buffers_descriptors (if needed)
     rq->n_buffers = n_buffers;
     if (n_buffers) {
-        rq->buffer_mapping =
-            kzalloc(n_buffers * sizeof(*rq->buffer_mapping),
-                GFP_KERNEL);
+        rq->buffers_mapping =
+            kzalloc(n_buffers * sizeof(*rq->buffers_mapping), GFP_KERNEL);
+        if (!rq->buffers_mapping)
+            return -ENOMEM;
         if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT) {
-            rq->dsp_buffer = kmalloc(n_buffers * sizeof(*rq->dsp_buffer),
+            rq->buffers_descriptors = kmalloc(n_buffers * sizeof(*rq->buffers_descriptors),
                 GFP_KERNEL);
-            if (!rq->dsp_buffer) {
-                kfree(rq->buffer_mapping);
+            if (!rq->buffers_descriptors) {
+                kfree(rq->buffers_mapping);
                 return -ENOMEM;
             }
         } else {
-            rq->dsp_buffer = rq->buffer_data;
+            rq->buffers_descriptors = rq->buffers_descriptors_data;
         }
     }
 
     mmap_read_lock(mm);
 
+    // share in_data or copy it inline
     if (rq->ioctl_queue.in_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing in_data\n", __func__);
         ret = xrp_share_block(filp, (void *)rq->ioctl_queue.in_data_addr,
@@ -162,6 +197,7 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
         }
     }
 
+    // share out_data or copy it inline
     if (rq->ioctl_queue.out_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing out_data\n", __func__);
         ret = xrp_share_block(filp, (void *)rq->ioctl_queue.out_data_addr,
@@ -183,21 +219,30 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
 
         if (copy_from_user(&ioctl_buffer, buffer + i,
                    sizeof(ioctl_buffer))) {
+            dev_err(xvp->dev, "%s: buffer %zd could not be copied\n",
+                    __func__, i);
             ret = -EFAULT;
             goto share_err;
         }
         if (ioctl_buffer.flags & XRP_FLAG_READ_WRITE) {
             dev_dbg(xvp->dev, "%s: sharing buffer %zd\n", __func__, i);
-            ret = xrp_share_block(filp, (void *)ioctl_buffer.addr,
-                ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys, NULL,
-                rq->buffer_mapping + i, NO_LUT_MAPPING, true);
+            if (ioctl_buffer.memory_type == XRP_MEMORY_TYPE_USERPTR) {
+                dev_dbg(xvp->dev, "%s: sharing buffer %zd (virtual address) \n", __func__, i);
+		        ret = xrp_share_block(filp, (void *)ioctl_buffer.addr,
+					    ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys, NULL,
+					    rq->buffers_mapping + i, NO_LUT_MAPPING, true);
+            } else {
+                dev_dbg(xvp->dev, "%s: sharing buffer %zd (dmabuf) \n", __func__, i);
+                ret = xrp_share_dmabuf(filp, ioctl_buffer.fd, ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys,
+                        rq->buffers_mapping + i);   
+            }
             if (ret < 0) {
                 dev_err(xvp->dev, "%s: buffer %zd could not be shared\n", __func__, i);
                 goto share_err;
             }
 
-            if ((rq->buffer_mapping[i].type == XRP_MAPPING_ALIEN) && 
-                (rq->buffer_mapping[i].alien_mapping.type == ALIEN_COPY)) {
+            if ((rq->buffers_mapping[i].type == XRP_MAPPING_ALIEN) && 
+                (rq->buffers_mapping[i].alien_mapping.type == ALIEN_COPY)) {
                     // shadow copy was created for buffer
                     // in case we support it, warn user once to let them know about degradation in performance
                     if (support_shadow_copy) {
@@ -212,18 +257,19 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
                 }
         }
 
-        rq->dsp_buffer[i] = (struct xrp_dsp_buffer){
+        rq->buffers_descriptors[i] = (struct xrp_dsp_buffer){
             .flags = ioctl_buffer.flags,
             .size = ioctl_buffer.size,
             .addr = buffer_phys,
         };
     }
 
+    // share buffers descriptors (if needed)
     if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT) {
         dev_dbg(xvp->dev, "%s: sharing buffers descriptors\n", __func__);
-        ret = xrp_share_kernel(xvp, rq->dsp_buffer,
-            n_buffers * sizeof(*rq->dsp_buffer), XRP_FLAG_READ_WRITE,
-            &rq->buffer_phys, &rq->dsp_buffer_phys, &rq->dsp_buffer_mapping,
+        ret = xrp_share_kernel(xvp, rq->buffers_descriptors,
+            n_buffers * sizeof(*rq->buffers_descriptors), XRP_FLAG_READ_WRITE,
+            &rq->buffers_descriptors_phys, &rq->dsp_buffers_descriptors_phys, &rq->buffers_descriptors_mapping,
             LUT_MAPPING_BUFFER_METADATA, true);
         if(ret < 0) {
             dev_err(xvp->dev, "%s: buffers descriptors could not be shared\n",
@@ -245,8 +291,7 @@ static long xrp_wait_for_cmd_completion(struct xvp *xvp, struct xrp_comm *comm)
     if (xrp_is_cmd_complete(xvp, comm))
         return 0;
     do {
-        timeout = wait_for_completion_interruptible_timeout(
-            &comm->completion, timeout);
+        timeout = wait_for_completion_timeout(&comm->completion, timeout);
         if (xrp_is_cmd_complete(xvp, comm))
             return 0;
     } while (timeout > 0);
@@ -281,9 +326,9 @@ static void xrp_fill_hw_request(struct xvp *xvp,
             rq->out_data, rq->ioctl_queue.out_data_size);
 
     if (rq->n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT)
-        xrp_comm_write32(&cmd->buffer_addr, rq->dsp_buffer_phys);
+        xrp_comm_write32(&cmd->buffer_addr, rq->dsp_buffers_descriptors_phys);
     else
-        xrp_comm_write(&cmd->buffer_data, rq->dsp_buffer,
+        xrp_comm_write(&cmd->buffer_data, rq->buffers_descriptors,
             rq->n_buffers * sizeof(struct xrp_dsp_buffer));
 
     if (rq->ioctl_queue.flags & XRP_QUEUE_FLAG_NSID)
@@ -315,7 +360,7 @@ static long xrp_complete_hw_request(struct xvp *xvp, struct xrp_dsp_cmd __iomem 
         xrp_comm_read(&cmd->out_data, rq->out_data,
                   rq->ioctl_queue.out_data_size);
     if (rq->n_buffers <= XRP_DSP_CMD_INLINE_BUFFER_COUNT)
-        xrp_comm_read(&cmd->buffer_data, rq->dsp_buffer,
+        xrp_comm_read(&cmd->buffer_data, rq->buffers_descriptors,
                   rq->n_buffers * sizeof(struct xrp_dsp_buffer));
     xrp_comm_write32(&cmd->flags, 0);
 
@@ -335,7 +380,7 @@ long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p)
     struct xrp_request *rq;
     long ret = 0;
     
-    rq = kmalloc(sizeof(struct xrp_request), GFP_KERNEL);
+    rq = kzalloc(sizeof(struct xrp_request), GFP_KERNEL);
     if (!rq) {
         dev_err(xvp->dev, "%s: allocation failed\n", __func__);
         return -ENOMEM;

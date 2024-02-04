@@ -335,6 +335,8 @@ static int xrp_init_comm_buffer(struct xvp *xvp)
         goto err;
     }
 
+    dev_dbg(xvp->dev, "%s: sharing comm buffer\n", __func__);
+
     ret = xrp_share_dma(
         xvp, xvp->comm.dma_addr, xvp->comm.size, &xvp->comm.paddr,
         &xvp->comm.dsp_paddr, LUT_MAPPING_COMM, false);
@@ -343,7 +345,7 @@ static int xrp_init_comm_buffer(struct xvp *xvp)
         goto err_free;
     }
 
-    pr_debug(
+    dev_dbg(xvp->dev,
         "%s: comm = %pap/%p\n", __func__, &xvp->comm.paddr, xvp->comm.addr);
 
     return 0;
@@ -397,6 +399,8 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
         ret = -ENOMEM;
         goto err;
     }
+
+    dev_dbg(&pdev->dev, "%s: Sharing log buffer\n", __func__);
 
     ret = xrp_share_kernel(
         xvp, xvp->cyclic_log.addr, xvp->cyclic_log.size, XRP_FLAG_READ_WRITE,
@@ -520,7 +524,7 @@ err_free_comm:
     dma_free_attrs(
         xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
 err_unshare:
-    (void)xrp_unshare_kernel(xvp, mapping, XRP_FLAG_READ_WRITE);
+    (void)xrp_unshare(xvp, mapping, XRP_FLAG_READ_WRITE);
 err_free:
     kfree(mapping);
 err:
@@ -556,7 +560,7 @@ static int xrp_deinit(struct platform_device *pdev)
     dma_free_attrs(
         xvp->dev, xvp->comm.size, xvp->comm.addr, xvp->comm.dma_addr, 0);
     ida_simple_remove(&xvp_nodeid, xvp->nodeid);
-    (void)xrp_unshare_kernel(xvp, xvp->cyclic_log.mapping, XRP_FLAG_READ_WRITE);
+    (void)xrp_unshare(xvp, xvp->cyclic_log.mapping, XRP_FLAG_READ_WRITE);
     kfree(xvp->cyclic_log.mapping);    
     devm_kfree(&pdev->dev, xvp);
     return 0;

@@ -56,10 +56,19 @@ enum ioctl_buffer_flags {
     XRP_FLAG_READ_WRITE = 0x3,
 };
 
+enum ioctl_memory_type {
+    XRP_MEMORY_TYPE_USERPTR,
+    XRP_MEMORY_TYPE_DMABUF,
+};
+
 struct xrp_ioctl_buffer {
     __u32 flags;
     __u32 size;
-    __u64 addr;
+    __u32 memory_type;
+    union{
+        __u64 addr;
+        __s32 fd;
+    };
 };
 
 enum {

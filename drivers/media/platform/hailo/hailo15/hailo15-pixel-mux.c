@@ -64,6 +64,7 @@ struct pixel_mux_priv {
 	struct v4l2_subdev subdev;
 	struct v4l2_async_notifier notifier;
 	struct media_pad pads[PIXEL_MUX_PAD_MAX];
+	struct v4l2_mbus_framefmt pad_fmts[PIXEL_MUX_PAD_MAX];
 	struct hailo15_buf_ctx *buf_ctx;
 
 	/* Remote source */
@@ -71,12 +72,20 @@ struct pixel_mux_priv {
 	int source_pad;
 };
 
+static const struct v4l2_mbus_framefmt fmt_default = {
+	.width		= 3840,
+	.height		= 2160,
+	.code		= MEDIA_BUS_FMT_SRGGB12_1X12,
+	.field		= V4L2_FIELD_NONE,
+	.colorspace	= V4L2_COLORSPACE_DEFAULT,
+};
+
 static const struct hailo15_mux_cfg isp_cfg = {
 	.pixel_mux_cfg =
 		P2A0_2_SW_DBG_P2A1_2_CSIRX0_ISP0_2_CSIRX0_ISP1_2_SW_DBG,
 	.isp0_stream0 = ENABLE_VC_0_DT_RAW_12,
-	.isp0_stream1 = DISABLE_VC_4_DT_DISABLE,
-	.isp0_stream2 = DISABLE_VC_4_DT_DISABLE,
+	.isp0_stream1 = ENABLE_VC_1_DT_RAW_12,
+	.isp0_stream2 = ENABLE_VC_2_DT_RAW_12,
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
@@ -159,7 +168,6 @@ static int hailo_pixel_mux_async_bound(struct v4l2_async_notifier *notifier,
 	struct v4l2_subdev *subdev = notifier->sd;
 	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(subdev);
 
-	pr_info("%s: enter\n", __func__);
 	pixel_mux->source_pad = media_entity_get_fwnode_pad(
 		&s_subdev->entity, s_subdev->fwnode, MEDIA_PAD_FL_SOURCE);
 	dev_info(pixel_mux->dev, "%s source pad %d\n", __func__,
@@ -257,6 +265,79 @@ finish:
 	return ret;
 }
 
+static int pixel_mux_get_fmt(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *state,
+				struct v4l2_subdev_format *fmt)
+{
+	struct pixel_mux_priv *pixel_mux =
+		v4l2_subdev_to_pixel_mux(sd);
+
+	struct v4l2_mbus_framefmt *src_format;
+	struct v4l2_mbus_framefmt *dst_format;
+	if (!pixel_mux || !fmt || fmt->pad >= PIXEL_MUX_PAD_MAX)
+		return -EINVAL;
+	
+	src_format = &pixel_mux->pad_fmts[fmt->pad];
+	dst_format = &fmt->format;
+	if (!src_format || !dst_format)
+		return -EINVAL;
+	
+	*dst_format = *src_format;
+	return 0;
+}
+
+static int pixel_mux_set_fmt(struct v4l2_subdev *sd,
+		struct v4l2_subdev_state *state,
+		struct v4l2_subdev_format *fmt)
+{
+	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(sd);
+	struct v4l2_subdev *subdev;
+	struct media_pad *pad;
+	unsigned int sink_pad_idx = PIXEL_MUX_PAD_SOURCE_0;
+	const struct v4l2_mbus_framefmt *src_format = &fmt->format;
+	struct v4l2_mbus_framefmt *dst_format;
+	int ret = 0;
+
+	if (!pixel_mux)
+		return -EINVAL;
+	
+	/* set format in pixel_mux->pad_fmts */
+	dst_format = &pixel_mux->pad_fmts[fmt->pad];
+	if (!dst_format)
+		return -EINVAL;
+	*dst_format = *src_format;
+	
+	/* change format to one of two: x16 or x32 */
+	if (sd->grp_id == VID_GRP_ISP_MP ||
+		sd->grp_id == VID_GRP_ISP_SP) {
+		fmt->format.code = MEDIA_BUS_FMT_SRGGB12_1X32;
+	} else if (sd->grp_id == VID_GRP_P2A) {
+		fmt->format.code = MEDIA_BUS_FMT_SRGGB12_1X12;
+	} else {
+		ret = -EINVAL;
+		goto err_bad_src_grp;
+	}
+
+	/* Propagate format to sink */
+	sink_pad_idx = (int)(fmt->pad/2);
+	pad = &pixel_mux->pads[sink_pad_idx];
+	if (pad)
+		pad = media_entity_remote_pad(pad);
+	
+	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
+		subdev = media_entity_to_v4l2_subdev(pad->entity);
+		subdev->grp_id = sd->grp_id;
+		ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, fmt);
+	}
+	goto finish;
+
+err_bad_src_grp:
+	dev_err(pixel_mux->dev, "%s: bad group id of source subdev\n",
+		__func__);
+finish:
+	return ret;
+}
+
 static struct v4l2_subdev_core_ops pixel_mux_core_ops = {
 	.ioctl = pixel_mux_priv_ioctl,
 };
@@ -273,9 +354,15 @@ static struct v4l2_subdev_video_ops pixel_mux_subdev_video_ops = {
 	.s_stream = pixel_mux_s_stream,
 };
 
+static const struct v4l2_subdev_pad_ops pixel_mux_pad_ops = {
+	.get_fmt               = pixel_mux_get_fmt,
+	.set_fmt               = pixel_mux_set_fmt,
+};
+
 static struct v4l2_subdev_ops pixel_mux_subdev_ops = {
 	.core = &pixel_mux_core_ops,
 	.video = &pixel_mux_subdev_video_ops,
+	.pad = &pixel_mux_pad_ops,
 };
 
 static int pixel_mux_get_ep(struct pixel_mux_priv *pixel_mux)
@@ -345,6 +432,7 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	struct hailo15_dma_ctx *dma_ctx;
 	int ret;
 	struct resource *res;
+	unsigned int i;
 
 	dev_info(&pdev->dev, "%s enter\n", __func__);
 
@@ -362,7 +450,7 @@ static int pixel_mux_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
-		pr_info("cant find resources\n");
+		pr_err("cant find resources\n");
 		return -EINVAL;
 	}
 	pixel_mux->base = devm_ioremap_resource(&pdev->dev, res);
@@ -390,6 +478,9 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	pixel_mux->pads[PIXEL_MUX_PAD_SOURCE_1].flags = MEDIA_PAD_FL_SOURCE;
 	pixel_mux->pads[PIXEL_MUX_PAD_SINK_0].flags = MEDIA_PAD_FL_SINK;
 	pixel_mux->pads[PIXEL_MUX_PAD_SINK_1].flags = MEDIA_PAD_FL_SINK;
+
+	for (i = PIXEL_MUX_PAD_SOURCE_0; i < PIXEL_MUX_PAD_MAX; i++)
+		pixel_mux->pad_fmts[i] = fmt_default;
 
 	/*create media pads*/
 	ret = media_entity_pads_init(&subdev->entity, PIXEL_MUX_PAD_MAX,

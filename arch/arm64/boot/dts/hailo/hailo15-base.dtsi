@@ -543,7 +543,7 @@
             no-map;
             alignment = <0x0 0x4000>;
             size = <0x0 0x8000000>;
-            alloc-ranges = <0 0xC0000000 0 0x40000000>;
+            alloc-ranges = <0 0xD0000000 0 0x30000000>;
         };
 
         /* set Linux,CMA area to 992MiB */
@@ -557,14 +557,15 @@
             alloc-ranges = <0 0x80000000 0 0x40000000>;
         };
 
-        /* set Hailo,CMA area to 256MiB */
+        /* set Hailo,CMA area to 256MiB, must be at 0xCXXXXXXX for main2fast LUT to work
+           (accessing 0x3XXXXXXX->0xCXXXXXXX in the NNM firmware) */
         hailo_cma: hailo,cma {
             status = "disabled";
             compatible = "shared-dma-pool";
             reusable;
             size = <0x0 0x10000000>;
             linux,cma-hailo;
-            alloc-ranges = <0 0xC0000000 0 0x40000000>;
+            alloc-ranges = <0 0xC0000000 0 0x10000000>;
         };
     };
 
@@ -760,7 +761,11 @@
 	compatible = "hailo,hailo15-gp_vdma";
 	reg = <0 0x7c05E000 0 0x200>;
 	ranges;
-        interrupts = <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupts = <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_0_IRQ IRQ_TYPE_LEVEL_HIGH>, 
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_1_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_2_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                    <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_3_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "gp_dma_irq_0", "gp_dma_irq_1", "gp_dma_irq_2", "gp_dma_irq_3";
 	dma-channel@0 {
 		reg = <0x7c05C000 0x20>;
 	};
@@ -772,6 +777,42 @@
 	};
 	dma-channel@3 {
 		reg = <0x7c05C060 0x20>;
+	};
+    dma-channel@4 {
+		reg = <0x7c05C080 0x20>;
+	};
+    dma-channel@5 {
+		reg = <0x7c05C0A0 0x20>;
+	};
+    dma-channel@6 {
+		reg = <0x7c05C0C0 0x20>;
+	};
+    dma-channel@7 {
+		reg = <0x7c05C0E0 0x20>;
+	};
+    dma-channel@8 {
+		reg = <0x7c05C100 0x20>;
+	};
+    dma-channel@9 {
+		reg = <0x7c05C120 0x20>;
+	};
+    dma-channel@A {
+		reg = <0x7c05C140 0x20>;
+	};
+    dma-channel@B {
+		reg = <0x7c05C160 0x20>;
+	};
+    dma-channel@C {
+		reg = <0x7c05C180 0x20>;
+	};
+    dma-channel@D {
+		reg = <0x7c05C1A0 0x20>;
+	};
+    dma-channel@E {
+		reg = <0x7c05C1C0 0x20>;
+	};
+    dma-channel@F {
+		reg = <0x7c05C1E0 0x20>;
 	};
 
     };
@@ -859,22 +900,32 @@
                 #address-cells = <1>;
                 #size-cells = <1>;
 
-                scu@0 {
-                    label = "scu-fw";
-                    reg = <0x000000 0x40000>;
+                scu-bl@0 {
+                    label = "scu-bl";
+                    reg = <0x000000 0x06000>;
                 };
 
-                config_space@1 {
+                scu-bl-config@1 {
+                    label = "scu-bl config";
+                    reg = <0x006000 0x01000>;
+                };
+
+                scu-fw@2 {
+                    label = "scu-fw";
+                    reg = <0x008000 0x38000>;
+                };
+
+                config_space@3 {
                     label = "config-space";
                     reg = <0x40000 0x10000>;
                 };
 
-                u_boot_env@2 {
+                u_boot_env@4 {
                     label = "u-boot env";
                     reg = <0x50000 0x04000>;
                 };
 
-                u_boot_spl@3 {
+                u_boot_spl@5 {
                     label = "u-boot-spl";
                     reg = <0x54000 0x2C000>;
                 };

@@ -12,7 +12,7 @@
 #include <linux/of_platform.h>
 #include <linux/pinctrl/pinconf-generic.h>
 
-#include <linux/soc/hailo/scmi_hailo_protocol.h>
+#include <linux/soc/hailo/scmi_hailo_ops.h>
 
 #define H15__SCU_BOOT_BIT_MASK (3)
 

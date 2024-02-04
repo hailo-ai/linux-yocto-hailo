@@ -24,6 +24,7 @@
 #include <linux/mmap_lock.h>
 #include <linux/highmem.h>
 #include <linux/module.h>
+#include <linux/dma-buf.h>
 
 bool user_sync_buffer  = false;
 module_param(user_sync_buffer , bool, 0644);
@@ -761,63 +762,177 @@ long xrp_share_block(
 }
 
 
-long xrp_unshare_kernel(
-    struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
+long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_buffer_flags flags, dma_addr_t *paddr, struct xrp_mapping *mapping)
 {
     long ret = 0;
+    struct xvp *xvp = filp->private_data;
+    struct dma_buf *dmabuf = NULL;
+    struct dma_buf_attachment *attach = NULL;
+    struct sg_table *sgt = NULL;
+    struct scatterlist *sg = NULL;
+    int i;
 
-    if (mapping->type & XRP_MAPPING_ALIEN) {
-        if (flags & XRP_FLAG_WRITE) {
-            ret = xrp_writeback_alien_mapping(
-                xvp, &mapping->alien_mapping, flags,
-                !(mapping->type & XRP_MAPPING_KERNEL));
-            if (ret < 0) {
-                pr_err("xrp_writeback_alien_mapping() failed with %ld\n", ret);
-            }
-        }
+    dev_dbg(xvp->dev, "%s: fd = %d, size = %lu, flags = %d\n", __func__, fd, size, flags);
 
-        xrp_alien_mapping_destroy(&mapping->alien_mapping);
-
-    } else if (mapping->type & XRP_MAPPING_KERNEL) {
-        if (flags & XRP_FLAG_WRITE) {
-            xrp_dma_sync_for_cpu(xvp,
-                mapping->kernel.paddr, mapping->kernel.size, flags);
-        }
+    dmabuf = dma_buf_get(fd);
+    if (IS_ERR(dmabuf)) {
+        dev_err(xvp->dev, "%s: dma_buf_get failed, err=%ld\n", __func__, PTR_ERR(dmabuf));
+        ret = -EINVAL;
+        goto l_exit;
     }
 
+    attach = dma_buf_attach(dmabuf, xvp->dev);
+    if (IS_ERR(attach)) {
+        dev_err(xvp->dev, "%s: dma_buf_attach failed, err=%ld\n", __func__, PTR_ERR(attach));
+        ret = -EINVAL;
+        goto l_buf_get;
+    }
+
+    sgt = dma_buf_map_attachment(attach, xrp_dma_direction(flags));
+    if (IS_ERR(sgt)) {
+        dev_err(xvp->dev, "%s: dma_buf_map_attachment failed, err=%ld\n", __func__, PTR_ERR(sgt));
+        ret = -EINVAL;
+        goto l_buf_attach;
+    }
+
+    // print out the scatterlist for debug purposes
+    for_each_sgtable_dma_sg(sgt, sg, i) {
+        dma_addr_t sg_dma_addr = sg_dma_address(sg);
+
+        dev_dbg(xvp->dev, "%s: sg[%d] = %pad, len = %u, offset = %u\n",
+            __func__, i, &sg_dma_addr, sg_dma_len(sg), sg->offset); 
+    }
+
+    if (sgt->nents > 1) {
+        dev_err(xvp->dev, "%s: buffer is not contiguous\n", __func__);
+        ret = -EINVAL;
+        goto l_buf_map;
+    }
+
+    sg = sgt->sgl;
+
+    if (sg_dma_len(sg) < size) {
+        dev_err(xvp->dev, "%s: Dma mapped length (%u) is smaller than requested size (%lu)\n", __func__, sg_dma_len(sg), size);
+        ret = -EINVAL;
+        goto l_buf_map;
+    }
+
+    *paddr = sg_dma_address(sg);
+
+    mapping->type = XRP_MAPPING_DMABUF;
+    mapping->dmabuf.attachment = attach;
+    mapping->dmabuf.dmabuf = dmabuf;
+    mapping->dmabuf.sgt = sgt;
+
+    goto l_exit;
+
+l_buf_map:
+    dma_buf_unmap_attachment(attach, sgt, xrp_dma_direction(flags));
+l_buf_attach:
+    dma_buf_detach(dmabuf, attach);
+l_buf_get:
+    dma_buf_put(dmabuf);
+l_exit:
     return ret;
 }
 
-long xrp_unshare_block(
+static long xrp_unshare_kernel(
+    struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
+{
+    dev_dbg(xvp->dev, "%s: mapping = %p, mapping->type = %d\n",
+        __func__, mapping, mapping->type);
+
+    if (flags & XRP_FLAG_WRITE) {
+        xrp_dma_sync_for_cpu(xvp,
+            mapping->kernel.paddr, mapping->kernel.size, flags);
+    }
+
+    return 0;
+}
+
+static long xrp_unshare_alien(
     struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
 {
     long ret = 0;
 
-    switch (mapping->type & ~XRP_MAPPING_KERNEL) {
-    case XRP_MAPPING_NATIVE:
-        if ((flags & XRP_FLAG_WRITE) && !user_sync_buffer) {
-            xrp_dma_sync_for_cpu(
-                xvp, mapping->native.xrp_allocation->start,
-                mapping->native.xrp_allocation->size, flags);
+    dev_dbg(xvp->dev, "%s: mapping = %p, mapping->type = %d\n",
+        __func__, mapping, mapping->type);
+    
+    if (flags & XRP_FLAG_WRITE) {
+        ret = xrp_writeback_alien_mapping(xvp,
+                            &mapping->alien_mapping,
+                            flags,
+                            true);
+    }
+    xrp_alien_mapping_destroy(&mapping->alien_mapping);
+    
+    return ret;
+}
 
-        }
-        xrp_allocation_put(mapping->native.xrp_allocation);
+static long xrp_unshare_native(
+    struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
+{
+    dev_dbg(xvp->dev, "%s: mapping = %p, mapping->type = %d\n",
+        __func__, mapping, mapping->type);
+
+    if ((flags & XRP_FLAG_WRITE) && !user_sync_buffer) {
+        xrp_dma_sync_for_cpu(xvp,
+            mapping->native.xrp_allocation->start,
+            mapping->native.xrp_allocation->size, flags);
+    }
+
+    xrp_allocation_put(mapping->native.xrp_allocation);
+
+    return 0;
+}
+
+static long xrp_unshare_dmabuf(struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
+{
+    struct dma_buf *dmabuf = mapping->dmabuf.dmabuf;
+    struct dma_buf_attachment *attach = mapping->dmabuf.attachment;
+    struct sg_table *sgt = mapping->dmabuf.sgt;
+    int direction = xrp_dma_direction(flags);
+
+    dev_dbg(xvp->dev, "%s: dmabuf = %p, attachment = %p, sgt = %p, flags = %d\n", __func__, dmabuf, attach, sgt, flags);
+    
+    if (direction == DMA_NONE) {
+        // DMA_NONE is illegal direction for dma_buf_unmap_attachment
+        direction = DMA_TO_DEVICE;
+    }
+    dma_buf_unmap_attachment(attach, sgt, direction);
+    dma_buf_detach(dmabuf, attach);
+    dma_buf_put(dmabuf);
+
+    return 0;
+}
+
+long xrp_unshare(struct xvp *xvp, struct xrp_mapping *mapping, enum ioctl_buffer_flags flags)
+{
+    long ret = 0;
+
+    switch (mapping->type) {
+    case XRP_MAPPING_KERNEL:
+        ret = xrp_unshare_kernel(xvp, mapping, flags);
+        break;
+
+    case XRP_MAPPING_NATIVE:
+        ret = xrp_unshare_native(xvp, mapping, flags);
         break;
 
     case XRP_MAPPING_ALIEN:
-        if (flags & XRP_FLAG_WRITE)
-            ret = xrp_writeback_alien_mapping(xvp,
-                              &mapping->alien_mapping,
-                              flags,
-                              !(mapping->type & XRP_MAPPING_KERNEL));
-
-        xrp_alien_mapping_destroy(&mapping->alien_mapping);
+        ret = xrp_unshare_alien(xvp, mapping, flags);
         break;
 
-    case XRP_MAPPING_KERNEL:
+    case XRP_MAPPING_DMABUF:
+        ret = xrp_unshare_dmabuf(xvp, mapping, flags);
+        break;
+
+    case XRP_MAPPING_NONE:
         break;
 
     default:
+        dev_err(xvp->dev, "%s: unknown mapping type: %d\n", __func__, mapping->type);
+        ret = -EINVAL;
         break;
     }
 
@@ -871,14 +986,14 @@ long xrp_ioctl_sync_dma(struct file *filp, struct xrp_ioctl_sync_buffer __user *
 
     switch (sync_buffer.access_time) {
     case XRP_FLAG_BUFFER_SYNC_START:
-	    xrp_dma_sync_for_cpu(
+        xrp_dma_sync_for_cpu(
             xvp, phys, sync_buffer.size, sync_buffer.direction);
-	    break;
+        break;
 
     case XRP_FLAG_BUFFER_SYNC_END:
-	    xrp_dma_sync_for_device(
+        xrp_dma_sync_for_device(
             xvp, phys, sync_buffer.size, sync_buffer.direction);
-	    break;
+        break;
     }
 
     return 0;

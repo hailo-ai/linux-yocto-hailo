@@ -113,3 +113,22 @@ const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code)
 	return NULL;
 };
 EXPORT_SYMBOL(hailo15_code_get_format);
+
+struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev)
+{
+	struct media_entity *entity;
+	struct v4l2_subdev *sensor_sd = NULL;
+
+	if (!mdev)
+		return NULL;
+
+	media_device_for_each_entity (entity, mdev) {
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
+			sensor_sd = media_entity_to_v4l2_subdev(entity);
+			break;
+		}
+	}
+
+	return sensor_sd;
+};
+EXPORT_SYMBOL(hailo15_get_sensor_subdev);

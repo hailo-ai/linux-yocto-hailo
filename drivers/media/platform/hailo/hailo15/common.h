@@ -16,14 +16,14 @@ enum hailo15_video_path {
 #define FMT_MAX_PLANES 3
 
 #define HAILO15_MAX_BUFFERS 10
-#define HAILO15_NUM_P2A_BUFFERS 5
+#define HAILO15_NUM_P2A_BUFFERS 1
 #define HAILO15_EVENT_RESOURCE_SIZE 4096 * 4
 
-#define VIDEO_FPS_MONITOR_SUBDEV_IOC \
+#define VIDEO_FPS_MONITOR_SUBDEV_IOC                                           \
 	_IOR('D', BASE_VIDIOC_PRIVATE + 0, uint64_t)
-#define VIDEO_GET_VSM_IOC \
+#define VIDEO_GET_VSM_IOC                                                      \
 	_IOWR('D', BASE_VIDIOC_PRIVATE + 1, struct hailo15_get_vsm_params)
-#define VIDEO_GET_P2A_REGS \
+#define VIDEO_GET_P2A_REGS                                                     \
 	_IOR('D', BASE_VIDIOC_PRIVATE + 2, struct hailo15_p2a_buffer_regs_addr)
 
 #define ISPIOC_V4L2_READ_REG                                                   \
@@ -41,6 +41,8 @@ enum hailo15_video_path {
 #define ISPIOC_V4L2_MCM_MODE _IOWR('I', BASE_VIDIOC_PRIVATE + 7, uint32_t)
 #define ISPIOC_V4L2_REQBUFS                                                    \
 	_IOWR('I', BASE_VIDIOC_PRIVATE + 8, struct hailo15_reqbufs)
+#define ISPIOC_V4L2_SET_INPUT_FORMAT                                           \
+	_IOWR('I', BASE_VIDIOC_PRIVATE + 9, struct v4l2_subdev_format)
 
 #define HAILO15_PAD_REQUBUFS                                                   \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_pad_reqbufs)
@@ -98,8 +100,6 @@ enum hailo15_video_path {
 	(HAILO15_DMA_CTX_CB(ctx, get_rmem, rmem))
 #define hailo15_video_node_get_event_resource(ctx, resource)                   \
 	(HAILO15_DMA_CTX_CB(ctx, get_event_resource, resource))
-#define hailo15_video_node_get_fbuf(ctx, fbuf)                                 \
-	(HAILO15_DMA_CTX_CB(ctx, get_fbuf, fbuf))
 #define hailo15_video_node_set_private_data(ctx, grp_id, data)                 \
 	(HAILO15_DMA_CTX_CB(ctx, set_private_data, grp_id, data))
 #define hailo15_video_node_get_private_data(ctx, grp_id, data)                 \
@@ -215,6 +215,19 @@ static const struct hailo15_video_fmt __hailo15_formats[] = {
 				    .hscale_ratio = 1,
 			    } },
 
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_SRGGB12,
+		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+		.pix_fmt = RAW12,
+		.planarity = INTERLEAVED,
+		.num_planes = 1,
+		.width_modulus = 3840,
+		.planes = { {
+			.bpp = 2,
+			.vscale_ratio = 1,
+			.hscale_ratio = 1,
+		} },
 	},
 
 };
@@ -380,6 +393,7 @@ int hailo15_v4l2_notifier_bound(struct v4l2_async_notifier *,
 				struct media_entity *);
 const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code);
 const struct hailo15_video_fmt *hailo15_fourcc_get_format(uint32_t fourcc);
+struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev);
 int hailo15_plane_get_bytesperline(const struct hailo15_video_fmt *format,
 				   int width, int plane);
 int hailo15_plane_get_sizeimage(const struct hailo15_video_fmt *format,

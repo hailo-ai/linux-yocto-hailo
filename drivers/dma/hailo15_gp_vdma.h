@@ -33,6 +33,13 @@
 #define DESCRIPTOR_SET_IRQ (0x24) // an IRQ is issued when this Descriptor has been processed. 
 								// an IRQ must be issued on AXI Domain 1
 
+enum gp_dma_interrupts {
+	GP_DMA_AP_INT_0_IRQ_ID = 0,
+	GP_DMA_AP_INT_1_IRQ_ID,
+	GP_DMA_AP_INT_2_IRQ_ID,
+	GP_DMA_AP_INT_3_IRQ_ID
+};
+
 #define to_hailo15_gp_vdma_chan(chan) container_of(chan, struct hailo15_gp_vdma_chan, common)
 
 struct hailo15_gp_vdma_descriptor {
@@ -75,6 +82,7 @@ struct hailo15_gp_vdma_chan {
 	int id;				/* Raw id of this channel */
 	bool idle;			/* DMA controller is idle */
 	struct dma_async_tx_descriptor async_tx;
+	bool error;
 };
 
 typedef struct {
@@ -96,6 +104,7 @@ struct hailo15_gp_vdma_device {
 	struct device *dev;
 	struct dma_device common;
 	struct hailo15_gp_vdma_chan *chan[MAX_CHANNELS_PER_DEVICE];
-    int irq;		
+    int irq;		/* IRQ ID */
+	int irq_id;		/* IRQ id in hailo engine */	
 };
 #endif	/* __DMA_HAILODMA_H */

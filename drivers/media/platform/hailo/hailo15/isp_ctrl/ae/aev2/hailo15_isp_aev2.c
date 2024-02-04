@@ -331,7 +331,7 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.name = "isp_ae_gain",
 		.step = 1,
 		.min = 1024,
-		.max = 102389,
+		.max = 0x7FFFFFFF,
 		.def = 1024,
 	},
 	{

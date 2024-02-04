@@ -7,6 +7,7 @@
 #include "scmi_hailo.h"
 
 struct scmi_hailo_proto_ops *hailo_ops = NULL;
+struct scmi_notify_ops *hailo_notify_ops = NULL;
 struct scmi_protocol_handle *ph = NULL;
 
 static int scmi_hailo_probe(struct scmi_device *sdev)
@@ -27,6 +28,8 @@ static int scmi_hailo_probe(struct scmi_device *sdev)
 	ph = proto_handle;
 	hailo_ops = (struct scmi_hailo_proto_ops *)proto_ops;
 
+	hailo_notify_ops = (struct scmi_notify_ops *)handle->notify_ops;
+
 	ret = scmi_hailo_fs_init(sdev);
 	if (ret) {
 		pr_err("Failed to create fuse file\n");
@@ -44,6 +47,7 @@ static void scmi_hailo_remove(struct scmi_device *sdev)
 
 	/* Remove global ph and hailo_ops so that they won't be used via ops */
 	hailo_ops = NULL;
+	hailo_notify_ops = NULL;
 	ph = NULL;
 
     handle->devm_protocol_put(sdev, SCMI_PROTOCOL_HAILO);

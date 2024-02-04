@@ -27,6 +27,7 @@
 //#define HAILO15_DMA_TEST 1
 #define CHAN_REG_SIZE 0x20
 #define HAILO15_VDMA_CHANNEL_DEPTH 16
+#define MAX_DESC_COUNT (1 << HAILO15_VDMA_CHANNEL_DEPTH)
 
 #define VDMA_DESC_ADDRESS_BITS_16_TO_31__MASK (0x00000000FFFF0000)
 #define VDMA_DESC_ADDRESS_BITS_32_TO_63__MASK (0xFFFFFFFF00000000)
@@ -119,10 +120,11 @@ void hailo15_gp_vdma_desc_list_release(
 	struct device *dev, struct hailo_descriptors_list_buffer *descriptors)
 {
 	if (descriptors->kernel_address) {
-		dma_free_coherent(dev, descriptors->buffer_size,
-				  descriptors->kernel_address,
-				  descriptors->dma_address);
+		dma_free_noncoherent(dev, descriptors->buffer_size,
+				     descriptors->kernel_address,
+				     descriptors->dma_address, DMA_TO_DEVICE);
 		descriptors->kernel_address = NULL;
+		descriptors->desc_list = NULL;
 	}
 }
 
@@ -146,37 +148,32 @@ void hailo_vdma_program_descriptor(struct hailo15_gp_vdma_descriptor *descriptor
 }
 
 static int hailo15_gp_vdma_allocate_descriptors_list(
-	struct device *dev, uint32_t descriptors_count, bool is_circular,
+	struct device *dev, bool is_circular,
 	struct hailo_descriptors_list_buffer *descriptors)
 {
 	size_t buffer_size = 0;
 	const uint64_t align =
 		VDMA_DESCRIPTOR_LIST_ALIGN; //First addr must be aligned on 64 KB  (from the VDMA registers documentation)
 
-	if (descriptors_count > (1 << HAILO15_VDMA_CHANNEL_DEPTH)) {
-		dev_err(dev,
-			"Failed to allocate descriptors list, desc_count 0x%x, is bigger than max \n",
-			descriptors_count);
-		return -ENOMEM;
-	}
+	/* Allocate Once with the Max descriptor count supported */
 	buffer_size =
-		descriptors_count * sizeof(struct hailo15_gp_vdma_descriptor);
+		MAX_DESC_COUNT * sizeof(struct hailo15_gp_vdma_descriptor);
 	buffer_size = ALIGN(buffer_size, align);
 
 	descriptors->kernel_address =
-		dma_alloc_coherent(dev, buffer_size, &descriptors->dma_address,
-				   GFP_KERNEL | __GFP_ZERO);
+		dma_alloc_noncoherent(dev, buffer_size,
+				      &descriptors->dma_address, DMA_TO_DEVICE,
+				      GFP_KERNEL);
 	if (descriptors->kernel_address == NULL) {
 		dev_err(dev,
 			"Failed to allocate descriptors list, desc_count 0x%x, buffer_size 0x%zx, This failure means there is not a sufficient amount of CMA memory "
 			"(contiguous physical memory), This usually is caused by lack of general system memory. Please check you have sufficent memory.\n",
-			descriptors_count, buffer_size);
+			MAX_DESC_COUNT, buffer_size);
 		return -ENOMEM;
 	}
 
 	descriptors->buffer_size = buffer_size;
 	descriptors->desc_list = descriptors->kernel_address;
-	descriptors->desc_count = descriptors_count;
 	descriptors->is_circular = is_circular;
 
 	return 0;
@@ -202,7 +199,6 @@ hailo15_gp_vdma_prep_memcpy(struct dma_chan *dchan, dma_addr_t dma_dst,
 	uint64_t dst_addr = dma_dst;
 	uint16_t desc_page_size = VDMA_MAX_PAGE_SIZE;
 	bool is_last = false;
-	int err;
 
 	if (!dchan) {
 		dev_err(chan->dev, "No valid channel\n");
@@ -226,18 +222,23 @@ hailo15_gp_vdma_prep_memcpy(struct dma_chan *dchan, dma_addr_t dma_dst,
 		 VDMA_MAX_PAGE_SIZE); // check this against the depth of the channel
 	if ((len % VDMA_MAX_PAGE_SIZE) != 0)
 		descriptors_count += 1;
-	dev_dbg(chan->dev, "descriptors_count is %d \n", descriptors_count);
-	err = hailo15_gp_vdma_allocate_descriptors_list(
-		chan->dev, descriptors_count, false, &chan->dest_desc_list);
-	if (err) {
-		dev_err(chan->dev, "Fail to allocate dest descriptors list\n");
+
+	if (descriptors_count > MAX_DESC_COUNT) {
+		dev_err(chan->dev,
+			"Failed to prepere descriptors list, desc_count 0x%x, is bigger than max \n",
+			descriptors_count);
 		return NULL;
 	}
 
-	err = hailo15_gp_vdma_allocate_descriptors_list(
-		chan->dev, descriptors_count, false, &chan->src_desc_list);
-	if (err) {
-		dev_err(chan->dev, "Fail to allocate dest descriptors list\n");
+	dev_dbg(chan->dev, "descriptors_count is %d \n", descriptors_count);
+	chan->dest_desc_list.desc_count = descriptors_count;
+	chan->src_desc_list.desc_count = descriptors_count;
+
+	if ((chan->src_desc_list.kernel_address == NULL) ||
+	    (chan->dest_desc_list.kernel_address == NULL)) {
+		dev_err(chan->dev,
+			"Failed to prepere descriptors, Empty descriptors list for channel %d \n",
+			chan->id);
 		return NULL;
 	}
 
@@ -260,6 +261,14 @@ hailo15_gp_vdma_prep_memcpy(struct dma_chan *dchan, dma_addr_t dma_dst,
 		len -= VDMA_MAX_PAGE_SIZE;
 		desc_index++;
 	}
+
+	// Synchronize both dest and src descriptors list before the DMA transfer
+	dma_sync_single_for_device(chan->dev, chan->dest_desc_list.dma_address,
+				   chan->dest_desc_list.buffer_size,
+				   DMA_TO_DEVICE);
+	dma_sync_single_for_device(chan->dev, chan->src_desc_list.dma_address,
+				   chan->dest_desc_list.buffer_size,
+				   DMA_TO_DEVICE);
 
 	return &chan->async_tx;
 }
@@ -318,7 +327,9 @@ static enum dma_status hailo15_gp_vdma_tx_status(struct dma_chan *dchan,
 	struct hailo15_gp_vdma_chan *chan = to_hailo15_gp_vdma_chan(dchan);
 	enum dma_status ret;
 
-	if (chan->idle)
+	if (chan->error)
+		ret = DMA_ERROR;
+	else if (chan->idle)
 		ret = DMA_COMPLETE;
 	else
 		ret = DMA_IN_PROGRESS;
@@ -328,6 +339,48 @@ static enum dma_status hailo15_gp_vdma_tx_status(struct dma_chan *dchan,
 	return ret;
 }
 
+static void hailo15_gp_vdma_check_for_errors(struct hailo15_gp_vdma_chan *chan)
+{
+	uint32_t num_available = 0, num_ongoing = 0;
+	uint32_t src_error = 0, dest_error = 0;
+	/* Check no indications that a source or destination error occurred */
+	dest_error = DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG2__WRITE_DATA_ERROR__READ(chan->regs->channel_src_cfg2);
+	src_error = DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG2__WRITE_DATA_ERROR__READ(chan->regs->channel_dst_cfg2);
+	if (dest_error || src_error) {
+		chan->error = true;
+		dev_err(chan->dev,
+			"DMA error for Channel %d, src_error: %d, dest_error: %d \n", 
+			chan->id, src_error, dest_error);
+	}
+	
+	/* once transaction ended num processed and num availble 
+	   should be zero for both source and destination  */
+	num_available =
+		DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__SRCDESCNUM_AVAILABLE__READ(
+			chan->regs->channel_src_cfg0);
+	
+	num_ongoing =
+		DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG1__SRCDESCNUM_ONGOING__READ(
+			chan->regs->channel_src_cfg1);
+	
+	if (num_available != num_ongoing){
+		chan->error = true;
+		dev_err(chan->dev, "Error, channel%d src desc missmatch, excpected: %d got: %d \n", chan->id, num_available, num_ongoing);
+	}
+	
+	num_available =
+		DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__DESTDESCNUM_AVAILABLE__READ(
+			chan->regs->channel_dst_cfg0);
+
+	num_ongoing =
+		DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG1__DESTDESCNUM_ONGOING__READ(
+			chan->regs->channel_dst_cfg1);
+
+	if (num_available != num_ongoing) {
+		chan->error = true;
+		dev_err(chan->dev, "Error, channel%d dest desc missmatch, excpected: %d got: %d \n", chan->id, num_available, num_ongoing);
+	}
+}
 static void hailo15_gp_vdma_channel_handler(struct hailo15_gp_vdma_chan *chan)
 {
 	if (chan == NULL)
@@ -337,10 +390,9 @@ static void hailo15_gp_vdma_channel_handler(struct hailo15_gp_vdma_chan *chan)
 	hailo15_gp_vdma_stop_channel(chan);
 
 	dmaengine_desc_get_callback_invoke(&chan->async_tx, NULL);
-	/* TBD check that no error on the channel */
-
-	/* TBD check num processed and num availble that both of them are zero  */
+	hailo15_gp_vdma_check_for_errors(chan);
 }
+
 static irqreturn_t hailo15_gp_vdma_irqhandler(int irq, void *data)
 {
 	struct hailo15_gp_vdma_device *hdev = data;
@@ -350,19 +402,20 @@ static irqreturn_t hailo15_gp_vdma_irqhandler(int irq, void *data)
 	uint32_t i = 0;
 	channels_bitmap =
 		DRAM_DMA_SW_ENGINE_CONFIG__ENGINE_AP_INTR_STATUS__VAL__READ(
-			engine_registers->engine_ap_intr_status[0]);
+			engine_registers->engine_ap_intr_status[hdev->irq_id]);
 	dev_dbg(hdev->dev, "SW DMA GOT IRQ: %d channel_bitmap %u \n", irq,
 		channels_bitmap);
 
-	/* TBD  need to add a converation between engine_ap_intr_w1c[0] to the interrupt number */
 	for (i = 0; i < MAX_CHANNELS_PER_DEVICE; i++) {
 		if (channels_bitmap & BIT(i)) {
-			engine_registers->engine_ap_intr_w1c[0] = BIT(i);
+			engine_registers->engine_ap_intr_w1c[hdev->irq_id] =
+				BIT(i);
 			if (hdev->chan[i]) {
 				hailo15_gp_vdma_channel_handler(hdev->chan[i]);
 			}
 			dev_dbg(hdev->dev,
-				"SW DMA IRQ_HANDLED for channel id %d\n", i);
+				"SW DMA IRQ_HANDLED  irq id  %d for channel id %d\n",
+				hdev->irq_id, i);
 			return_value = IRQ_HANDLED;
 		}
 	}
@@ -375,16 +428,14 @@ hailo15_gp_vdma_channel_irq_mask_enable(struct hailo15_gp_vdma_device *hdev,
 {
 	hailo15_engine_config_regs __iomem *engine_registers = hdev->regs;
 	// Setup the irq mask
-	engine_registers->engine_ap_intr_mask[0] |= BIT(chan_id);
-	// TBD add converation from irq to engine_ap_intr_mask index - save the irq numver to chan struct
+	engine_registers->engine_ap_intr_mask[hdev->irq_id] |= BIT(chan_id);
 }
 
 static void hailo15_gp_vdma_channel_init(struct hailo15_gp_vdma_chan *chan)
 {
-	chan->idle = true;
-	/* Reset the channel */
+	chan->idle = true;	
 
-	/* set depth  to 8 -> max desc is 2^8 before doing a cycle */
+	/* Setting depth will affect the max desc that is 2^DEPTH */
 	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__SRC_DEPTH__MODIFY(
 		chan->regs->channel_src_cfg0, HAILO15_VDMA_CHANNEL_DEPTH);
 	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__DEST_DEPTH__MODIFY(
@@ -401,13 +452,38 @@ static void hailo15_gp_vdma_channel_init(struct hailo15_gp_vdma_chan *chan)
 	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG3__DESTDESC_ADDRESS_HIGH__MODIFY(
 		chan->regs->channel_dst_cfg3, 0);
 
-	// reset vDMA CHANNEL
+	/* Reset the channel */
 	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
 		chan->regs->channel_src_cfg0);
 	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
 		chan->regs->channel_dst_cfg0);
+	
+}
 
-	// open the  DMA IRQ events should be reported on the AXI Domain 1 interface. DMA IRQ is required on error.
+static int hailo15_gp_vdma_alloc_chan_resources(struct dma_chan *dchan)
+{
+	struct hailo15_gp_vdma_chan *chan = to_hailo15_gp_vdma_chan(dchan);
+	int err = 0;
+
+	err = hailo15_gp_vdma_allocate_descriptors_list(chan->dev, false,
+							&chan->dest_desc_list);
+	if (err) {
+		dev_err(chan->dev,
+			"Fail to allocate destination descriptors list\n");
+		return err;
+	}
+
+	err = hailo15_gp_vdma_allocate_descriptors_list(chan->dev, false,
+							&chan->src_desc_list);
+	if (err) {
+		dev_err(chan->dev,
+			"Fail to allocate source descriptors list\n");
+		return err;
+	}
+
+	hailo15_gp_vdma_channel_init(chan);
+
+	return 0;
 }
 
 static void __attribute__((unused))
@@ -415,12 +491,21 @@ hailo15_gp_vDMA_Test(struct hailo15_gp_vdma_chan *chan)
 {
 	dma_addr_t src_addr, dst_addr;
 	uint8_t *src_buf, *dst_buf;
+	int err = 0;
 
 	src_buf = dma_alloc_coherent(chan->dev, 8192, &src_addr, GFP_KERNEL);
 	dst_buf = dma_alloc_coherent(chan->dev, 8192, &dst_addr, GFP_KERNEL);
 
 	memset(src_buf, 0x12, 8192);
 	memset(dst_buf, 0x0, 8192);
+
+	err = hailo15_gp_vdma_alloc_chan_resources(&chan->common);
+	if (err < 0) {
+		dev_err(chan->dev,
+			"Allocation Failed Test didn't run for channel %d \n",
+			chan->id);
+		return;
+	}
 
 	dev_info(
 		chan->dev,
@@ -449,22 +534,13 @@ hailo15_gp_vDMA_Test(struct hailo15_gp_vdma_chan *chan)
 	dma_free_coherent(chan->dev, 8192, dst_buf, dst_addr);
 }
 
-static int hailo15_gp_vdma_alloc_chan_resources(struct dma_chan *dchan)
-{
-	struct hailo15_gp_vdma_chan *chan = to_hailo15_gp_vdma_chan(dchan);
-
-	hailo15_gp_vdma_channel_init(chan);
-
-	return 0;
-}
-
 static int hailo15_dma_chan_probe(struct hailo15_gp_vdma_device *hdev,
 				  struct device_node *node)
 {
 	struct hailo15_gp_vdma_chan *chan;
 	struct resource of_resource;
 	int err;
-
+	
 	/* alloc channel */
 	chan = kzalloc(sizeof(*chan), GFP_KERNEL);
 	if (!chan) {
@@ -522,6 +598,7 @@ static int hailo15_gp_vdma_probe(struct platform_device *pdev)
 	struct device_node *child;
 	unsigned int i;
 	int err;
+	
 
 	hdev = kzalloc(sizeof(*hdev), GFP_KERNEL);
 	if (!hdev) {
@@ -539,9 +616,9 @@ static int hailo15_gp_vdma_probe(struct platform_device *pdev)
 		err = -ENOMEM;
 		goto out_free;
 	}
-
-	/* map the channel IRQ if it exists, but don't hookup the handler yet */
-	hdev->irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
+	
+	hdev->irq_id = GP_DMA_AP_INT_0_IRQ_ID; 
+	hdev->irq = irq_of_parse_and_map(pdev->dev.of_node, hdev->irq_id);
 	if (hdev->irq < 0) {
 		dev_err(&pdev->dev, "Error receiving irq for %pOF. err %d\n",
 			pdev->dev.of_node, hdev->irq);
@@ -549,7 +626,6 @@ static int hailo15_gp_vdma_probe(struct platform_device *pdev)
 	}
 
 	dma_cap_set(DMA_MEMCPY, hdev->common.cap_mask);
-
 	hdev->common.device_prep_dma_memcpy = hailo15_gp_vdma_prep_memcpy;
 	hdev->common.device_tx_status = hailo15_gp_vdma_tx_status;
 	hdev->common.device_issue_pending =
@@ -611,7 +687,6 @@ out_return:
 static void hailo15_gp_vdma_free_irq(struct hailo15_gp_vdma_device *hdev)
 {
 	free_irq(hdev->irq, hdev);
-	/*TBD Free all IRQ once more then 1 is supported */
 }
 
 static int hailo15_gp_vdma_remove(struct platform_device *op)

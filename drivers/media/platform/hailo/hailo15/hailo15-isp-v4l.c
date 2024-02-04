@@ -304,8 +304,13 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		break;
 	case ISPIOC_V4L2_REQBUFS:
 		req = (struct hailo15_reqbufs *)arg;
-		hailo15_video_post_event_requebus(isp_dev, req->pad,
-						  req->num_buffers);
+		ret = hailo15_video_post_event_requebus(isp_dev, req->pad,
+							req->num_buffers);
+		break;
+	case ISPIOC_V4L2_SET_INPUT_FORMAT:
+		memcpy(&isp_dev->input_fmt, (void *)arg,
+		       sizeof(struct v4l2_subdev_format));
+		ret = 0;
 		break;
 	case ISPIOC_V4L2_MCM_DQBUF:
 	case ISPIOC_S_MIV_INFO:
@@ -514,6 +519,7 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 
 		isp_dev->mi_stopped[path] = 1;
 		isp_dev->cur_buf[path] = NULL;
+		memset(&isp_dev->input_fmt, 0, sizeof(isp_dev->input_fmt));
 		return hailo15_video_post_event_stop_stream(isp_dev);
 	}
 
@@ -534,12 +540,32 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 {
 	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(sd);
 	struct hailo15_isp_device *isp_dev = ctx->dev;
+	struct v4l2_subdev *sensor_sd;
+	int ret = -EINVAL;
+	struct media_pad *pad;
 	int isp_path;
+	unsigned int sink_pad_idx = HAILO15_ISP_SINK_PAD_MAX;
+	struct v4l2_subdev *subdev;
+	int max_width = INPUT_WIDTH;
+	int max_height = INPUT_HEIGHT;
+
+	if (isp_dev->input_fmt.format.width != 0 &&
+	    isp_dev->input_fmt.format.height != 0) {
+		max_width = isp_dev->input_fmt.format.width;
+		max_height = isp_dev->input_fmt.format.height;
+	}
 
 	/*We support only downscaling*/
-	if (format->format.width > INPUT_WIDTH ||
-	    format->format.height > INPUT_HEIGHT)
+	if (format->format.width > max_width ||
+	    format->format.height > max_height) {
+		pr_debug("Unsupported resolution %dx%d\n", format->format.width,
+			 format->format.height);
 		return -EINVAL;
+	}
+
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
+		return 0;
+	}
 
 	isp_path = VID_GRP_TO_ISP_PATH(sd->grp_id);
 	if (isp_path < 0 || isp_path >= ISP_MAX_PATH)
@@ -547,9 +573,45 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 
 	memcpy(&isp_dev->fmt[isp_path], format,
 	       sizeof(struct v4l2_subdev_format));
-	return hailo15_video_post_event_set_fmt(
+	ret = hailo15_video_post_event_set_fmt(
 		isp_dev, isp_dev->pads[HAILO15_ISP_SOURCE_PAD_MP_S0].index,
 		&(format->format));
+	if (ret) {
+		pr_warn("%s - set_fmt event failed with %d\n", __func__, ret);
+		return ret;
+	}
+	
+	sink_pad_idx = (int)(format->pad/2);
+	pad = &isp_dev->pads[sink_pad_idx];
+	if (pad) {
+		pad = media_entity_remote_pad(pad);
+	}
+	
+	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
+		subdev = media_entity_to_v4l2_subdev(pad->entity);
+		subdev->grp_id = sd->grp_id;
+		ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, format);
+		if (ret)
+			return ret;
+	}
+
+	// if input_format was not set - no need to update the sensor
+    if (isp_dev->input_fmt.format.width == 0 ||
+        isp_dev->input_fmt.format.height == 0) {
+        pr_debug("%s - input format was not set - no need to update the sensor\n", __func__);
+        return 0;
+    }
+ 
+    sensor_sd = hailo15_get_sensor_subdev(isp_dev->sd.v4l2_dev->mdev);
+    if (!sensor_sd) {
+        pr_warn("%s - failed to get sensor subdev\n", __func__);
+        return -EINVAL;
+    }
+ 
+    return v4l2_subdev_call(sensor_sd, pad, set_fmt, NULL,
+                &isp_dev->input_fmt);
+
+	return ret;
 }
 
 static const struct v4l2_subdev_pad_ops hailo15_isp_pad_ops = {
@@ -700,7 +762,6 @@ static int hailo15_isp_get_fbuf(struct hailo15_dma_ctx *ctx,
 {
 	struct hailo15_isp_device *isp_dev =
 		(struct hailo15_isp_device *)ctx->dev;
-
 	fbuf->base = (void *)isp_dev->fbuf_phys;
 	fbuf->fmt.sizeimage = HAILO15_ISP_FBUF_SIZE;
 	return 0;

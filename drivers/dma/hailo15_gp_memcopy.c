@@ -16,28 +16,10 @@
 #include <linux/uaccess.h>
 #include <linux/dma-direct.h>
 #include <linux/cdev.h>
-
+#include <linux/dma-buf.h>
 #include "hailo15_gp_memcopy.h"
 #include "hailo15_gp_vdma.h"
 
-
-/* Handle a callback and indicate the DMA transfer is completed
- * 
- */
-void hailo15_gp_memcopy_tarnsfer_completed(void *param)
-{
-	struct completion *cmp = (struct completion *)param;
-	complete(cmp);
-}
-static int gp_dma_open(struct inode *device_file, struct file *file)
-{
-	return 0;
-}
-
-static int gp_dma_close(struct inode *device_file, struct file *file)
-{
-	return 0;
-}
 
 static void dma_memcpy_put_pages(phys_addr_t phys, unsigned long n_pages)
 {
@@ -46,17 +28,6 @@ static void dma_memcpy_put_pages(phys_addr_t phys, unsigned long n_pages)
 	page = pfn_to_page(__phys_to_pfn(phys));
 	for (i = 0; i < n_pages; ++i)
 		put_page(page + i);
-}
-
-static void dma_memcopy_mapping_destroy(struct memcopy_mapping *mapping)
-{
-    switch (mapping->type) {
-    case MEMCOPY_GUP:
-        dma_memcpy_put_pages(mapping->phy_addr, mapping->n_pages);
-        break;
-    default:
-        break;
-    }
 }
 
 bool dma_memcpy_cacheable(unsigned long pfn, unsigned long n_pages)
@@ -205,34 +176,160 @@ static long dma_memcpy_virt_to_phys(struct device *dev, unsigned long size,
 	mapping->phy_addr = phys;
 	return 0;
 }
-static int translate_addr(struct device *dev, unsigned long length,
-			   struct memcopy_mapping *mapping_src,
-			   struct memcopy_mapping *mapping_dst)
+
+/* Handle a callback and indicate the DMA transfer is completed
+ * 
+ */
+void hailo15_gp_memcopy_tarnsfer_completed(void *param)
 {
-	int ret = 0;
-	if ((mapping_dst->virt_addr == 0) || (mapping_src->virt_addr == 0)){
-		printk("Invalid Virt Address src: %02lx  dest: %02lx \n", mapping_src->virt_addr, mapping_dst->virt_addr);
-		return -1;
-	}
-
-	ret = dma_memcpy_virt_to_phys(dev, length, mapping_src);
-	if (ret < 0)
-		return -1;
-
-	ret = dma_memcpy_virt_to_phys(dev, length, mapping_dst);
-	if (ret < 0)
-		return -1;
-
-	if ((mapping_dst->dma_addr == 0) || (mapping_src ->dma_addr == 0)) {
-		printk("Translate mapping Failed\n");
-		return -1;
-	}
-
-	return ret;
+	struct completion *cmp = (struct completion *)param;
+	complete(cmp);
+}
+static int gp_dma_open(struct inode *device_file, struct file *file)
+{
+	return 0;
 }
 
-static int transfer_memcpy(unsigned long virt_src_addr,
-			   unsigned long virt_dst_addr, unsigned long length)
+static int gp_dma_close(struct inode *device_file, struct file *file)
+{
+	return 0;
+}
+
+
+static void dma_memcopy_mapping_destroy(struct memcopy_mapping *mapping)
+{
+    struct dma_buf *dmabuf = mapping->dmabuf;
+    struct dma_buf_attachment *attach = mapping->attachment;
+    struct sg_table *sgt = mapping->sgt;
+    
+	switch (mapping->type) {
+		case MEMCOPY_GUP:
+        	dma_memcpy_put_pages(mapping->phy_addr, mapping->n_pages);
+        	break;
+		case MEMCOPY_DMA_BUF:
+			dma_buf_unmap_attachment(attach, sgt, mapping->direction);
+    		dma_buf_detach(dmabuf, attach);
+    		dma_buf_put(dmabuf);
+			break;
+    	default:
+        	break;
+    }
+	return;
+}
+
+static long dma_memcpy_mapping(struct device *dev, unsigned long size,
+				    struct memcopy_mapping *mapping)
+{
+	long ret = 0;
+	struct dma_buf *dmabuf = NULL;
+	struct dma_buf_attachment *attach = NULL;
+    struct sg_table *sgt = NULL;
+    struct scatterlist *sg = NULL;
+    int i;
+
+	dmabuf = dma_buf_get(mapping->fd);
+    if (IS_ERR(dmabuf)) {
+        pr_err("%s: dma_buf_get failed, err=%ld\n", __func__, PTR_ERR(dmabuf));
+        ret = -EINVAL;
+        goto l_exit;
+    }
+
+	attach = dma_buf_attach(dmabuf, dev);
+    if (IS_ERR(attach)) {
+        pr_err("%s: dma_buf_attach failed, err=%ld\n", __func__, PTR_ERR(attach));
+        ret = -EINVAL;
+        goto l_buf_get;
+    }
+
+	sgt = dma_buf_map_attachment(attach, mapping->direction);
+    if (IS_ERR(sgt)) {
+        pr_err("%s: dma_buf_map_attachment failed, err=%ld\n", __func__, PTR_ERR(sgt));
+        ret = -EINVAL;
+        goto l_buf_attach;
+    }
+
+	 // print out the scatterlist for debug purposes
+    for_each_sgtable_dma_sg(sgt, sg, i) {
+        dma_addr_t sg_dma_addr = sg_dma_address(sg);
+        pr_debug("%s: sg[%d] = %pad, len = %u, offset = %u\n",
+            __func__, i, &sg_dma_addr, sg_dma_len(sg), sg->offset); 
+    }
+    if (sgt->nents > 1) {
+        pr_err("%s: buffer is not contiguous\n", __func__);
+        ret = -EINVAL;
+        goto l_buf_map;
+    }
+
+	sg = sgt->sgl;
+    if (sg_dma_len(sg) < size) {
+        pr_err("%s: Dma mapped length (%u) is smaller than requested size (%lu)\n", __func__, sg_dma_len(sg), size);
+        ret = -EINVAL;
+        goto l_buf_map;
+    }
+    mapping->dma_addr = sg_dma_address(sg);
+    mapping->attachment = attach;
+    mapping->dmabuf = dmabuf;
+    mapping->sgt = sgt;
+    
+	goto l_exit;
+
+l_buf_map:
+    dma_buf_unmap_attachment(attach, sgt, mapping->direction);
+l_buf_attach:
+    dma_buf_detach(dmabuf, attach);
+l_buf_get:
+    dma_buf_put(dmabuf);
+l_exit:
+    return ret;
+
+}
+
+
+static int dma_memcopy_mapping_create(struct device *dev, unsigned long length, struct memcopy_mapping *mapping)
+{
+	int ret = 0;
+
+	if (mapping->type == MEMCOPY_DMA_BUF) {
+		ret = dma_memcpy_mapping(dev, length, mapping);
+		if (ret < 0)
+			return -1;
+	} else {
+		if (mapping->virt_addr == 0) {
+			pr_err("Invalid Virt Address: %02lx \n", mapping->virt_addr);
+			return -1;
+		}
+		ret = dma_memcpy_virt_to_phys(dev, length, mapping);
+		if (ret < 0)
+			return -1;
+	}
+
+	if (mapping->dma_addr == 0) {
+		pr_err("Translate mapping Failed\n");
+		return -1;
+	}
+	
+	return ret;
+	
+}
+
+static void get_mapping_info(struct dma_copy_info copy_info,
+			    struct memcopy_mapping *mapping_dst,
+			    struct memcopy_mapping *mapping_src)
+{
+	if (copy_info.is_dma_buff) {
+		mapping_dst->type = MEMCOPY_DMA_BUF;
+		mapping_dst->fd = copy_info.dst_fd;
+		mapping_dst->direction = DMA_FROM_DEVICE;
+		mapping_src->type = MEMCOPY_DMA_BUF;
+		mapping_src->fd = copy_info.src_fd;
+		mapping_src->direction = DMA_TO_DEVICE;
+	} else {
+		mapping_dst->virt_addr = copy_info.virt_dst_addr;
+		mapping_src->virt_addr = copy_info.virt_src_addr;
+	}
+}
+
+static int transfer_memcpy(struct dma_copy_info copy_info)
 {
 	dma_cap_mask_t mask;
 	struct dma_chan *chan;
@@ -250,24 +347,27 @@ static int transfer_memcpy(unsigned long virt_src_addr,
 	dma_cap_set(DMA_MEMCPY, mask);
 	chan = dma_request_channel(mask, NULL, NULL);
 	if (!chan) {
-		printk("dma_request_channel Failed\n");
+		pr_err("dma_request_channel Failed\n");
 		status = -ENODEV;
 		goto no_channel;
 	}
 	hailo_chan = to_hailo15_gp_vdma_chan(chan);
-	mapping_dst.virt_addr = virt_dst_addr;
-	mapping_src.virt_addr = virt_src_addr;
-	status = translate_addr(hailo_chan->dev, length, &mapping_src, &mapping_dst);
-	if( status < 0) {
+	
+	get_mapping_info(copy_info, &mapping_dst, &mapping_src);
+	status = dma_memcopy_mapping_create(hailo_chan->dev, copy_info.length, &mapping_src);
+	if( status < 0)
 		goto free;
-	}
+	
+	status = dma_memcopy_mapping_create(hailo_chan->dev, copy_info.length, &mapping_dst);
+	if( status < 0)
+		goto destroy_mapping_src;
 
 	chan_desc = dmaengine_prep_dma_memcpy(chan, mapping_dst.dma_addr, mapping_src.dma_addr,
-					      length, DMA_MEM_TO_MEM);
+					      copy_info.length, DMA_MEM_TO_MEM);
 	if (!chan_desc) {
-		printk("dmaengine_prep_dma_memcpy Failed\n");
+		pr_err("dmaengine_prep_dma_memcpy Failed\n");
 		status = -1;
-		goto free;
+		goto destroy_mapping;
 	}
 
 	init_completion(&cmp);
@@ -281,7 +381,7 @@ static int transfer_memcpy(unsigned long virt_src_addr,
 	dma_async_issue_pending(chan);
 
 	if (wait_for_completion_timeout(&cmp, msecs_to_jiffies(3000)) <= 0) {
-		printk("Memcopy Timeout!\n");
+		pr_err("Memcopy Timeout!\n");
 		status = -1;
 	}
 
@@ -289,13 +389,15 @@ static int transfer_memcpy(unsigned long virt_src_addr,
 	if (status == DMA_COMPLETE) {
 		pr_debug("DMA transfer has completed!\n");
 	} else {
-		printk("Error on DMA transfer\n");
+		pr_err("Error on DMA transfer\n");
 	}
 
 	dmaengine_terminate_all(chan);
 
-	dma_memcopy_mapping_destroy(&mapping_src);
+destroy_mapping:
 	dma_memcopy_mapping_destroy(&mapping_dst);
+destroy_mapping_src:
+	dma_memcopy_mapping_destroy(&mapping_src);
 free:
 	dma_release_channel(chan);
 no_channel:
@@ -304,29 +406,28 @@ no_channel:
 
 static long gp_dma_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	struct channel_buffer_info buffer_info;
-
+	struct dma_copy_info copy_info;
+	
 	switch (cmd) {
 	case GP_DMA_XFER:
 		/* Perform the DMA transfer on the specified channel blocking til it completes
 	 	*/
-		if (copy_from_user(&buffer_info,
-				   (struct channel_buffer_info *)arg,
-				   sizeof(buffer_info))) {
-			printk("copy_from_user Fail for GP_DMA_XFER\n");
+		if (copy_from_user(&copy_info,
+				   (struct dma_copy_info *)arg,
+				   sizeof(copy_info))) {
+			pr_err("copy_from_user Fail for GP_DMA_XFER\n");
 			return -EINVAL;
 		}
-		buffer_info.status = transfer_memcpy(buffer_info.virt_src_addr,
-						     buffer_info.virt_dst_addr, buffer_info.length);
-		if (copy_to_user((struct channel_buffer_info *)arg,
-				 &buffer_info, sizeof(buffer_info))) {
-			printk("copy_to_user Fail for GP_DMA_XFER \n");
+		copy_info.status = transfer_memcpy(copy_info);
+		if (copy_to_user((struct dma_copy_info *)arg,
+				 &copy_info, sizeof(copy_info))) {
+			pr_err("copy_to_user Fail for GP_DMA_XFER \n");
 			return -EINVAL;
 		}
 		break;
 
 	default:
-		printk("Invalid IOCTL\n");
+		pr_err("Invalid IOCTL\n");
 		return -EINVAL;
 	}
 
@@ -342,7 +443,7 @@ static struct file_operations gp_dma_fops = { .owner = THIS_MODULE,
 static int __init hailo15_gp_memcopy_init(void)
 {
 	int retval;
-	printk("hailo15_gp_memcopy_init\n");
+	pr_debug("hailo15_gp_memcopy_init\n");
 
 	retval = register_chrdev(MYMAJOR, "dma_memcpy", &gp_dma_fops);
 	if (retval == 0) {
@@ -360,7 +461,7 @@ static int __init hailo15_gp_memcopy_init(void)
 
 static void __exit hailo15_gp_memcopy_exit(void)
 {
-	printk("hailo15_gp_memcopy_exit\n");
+	pr_debug("hailo15_gp_memcopy_exit\n");
 	unregister_chrdev(MYMAJOR, "dma_memcpy");
 }
 

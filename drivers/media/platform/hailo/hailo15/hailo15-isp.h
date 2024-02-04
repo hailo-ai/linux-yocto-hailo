@@ -123,6 +123,7 @@ struct hailo15_isp_device {
 	struct hailo15_af_kevent *af_kevent;
 	struct workqueue_struct *af_wq;
 	struct work_struct af_w;
+	struct v4l2_subdev_format input_fmt;
 };
 
 void hailo15_isp_private_entity_init(struct hailo15_isp_device *isp_dev);

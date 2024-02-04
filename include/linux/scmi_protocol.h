@@ -13,6 +13,12 @@
 #include <linux/notifier.h>
 #include <linux/types.h>
 
+#if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+
+#include <linux/soc/hailo/scmi_hailo_protocol.h>
+
+#endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
+
 #define SCMI_MAX_STR_SIZE	16
 #define SCMI_MAX_NUM_RATES	128
 
@@ -547,13 +553,14 @@ struct scmi_voltage_proto_ops {
 
 #if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
 
-#define SCMI_HAILO_FUSE_INFO_SIZE (80)
-
 struct scmi_hailo_proto_ops {
-	int (*get_scu_boot_source)(const struct scmi_protocol_handle *ph, u8 *boot_source);
-	int (*get_fuses_info)(const struct scmi_protocol_handle *ph, u8 info[SCMI_HAILO_FUSE_INFO_SIZE]);
+	int (*get_boot_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_boot_info_p2a *info);
+	int (*get_fuses_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info);
 	int (*set_eth_rmii)(const struct scmi_protocol_handle *ph);
+	int (*start_measure)(const struct scmi_protocol_handle *ph, struct scmi_hailo_ddr_start_measure_a2p *params);
+	int (*stop_measure)(const struct scmi_protocol_handle *ph);
 };
+
 #endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
 
 /**
@@ -649,10 +656,12 @@ enum scmi_std_protocol {
 };
 
 #if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
+
 enum scmi_ext_hailo_protocol {
 	/* This value must be the same as SCMI_PROTOCOL_ID_HAILO in scu-fw */
 	SCMI_PROTOCOL_HAILO = 0x81,
 };
+
 #endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */
 
 enum scmi_system_events {
