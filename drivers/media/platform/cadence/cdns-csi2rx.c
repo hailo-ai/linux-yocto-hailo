@@ -268,7 +268,7 @@ static void cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 
 	if(csi2rx->cur_mode == CSI2RX_MODE_SDR){
 		pr_debug("%s - mode sdr set dphy rate from DTS\n", __func__);
-		writel(clock_selection,
+		writel(phy_band_control,
 			internal_dphy_base + CDNS_MIPI_DPHY_RX_TX_DIG_TBIT0_ADDR_OFFSET);
 	}
 	else {

@@ -13,10 +13,10 @@
 #include <linux/device.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>
-#include <hailo15_i2s.h>
 #include <sound/dmaengine_pcm.h>
 #include <sound/pcm.h>
 #include <sound/designware_i2s.h>
+#include "hailo15_i2s.h"
 
 /* common register for all channel */
 #define IER		0x000

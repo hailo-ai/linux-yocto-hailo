@@ -295,6 +295,16 @@
         function = "uart0_cts_rts";
         groups = "uart0_cts_rts_1_grp";
     };
+
+    pinctrl_usb_overcurrent_n_in: pinctrl_usb_overcurrent_n_in {
+        function = "usb_overcurrent_in";
+        groups = "usb_overcurrent_in_grp";
+    };
+
+    pinctrl_usb_drive_vbus_out: pinctrl_usb_drive_vbus_out {
+        function = "usb_drive_vbus_out";
+        groups = "usb_drive_vbus_out_2_grp";
+    };
 };
 
 &gpio0 {
@@ -353,4 +363,32 @@
         output-low;
         line-name = "DSI_INTR";
     };
+};
+
+&torrent_phy {
+    status = "okay";
+    torrent_phy_pcie: phy@0 {
+        reg = <0>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_0>, <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_1>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_PCIE>;
+        cdns,num-lanes = <2>;
+    };
+    torrent_phy_usb3: phy@3 {
+        reg = <3>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_3>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_USB3>;
+        cdns,num-lanes = <1>;
+        cdns,ssc-mode = <TORRENT_SERDES_NO_SSC>;
+    };
+};
+
+&usb3 {
+    status = "okay";
+    dr_mode = "host";
+    phys = <&torrent_phy_usb3>;
+    phy-names = "cdns3,usb3-phy";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_usb_overcurrent_n_in>, <&pinctrl_usb_drive_vbus_out>;
 };

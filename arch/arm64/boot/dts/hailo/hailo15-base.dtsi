@@ -8,6 +8,8 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/soc/hailo15_interrupts.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/phy/phy-cadence.h>
 
 /* Fist 2MB are reserve memory for the platform (currently only TrustedFirmware-A) */
 /memreserve/ 0x80000000 0x200000;
@@ -17,6 +19,10 @@
     interrupt-parent = <&gic>;
     #address-cells = <2>;
     #size-cells = <2>;
+
+    soc {
+        compatible = "hailo,hailo15";
+    };
 
     power_reset {
         compatible = "hailo15-reset";
@@ -202,6 +208,35 @@
         interrupts = <GIC_SPI HW_INTERRUPTS__ARM_MAILBOX_A53_INTR_0_IRQ IRQ_TYPE_LEVEL_HIGH>;
         reg = <0 0x78002000 0 0x1000>;
         arm,dev-ch-idx = <0>;
+    };
+
+	torrent_phy: torrent-phy@240000 {
+		compatible = "cdns,torrent-phy";
+		reg = <0x0 0x240000 0x0 0x40000>;
+		reg-names = "torrent_phy";
+		resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY>;
+		reset-names = "torrent_reset";
+		clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_REFCLK>;
+		clock-names = "refclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+        status = "disabled";
+	};
+
+    usb3: usb3@280000 {
+        compatible = "cdns,usb3";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        reg =   <0x00 0x280000 0x00 0x4000>,
+                <0x00 0x288000 0x00 0x4000>,
+                <0x00 0x284000 0x00 0x4000>;
+        reg-names = "otg", "xhci", "dev";
+        interrupts = <GIC_SPI HW_INTERRUPTS__USB_INFO_INTR_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI HW_INTERRUPTS__USB_INFO_INTR_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI HW_INTERRUPTS__USB_INFO_INTR_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "host", "peripheral", "otg";
+        maximum-speed = "super-speed-plus";
+        status = "disabled";
     };
 
     serial0: uart0@108000 {
@@ -610,6 +645,12 @@
 			reg-names = "general_pads_config_base", "gpio_pads_config_base";
         };
 
+        ddrpmu: ddrpmu@dc000 {
+            compatible = "hailo,ddr-pmu";
+            reg = <0 0x000dc000 0 0x2000>;
+            reg-names = "ddr_pmu_samples";
+        };
+
     };
     sdio1: sdio1@78001000 {
         status = "disabled";
@@ -729,8 +770,8 @@
         shmem = <&cpu_nnm_ctrl_tx &cpu_nnm_ctrl_rx>, <&cpu_nnm_evnt_rx>;
         shmem-names = "control-tx", "control-rx", "event-rx";
 
-        reg = <0 0x80000 0 0x2e000>, <0 0x60000 0 0x20000>, <0 0x000af000 0 0x1000>;
-        reg-names = "core-fw-data", "core-fw-code", "core-fw-log";
+        reg = <0 0x5c000 0 0x14000>, <0 0x80000 0 0x240>, <0 0x80240 0 0x2ddc0>, <0 0x000af000 0 0x1000>;
+        reg-names = "core-fw-code",	"core-fw-isr-vector", "core-fw-data", "core-fw-log";
 
         ranges;
         #address-cells = <1>;
@@ -893,43 +934,6 @@
             #size-cells = <1>;
             compatible = "jedec,spi-nor";
             reg = <0>; /* chip select */
-
-
-            partitions {
-                compatible = "fixed-partitions";
-                #address-cells = <1>;
-                #size-cells = <1>;
-
-                scu-bl@0 {
-                    label = "scu-bl";
-                    reg = <0x000000 0x06000>;
-                };
-
-                scu-bl-config@1 {
-                    label = "scu-bl config";
-                    reg = <0x006000 0x01000>;
-                };
-
-                scu-fw@2 {
-                    label = "scu-fw";
-                    reg = <0x008000 0x38000>;
-                };
-
-                config_space@3 {
-                    label = "config-space";
-                    reg = <0x40000 0x10000>;
-                };
-
-                u_boot_env@4 {
-                    label = "u-boot env";
-                    reg = <0x50000 0x04000>;
-                };
-
-                u_boot_spl@5 {
-                    label = "u-boot-spl";
-                    reg = <0x54000 0x2C000>;
-                };
-            };
         };
     };
 

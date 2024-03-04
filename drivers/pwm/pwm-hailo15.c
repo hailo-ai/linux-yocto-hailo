@@ -13,6 +13,7 @@
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/slab.h>
+#include <asm/delay.h>
 
 #define PWM_HAILO15__MAX_NPWM_CHANNELS (6)
 #define PWM_HAIL015__RESOLUTION (4096)
@@ -20,10 +21,13 @@
 /*
  * period = div * (RESOLUTION / CLK_RATE) = div * (4096 / (200 * 10^6)) = div * (20480 * 10^-9)
  * The minimum value for div is 0. in This case period = (20480 * 10^-9) s = 20480 ns
- * The minimum value for div is 0xFFFFF (1048575). in This case period = (20480 * 10^-9) * 1048575 = 21.475 s = 21474816000 ns
+ * The maximum value for div is 0xFFFFF (1048575). in This case period = (20480 * 10^-9) * 1048575 = 21.475 s = 21474816000 ns
 */
+
 #define PWM_HAIL015__PERIOD_NS__MIN_VALUE (20480)
 #define PWM_HAIL015__PERIOD_NS__MAX_VALUE (21474816000)
+#define PWM_HAIL015__CLK_DIV__MAX_VALUE (0xFFFFF)
+#define PWM_HAIL015__SLEEP_BEFORE_DISABLE__MICRO_SEC (10000)
 
 #define PWM_CONFIG__PWM_CLOCK__DIV_FACTOR (0x0)
 #define PWM_CONFIG__PWM_MODULE__ENABLE (0x4)
@@ -38,6 +42,23 @@
 	(PWM_CONFIG__PWM0_COUNTER +                                            \
 	 (pwm_channel * PWM_CONFIG__PWMX_COUNTER__SHIFT))
 
+/**
+ * struct hailo15_pwm_chip - Hailo15 PWM chip structure
+ * @chip: The PWM chip structure
+ * @clk: Pointer to the clock structure
+ * @base: Pointer to the base address of the PWM registers
+ * @lock: Spinlock for protecting concurrent access to the PWM registers
+ * @channels: Array of channel values for each PWM channel
+ * @mask_enable_channels: Bitmask indicating which channels are enabled
+ * @pwm_module_period_ns: Period of the PWM module in nanoseconds
+ *
+ * This structure represents the Hailo15 PWM chip. It contains various members
+ * that store information related to the PWM chip, such as the chip structure,
+ * clock structure, base address of the PWM registers, spinlock for protecting
+ * concurrent access to the PWM registers, array of channel values for each PWM
+ * channel, bitmask indicating which channels are enabled, and the period of the
+ * PWM module in nanoseconds.
+ */
 struct hailo15_pwm_chip {
 	struct pwm_chip chip;
 	struct clk *clk;
@@ -54,28 +75,66 @@ to_hailo15_pwm_chip(struct pwm_chip *chip)
 	return container_of(chip, struct hailo15_pwm_chip, chip);
 }
 
+/**
+ * Configures the Hailo15 PWM channel.
+ *
+ * This function is responsible for configuring the specified PWM channel on the Hailo15 chip.
+ *
+ * @param chip The PWM chip structure.
+ * @param pwm_channel The PWM channel number.
+ * @param duty_ns The desired duty cycle in nanoseconds.
+ * @param period_ns The desired period in nanoseconds.
+ * @return 0 on success, a negative error code on failure.
+ */
 static int hailo15_pwm_config(struct pwm_chip *chip, unsigned int pwm_channel,
 			      uint64_t duty_ns, uint64_t period_ns)
 {
+	/**
+	 * @brief Initializes the variables used in the code snippet.
+	 *
+	 * This function initializes the variables used in the code snippet, including:
+	 * - hpc: A pointer to the hailo15_pwm_chip structure.
+	 * - finish_cnt: The finish count value.
+	 * - start_cnt: The start count value.
+	 * - enable: The enable value.
+	 * - data_reg: The data register value.
+	 * - clk_rate_pre: The pre-calculated clock rate.
+	 * - clk_div: The clock divider value.
+	 */
 	struct hailo15_pwm_chip *hpc = to_hailo15_pwm_chip(chip);
-	uint32_t div, finish, start = 1, enable, data_reg;
-	uint64_t cycles;
+	uint32_t finish_cnt = 0, start_cnt = 1, enable, data_reg;
+	uint64_t clk_rate_pre, clk_div;
 
-	cycles = clk_get_rate(hpc->clk);
-	div = DIV_ROUND_CLOSEST(period_ns * cycles, NSEC_PER_SEC);
-	div = DIV_ROUND_CLOSEST(div, PWM_HAIL015__RESOLUTION) - 1;
+	clk_rate_pre = clk_get_rate(hpc->clk);
 
-	finish = DIV_ROUND_CLOSEST(duty_ns * PWM_HAIL015__RESOLUTION, period_ns);
+	clk_div = DIV_ROUND_CLOSEST(period_ns * clk_rate_pre, PWM_HAIL015__RESOLUTION);
+	clk_div = DIV_ROUND_CLOSEST(clk_div, NSEC_PER_SEC);
+	if (clk_div > PWM_HAIL015__CLK_DIV__MAX_VALUE) {
+		clk_div = PWM_HAIL015__CLK_DIV__MAX_VALUE;
+	}
 
-	writel(div, hpc->base + PWM_CONFIG__PWM_CLOCK__DIV_FACTOR);
+	/**
+	 * Calculates the finish count for a PWM signal based on the given duty cycle and period.
+	 * The finish count is calculated using the start count because the PWM signal is generated
+	 * by counting from the start count to the finish count.
+	 * If the finish count is equal to the start count, it is incremented by 1.
+	 */
+	finish_cnt = DIV_ROUND_CLOSEST(duty_ns * PWM_HAIL015__RESOLUTION, period_ns) + start_cnt;
+	if (finish_cnt >= PWM_HAIL015__RESOLUTION) {
+		finish_cnt = PWM_HAIL015__RESOLUTION - 1;
+	} else if (finish_cnt == start_cnt) {
+		finish_cnt++;
+	}
+
+	writel(clk_div, hpc->base + PWM_CONFIG__PWM_CLOCK__DIV_FACTOR);
 
 	data_reg = readl(hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
 
 	enable = data_reg & (1 << PWM_CONFIG__PWMX_COUNTER__ENABLE);
 
 	data_reg = (enable << PWM_CONFIG__PWMX_COUNTER__ENABLE) |
-		   (start << PWM_CONFIG__PWMX_COUNTER__START) |
-		   (finish << PWM_CONFIG__PWMX_COUNTER__FINISH);
+		   (start_cnt << PWM_CONFIG__PWMX_COUNTER__START) |
+		   (finish_cnt << PWM_CONFIG__PWMX_COUNTER__FINISH);
 	writel(data_reg, hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
 
 	hpc->pwm_module_period_ns = period_ns;
@@ -117,29 +176,46 @@ static void hailo15_channel_pwm_disable(struct pwm_chip *chip,
 	uint32_t data_reg;
 	struct hailo15_pwm_chip *hpc = to_hailo15_pwm_chip(chip);
 
+	/**
+	 * Set the duty cycle of the Hailo15 PWM channel to 0.
+	 * 
+	 * This function sets the duty cycle of the specified PWM channel to 0 by configuring the Hailo15 PWM module.
+	 * It performs the following steps:
+	 * 1. Calls hailo15_pwm_config() to set the duty cycle to 0, without change the period.
+	 * 2. Delays for PWM_HAIL015__SLEEP_BEFORE_DISABLE__MICRO_SEC milliseconds using udelay().
+	 * 3. Reads the current value of the data register for the PWM channel.
+	 * 4. Clears the enable bit and the start value bits in the data register.
+	 * 5. Writes the updated data register value back to the PWM channel address.
+	 * 
+	 */
+	hailo15_pwm_config(chip, pwm_channel, 0, hpc->pwm_module_period_ns);
+
+	udelay(PWM_HAIL015__SLEEP_BEFORE_DISABLE__MICRO_SEC);
+
 	data_reg = readl(hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
-	data_reg &= (~(1 << PWM_CONFIG__PWMX_COUNTER__ENABLE));
+	data_reg &= ~(1 << PWM_CONFIG__PWMX_COUNTER__ENABLE);
+	data_reg &= ~((PWM_HAIL015__RESOLUTION - 1) << PWM_CONFIG__PWMX_COUNTER__START);
 
 	writel(data_reg, hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
 }
 
 static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
-			     const struct pwm_state *channel_state)
+			     const struct pwm_state *channel_new_state)
 {
 	struct hailo15_pwm_chip *hpc = to_hailo15_pwm_chip(chip);
-	bool channel_enabled = pwm->state.enabled;
+	bool channel_current_enable_state = pwm->state.enabled;
 	unsigned int pwm_channel = hpc->channels[pwm->hwpwm];
 	unsigned int num_pwm_channels_enabled = 0, pwm_channels_enable = 0;
 	int err;
 
-	if (channel_state->polarity != PWM_POLARITY_NORMAL) {
+	if (channel_new_state->polarity != PWM_POLARITY_NORMAL) {
 		dev_err(chip->dev,
 			"Error: Polarity inversion is not supported\n");
 		return -EINVAL;
 	}
 
-	if ((channel_state->period < PWM_HAIL015__PERIOD_NS__MIN_VALUE) ||
-	    (channel_state->period > PWM_HAIL015__PERIOD_NS__MAX_VALUE)) {
+	if ((channel_new_state->period < PWM_HAIL015__PERIOD_NS__MIN_VALUE) ||
+	    (channel_new_state->period > PWM_HAIL015__PERIOD_NS__MAX_VALUE)) {
 		dev_err(chip->dev,
 			"Error: The period is not in the right range: [%d - %ld]\n",
 			PWM_HAIL015__PERIOD_NS__MIN_VALUE,
@@ -147,8 +223,15 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 		return -EIO;
 	}
 
-	if (!channel_state->enabled) {
-		if (channel_enabled) {
+	/**
+	 * Disables the PWM channel if it is not already enabled.
+	 * If the channel is currently enabled, it disables the channel,
+	 * updates the mask of enabled channels, and checks if all channels
+	 * are disabled. If all channels are disabled, it disables the PWM IP.
+	 *
+	 */
+	if (!channel_new_state->enabled) {
+		if (channel_current_enable_state) {
 			hailo15_channel_pwm_disable(chip, pwm_channel);
 			spin_lock(&hpc->lock);
 			hpc->mask_enable_channels &= (~BIT(pwm_channel));
@@ -166,7 +249,7 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	/* If the user try to set different period from what is configured now,
 	 * and there is more than one channel configured, the driver will prevent this.
 	*/
-	if (channel_state->period != hpc->pwm_module_period_ns) {
+	if (channel_new_state->period != hpc->pwm_module_period_ns) {
 		num_pwm_channels_enabled =
 			__arch_hweight8(hpc->mask_enable_channels);
 		pwm_channels_enable = __builtin_ctz(hpc->mask_enable_channels);
@@ -179,13 +262,18 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 		}
 	}
 
-	err = hailo15_pwm_config(chip, pwm_channel, channel_state->duty_cycle,
-				 channel_state->period);
+	err = hailo15_pwm_config(chip, pwm_channel, channel_new_state->duty_cycle,
+				 channel_new_state->period);
 	if (err) {
 		return err;
 	}
 
-	if (!channel_enabled) {
+	/**
+	 * Enable the PWM channel if it is not already enabled and update the mask of enabled channels.
+	 * If this is the first enabled channel, also enable the PWM IP.
+	 *
+	 */
+	if (!channel_current_enable_state) {
 		hailo15_channel_pwm_enable(chip, pwm_channel);
 		spin_lock(&hpc->lock);
 		hpc->mask_enable_channels |= BIT(pwm_channel);
@@ -197,7 +285,6 @@ static int hailo15_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			hailo15_pwm_enable(chip);
 		}
 	}
-
 
 	return 0;
 }

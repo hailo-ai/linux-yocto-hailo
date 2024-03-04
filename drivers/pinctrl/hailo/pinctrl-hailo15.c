@@ -573,7 +573,7 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 	int ret;
 	unsigned num_pins;
 	unsigned num_functions;
-	uint8_t boot_source;
+	struct scmi_hailo_get_boot_info_p2a boot_info;
 
 	num_pins = ARRAY_SIZE(hailo15_pins);
 	num_functions = ARRAY_SIZE(h15_pin_functions);
@@ -585,12 +585,7 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 	pinctrl->dev = dev;
 
 	hailo_protocol_ops = scmi_hailo_get_ops();
-	if (hailo_protocol_ops == NULL) {
-		return -EPROBE_DEFER;
-	}
 	if (IS_ERR(hailo_protocol_ops)) {
-		/* Hailo SCMI ops unreachable, try setting CONFIG_HAILO_SCMI_PROTOCOL=y */
-		dev_err(pinctrl->dev, "hailo scmi ops unreachable\n");
 		return PTR_ERR(hailo_protocol_ops);
 	}
 
@@ -633,9 +628,9 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 		}
 	}
 
-	hailo_protocol_ops->get_scu_boot_source(&boot_source);
+	hailo_protocol_ops->get_boot_info(&boot_info);
 	pr_info("SCU booted from:                %s",
-		hailo15_boot_options[boot_source & H15__SCU_BOOT_BIT_MASK]);
+		hailo15_boot_options[boot_info.scu_bootstrap & H15__SCU_BOOT_BIT_MASK]);
 
 	platform_set_drvdata(pdev, pinctrl);
 

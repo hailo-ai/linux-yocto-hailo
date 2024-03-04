@@ -7,17 +7,18 @@
 #define SCMI_HAILO_PROTOCOL_H
 
 #ifdef __KERNEL__
-#    include <linux/types.h>
+#	include <linux/types.h>
 #else
-#    include <stdint.h>
-#    ifndef __packed
-#        define __packed __attribute__((packed))
-#    endif
+#	include <stdbool.h>
+#	include <stdint.h>
+#	ifndef __packed
+#		define __packed __attribute__((packed))
+#	endif
 #endif
 
-/*****************************
- * SCMI-Hailo message IDs    *
- *****************************/
+/**************************
+ * SCMI-Hailo message IDs *
+ **************************/
 
 #define SCMI_HAILO_PROTOCOL_VERSION_ID 0
 #define SCMI_HAILO_PROTOCOL_ATTRIBUTES_ID 1
@@ -93,58 +94,9 @@ struct scmi_hailo_eth_delay_configuration_a2p {
  * Get fuse info message definitions *
  *************************************/
 
-struct scmi_hailo_address_data_hook {
-	uint32_t address;
-	uint32_t data;
-} __packed;
-
-union scmi_hailo_wafer_info {
-	uint32_t unique_id_0;
-	struct {
-		uint32_t fab_id : 1;
-		uint32_t rev_product_number : 4;
-		uint32_t rev_product_letter : 4;
-		uint32_t version_ews_minor : 3;
-		uint32_t version_ews_major : 3;
-		uint32_t x_location : 6;
-		uint32_t y_location : 6;
-		uint32_t wafer_id : 5;
-	};
-} __packed;
-
-union scmi_hailo_production_info {
-	uint32_t unique_id_1;
-	struct {
-		uint32_t production_step : 8;
-		uint32_t production_id : 8;
-	};
-} __packed;
-
 struct scmi_hailo_user_fuse {
-	uint32_t crypto_dummy;
-	uint8_t lot_id[8];
-	union scmi_hailo_wafer_info wafer_info;
-	union scmi_hailo_production_info production_info;
-	uint8_t eth_mac_address[6];
-	/* Bits 0-2: Version TP minor. */
-	/* Bits 3-5: Version TP major. */
-	/* Bits 10 : ROM SW flow usage bits. */
-	uint16_t diverse_bits;
-	uint32_t usb_id;
-	/* Bits 0-1: Unused. */
-	/* Bit 2: Spare binning bit. */
-	/* Bits 3-7: Cluster binning. */
-#define HAILO_USER_FUSE_BINNING_SHIFT (3)
-#define HAILO_USER_FUSE_BINNING_MASK (0x1F)
-	/* Bits 8-17: ROM SW flow usage bits. */
-	/* Bits 18-20: SKUs. */
-#define HAILO_USER_FUSE_SKU_SHIFT (18)
-#define HAILO_USER_FUSE_SKU_MASK (0x7)
-	/* Bits 21-28: Fuse outs. */
-	/* Bit 29-31: Device Grade. */
-	uint32_t misc_bits;
-	struct scmi_hailo_address_data_hook address_data_hook[5];
-	uint32_t parity_row;
+#define SCMI_HAILO_PROTOCOL_USER_FUSE_DATA_SIZE (80)
+	uint8_t user_fuse_array[SCMI_HAILO_PROTOCOL_USER_FUSE_DATA_SIZE];
 } __packed;
 
 struct scmi_hailo_get_fuse_info_p2a {
@@ -161,6 +113,29 @@ struct scmi_hailo_get_fuse_info_p2a {
 /*****************************************
  * DDR Start measure message definitions *
  *****************************************/
+
+struct scmi_hailo_ddr_start_measure_a2p_filter {
+	/* entry[0] */
+	struct {
+		unsigned int window_size : 6;
+		unsigned int status : 2;
+		unsigned int length : 4;
+		unsigned int opcode : 4;
+		unsigned int addrbase_high : 4;
+		unsigned int urgency : 3;
+		unsigned int reserved : 8;
+		unsigned int total : 1;
+	};
+
+	/* entry[1] */
+	uint32_t routeidbase;
+
+	/* entry[2] */
+	uint32_t routeidmask;
+
+	/* entry[3] */
+	uint32_t addrbase_low;
+};
 
 struct scmi_hailo_ddr_start_measure_a2p {
 	uint32_t sample_time_us;
@@ -183,33 +158,16 @@ struct scmi_hailo_ddr_start_measure_a2p {
 	uint8_t is_freerunning;
 	uint8_t num_counters;
 
-	struct {
-		/* entry[0] */
-		struct {
-			unsigned int window_size : 6;
-			unsigned int status : 2;
-			unsigned int length : 4;
-			unsigned int opcode : 4;
-			unsigned int addrbase_high : 4;
-			unsigned int urgency : 3;
-			unsigned int reserved : 8;
-			unsigned int total : 1;
-		};
-
-		/* entry[1] */
-		uint32_t routeidbase;
-
-		/* entry[2] */
-		uint32_t routeidmask;
-
-		/* entry[3] */
-		uint32_t addrbase_low;
-	} filters[4];
+	struct scmi_hailo_ddr_start_measure_a2p_filter filters[4];
 } __packed;
 
 /****************************************
  * DDR Stop measure message definitions *
  ***************************************/
+
+struct scmi_hailo_ddr_stop_measure_p2a {
+	bool was_running;
+} __packed;
 
 /* none */
 

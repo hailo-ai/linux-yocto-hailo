@@ -555,10 +555,10 @@ struct scmi_voltage_proto_ops {
 
 struct scmi_hailo_proto_ops {
 	int (*get_boot_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_boot_info_p2a *info);
-	int (*get_fuses_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info);
+	int (*get_fuse_info)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info);
 	int (*set_eth_rmii)(const struct scmi_protocol_handle *ph);
 	int (*start_measure)(const struct scmi_protocol_handle *ph, struct scmi_hailo_ddr_start_measure_a2p *params);
-	int (*stop_measure)(const struct scmi_protocol_handle *ph);
+	int (*stop_measure)(const struct scmi_protocol_handle *ph, struct scmi_hailo_ddr_stop_measure_p2a *output);
 };
 
 #endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */

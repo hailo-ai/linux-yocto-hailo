@@ -43,6 +43,7 @@ enum hailo15_video_path {
 	_IOWR('I', BASE_VIDIOC_PRIVATE + 8, struct hailo15_reqbufs)
 #define ISPIOC_V4L2_SET_INPUT_FORMAT                                           \
 	_IOWR('I', BASE_VIDIOC_PRIVATE + 9, struct v4l2_subdev_format)
+#define ISPIOC_V4L2_SET_MCM_MODE _IOWR('I', BASE_VIDIOC_PRIVATE + 10, uint32_t)
 
 #define HAILO15_PAD_REQUBUFS                                                   \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_pad_reqbufs)

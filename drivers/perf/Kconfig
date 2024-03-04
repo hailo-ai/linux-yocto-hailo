@@ -137,6 +137,12 @@ config ARM_DMC620_PMU
 	  Support for PMU events monitoring on the ARM DMC-620 memory
 	  controller.
 
+config HAILO_DDR_PMU
+	tristate "Hailo-15 DDR performance monitor"
+	depends on ARCH_HAILO15
+	help
+	  Provides support for the DDR performance monitor in Hailo-15.
+
 source "drivers/perf/hisilicon/Kconfig"
 
 endmenu

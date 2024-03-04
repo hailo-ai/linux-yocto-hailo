@@ -30,3 +30,4 @@ obj-$(CONFIG_VIDEO_HAILO15_PIX_MUX)    += hailo15-pixel-mux.o
 obj-$(CONFIG_VIDEO_HAILO15_RXWRAPPER)     += hailo15-rxwrapper.o
 obj-$(CONFIG_VIDEO_HAILO15_ISP)            += hailo15-isp.o
 obj-$(CONFIG_VIDEO_HAILO15_AF_MONITOR_EXAMPLE)     += hailo15-af-monitor.o
+obj-y += fe/

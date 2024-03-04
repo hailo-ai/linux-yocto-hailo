@@ -43,7 +43,7 @@ static int scmi_hailo_get_boot_info(const struct scmi_protocol_handle *ph, struc
 	return ret;
 }
 
-static int scmi_hailo_get_fuses_info(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info)
+static int scmi_hailo_get_fuse_info(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_fuse_info_p2a *info)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_FUSE_INFO_ID, NULL, 0, info, sizeof(*info));
 	return ret;
@@ -60,15 +60,15 @@ static int scmi_hailo_start_measure(const struct scmi_protocol_handle *ph, struc
 	return ret;
 }
 
-static int scmi_hailo_stop_measure(const struct scmi_protocol_handle *ph)
+static int scmi_hailo_stop_measure(const struct scmi_protocol_handle *ph, struct scmi_hailo_ddr_stop_measure_p2a *output)
 {
-	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_DDR_STOP_MEASURE_ID, NULL, 0, NULL, 0);
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_DDR_STOP_MEASURE_ID, NULL, 0, output, sizeof(*output));
 	return ret;
 }
 
 static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.get_boot_info = scmi_hailo_get_boot_info,
-	.get_fuses_info = scmi_hailo_get_fuses_info,
+	.get_fuse_info = scmi_hailo_get_fuse_info,
 	.set_eth_rmii = scmi_hailo_set_eth_rmii,
 	.start_measure = scmi_hailo_start_measure,
 	.stop_measure = scmi_hailo_stop_measure,
@@ -143,8 +143,6 @@ static const scmi_hailo_notification_handler eventHandlers[SCMI_HAILO_NOTIFICATI
 static void* hailo_scmi_fill_custom_report(const struct scmi_protocol_handle* ph, u8 evt_id, ktime_t timestamp,
 										   const void* payld, size_t payld_sz, void* report, u32* src_id)
 {
-	report = NULL;
-
 	if (src_id == NULL)
 		return NULL;
 

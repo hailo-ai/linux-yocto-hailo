@@ -4561,12 +4561,7 @@ static int hailo15_init(struct platform_device *pdev)
 	of_property_read_string(np, "phy-mode", &pm);
 	if (strcmp(pm, "rmii") == 0) {
 		hailo_protocol_ops = scmi_hailo_get_ops();
-		if (hailo_protocol_ops == NULL) {
-			return -EPROBE_DEFER;
-		}
 		if (IS_ERR(hailo_protocol_ops)) {
-			/* Hailo SCMI ops unreachable, try setting CONFIG_HAILO_SCMI_PROTOCOL=y */
-			dev_err(&pdev->dev, "hailo scmi ops unreachable\n");
 			return PTR_ERR(hailo_protocol_ops);
 		}
 

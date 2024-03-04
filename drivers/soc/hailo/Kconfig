@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Hailo SoCs driver
+#
+
+config SOC_HAILO
+	bool "SoC bus device for the Hailo SoCs"
+	depends on ARCH_HAILO15
+	depends on HAILO_SCMI_PROTOCOL
+	select SOC_BUS
+	help
+	  Include support for the SoC info driver for Hailo SoCs.

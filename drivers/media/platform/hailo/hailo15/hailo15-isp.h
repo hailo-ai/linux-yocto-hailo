@@ -10,6 +10,7 @@
 #include <linux/workqueue.h>
 #include "hailo15-events.h"
 #include "common.h"
+#include "fe/fe_dev.h"
 
 /* We double the needed queue size for safety */
 #define HAILO15_ISP_EVENT_QUEUE_SIZE (250 * 2)
@@ -56,6 +57,7 @@ struct hailo15_isp_irq_status {
 	uint32_t isp_mis;
 	uint32_t isp_miv2_mis;
 	uint32_t isp_miv2_mis1;
+	uint32_t isp_fe;
 };
 
 struct hailo15_isp_irq_status_event {
@@ -123,8 +125,11 @@ struct hailo15_isp_device {
 	struct hailo15_af_kevent *af_kevent;
 	struct workqueue_struct *af_wq;
 	struct work_struct af_w;
+	struct vvcam_fe_dev* fe_dev;
+	int mcm_mode;
 	struct v4l2_subdev_format input_fmt;
 };
+
 
 void hailo15_isp_private_entity_init(struct hailo15_isp_device *isp_dev);
 void hailo15_isp_pad_handle_init(struct hailo15_isp_device *isp_dev);

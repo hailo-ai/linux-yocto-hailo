@@ -73,9 +73,14 @@ extern void hailo15_isp_configure_frame_size(struct hailo15_isp_device *, int);
 extern irqreturn_t hailo15_isp_irq_process(struct hailo15_isp_device *);
 extern void hailo15_isp_handle_afm_int(struct work_struct *);
 extern int hailo15_isp_dma_set_enable(struct hailo15_isp_device *, int, int);
+extern void hailo15_fe_get_dev(struct vvcam_fe_dev** dev);
+extern void hailo15_fe_set_address_space_base(struct vvcam_fe_dev* fe_dev,void* base);
+
 
 struct hailo15_af_kevent af_kevent;
 EXPORT_SYMBOL(af_kevent);
+
+struct vvcam_fe_dev* fe_dev = NULL;
 
 static irqreturn_t hailo15_isp_irq_handler(int irq, void *isp_dev)
 {
@@ -270,6 +275,20 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		ret = 0;
 		break;
 	case ISPIOC_V4L2_RMEM:
+		isp_dev->rmem.size = HAILO15_ISP_RMEM_SIZE;
+		if(isp_dev->mcm_mode){
+			isp_dev->rmem.size += 10*3840*2160*2;
+		}
+		if(!isp_dev->rmem_vaddr){
+			isp_dev->rmem_vaddr = dma_alloc_coherent(
+			isp_dev->dev, isp_dev->rmem.size, &isp_dev->rmem.addr, GFP_KERNEL);
+			if (!isp_dev->rmem_vaddr) {
+				dev_err(isp_dev->dev, "can't allocate rmem buffer\n");
+				ret = -ENOMEM;
+				break;
+			}
+		}
+
 		memcpy(arg, &isp_dev->rmem, sizeof(isp_dev->rmem));
 		ret = 0;
 		break;
@@ -298,8 +317,12 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		mutex_unlock(&isp_dev->mlock);
 		ret = 0;
 		break;
+	case ISPIOC_V4L2_SET_MCM_MODE:
+		isp_dev->mcm_mode = *((uint32_t*)arg);
+		ret = 0;
+		break;
 	case ISPIOC_V4L2_MCM_MODE:
-		*((uint32_t *)arg) = 0;
+		*((uint32_t *)arg) = isp_dev->mcm_mode;
 		ret = 0;
 		break;
 	case ISPIOC_V4L2_REQBUFS:
@@ -520,7 +543,19 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 		isp_dev->mi_stopped[path] = 1;
 		isp_dev->cur_buf[path] = NULL;
 		memset(&isp_dev->input_fmt, 0, sizeof(isp_dev->input_fmt));
-		return hailo15_video_post_event_stop_stream(isp_dev);
+		ret = hailo15_video_post_event_stop_stream(isp_dev);
+		if(isp_dev->rmem_vaddr){
+			dma_free_coherent(isp_dev->dev, isp_dev->rmem.size,
+				  isp_dev->rmem_vaddr, isp_dev->rmem.addr);
+			isp_dev->rmem_vaddr = 0;
+		}
+
+		return ret;
+	}
+	
+	if(isp_dev->mcm_mode){
+		hailo15_isp_configure_frame_size(isp_dev, path);
+		hailo15_isp_configure_buffer(isp_dev, isp_dev->cur_buf[path]);
 	}
 
 	return hailo15_video_post_event_start_stream(isp_dev);
@@ -967,13 +1002,6 @@ static int hailo15_isp_init_platdev(struct hailo15_isp_device *isp_dev)
 		return -ENOENT;
 	}
 
-	isp_dev->rmem.size = HAILO15_ISP_RMEM_SIZE;
-	isp_dev->rmem_vaddr = dma_alloc_coherent(
-		dev, HAILO15_ISP_RMEM_SIZE, &isp_dev->rmem.addr, GFP_KERNEL);
-	if (!isp_dev->rmem_vaddr) {
-		dev_err(dev, "can't allocate rmem buffer\n");
-		return -ENOMEM;
-	}
 
 	isp_dev->base = devm_ioremap_resource(&pdev->dev, mem_res);
 	if (IS_ERR(isp_dev->base)) {
@@ -1021,8 +1049,11 @@ static void hailo15_isp_destroy_platdev(struct hailo15_isp_device *isp_dev)
 {
 	devm_free_irq(isp_dev->dev, isp_dev->irq, isp_dev);
 	hailo15_isp_disable_clocks(isp_dev);
-	dma_free_coherent(isp_dev->dev, HAILO15_ISP_RMEM_SIZE,
+	if(isp_dev->rmem_vaddr){
+		dma_free_coherent(isp_dev->dev, isp_dev->rmem.size,
 			  isp_dev->rmem_vaddr, isp_dev->rmem.addr);
+		isp_dev->rmem_vaddr = 0;
+	}
 }
 
 /* Perform v4l2 subdevice specific initializations.            */
@@ -1127,6 +1158,7 @@ static int hailo15_init_isp_device(struct hailo15_isp_device *isp_dev)
 		isp_dev->mi_stopped[path] = 1;
 	/*queue_empty field should not be set to 1 as the software assumes empty queue on initialization*/
 	goto out;
+	
 
 err_alloc_fakebuf:
 	dma_free_coherent(isp_dev->dev, HAILO15_ISP_FBUF_SIZE,
@@ -1253,6 +1285,10 @@ static int hailo15_isp_probe(struct platform_device *pdev)
 	}
 
 	INIT_WORK(&isp_dev->af_w, hailo15_isp_handle_afm_int);
+	
+	hailo15_fe_get_dev(&isp_dev->fe_dev);
+	hailo15_fe_set_address_space_base(isp_dev->fe_dev, isp_dev->base);
+
 
 	dev_info(dev, "hailo15 isp driver probed\n");
 	goto out;

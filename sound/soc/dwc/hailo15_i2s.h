@@ -13,7 +13,7 @@
 #include <linux/types.h>
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
-#include <hailo15_i2s_dma_shmem.h>
+#include "hailo15_i2s_dma_shmem.h"
 
 #define H15_BLK_POLL_INTERVAL_NSEC 1000000
 

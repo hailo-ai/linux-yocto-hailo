@@ -7,8 +7,16 @@
 #define MSRZ_SCALE_CALC(in, out)                                               \
 	((uint32_t)((((out)-1) * SCALE_FACTOR) / ((in)-1)) + 1)
 
+/* @TODO get real vdid when calling read/write reg */
 uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 {
+	uint32_t val = 0;
+
+	if(isp_dev->mcm_mode && isp_dev->fe_dev) {
+		isp_dev->fe_dev->fe_read_reg(isp_dev->fe_dev, 0, reg, &val);
+		return val;
+	}
+
 	return readl(isp_dev->base + reg);
 }
 EXPORT_SYMBOL(hailo15_isp_read_reg);
@@ -16,6 +24,11 @@ EXPORT_SYMBOL(hailo15_isp_read_reg);
 void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
 			   uint32_t val)
 {
+	if(isp_dev->mcm_mode && isp_dev->fe_dev) {
+		isp_dev->fe_dev->fe_write_reg(isp_dev->fe_dev, 0, reg, val);
+		return;
+	}
+
 	writel(val, isp_dev->base + reg);
 }
 EXPORT_SYMBOL(hailo15_isp_write_reg);
@@ -152,7 +165,7 @@ static void hailo15_isp_post_irq_event(struct hailo15_isp_device *isp_dev,
 	struct v4l2_event event;
 	struct hailo15_isp_irq_status_event *irq_event;
 
-	if (isp_dev->mi_stopped[ISP_MP] && isp_dev->mi_stopped[ISP_SP2])
+	if (isp_dev->mi_stopped[ISP_MP] && isp_dev->mi_stopped[ISP_SP2] && !isp_dev->mcm_mode)
 		return;
 
 	memset(&event, 0, sizeof(event));
@@ -168,7 +181,9 @@ static void hailo15_isp_post_irq_event(struct hailo15_isp_device *isp_dev,
 	case HAILO15_ISP_IRQ_ENEVT_MI_MIS1:
 		irq_event->irq_status = isp_dev->irq_status.isp_miv2_mis1;
 		break;
-
+	case HAILO15_ISP_IRQ_ENEVT_FE:
+		irq_event->irq_status = isp_dev->irq_status.isp_fe;
+		break;
 	default:
 		pr_err("%s - got bad irq_id: %d\n", __func__, irq_id);
 		return;
@@ -238,7 +253,7 @@ static void hailo15_isp_handle_frame_rx_mp(struct hailo15_isp_device *isp_dev,
 	if (!__hailo15_isp_frame_rx_mp(irq_status))
 		return;
 
-	if (isp_dev->mi_stopped[ISP_MP])
+	if (isp_dev->mi_stopped[ISP_MP] && !isp_dev->mcm_mode)
 		return;
 
 	/*do_rx_mp*/
@@ -251,7 +266,7 @@ static void hailo15_isp_handle_frame_rx_sp2(struct hailo15_isp_device *isp_dev,
 	if (!__hailo15_isp_frame_rx_sp2(irq_status))
 		return;
 
-	if (isp_dev->mi_stopped[ISP_SP2])
+	if (isp_dev->mi_stopped[ISP_SP2] && !isp_dev->mcm_mode)
 		return;
 
 	/*do_rx_sp2*/
@@ -359,6 +374,16 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	if (isp_dev->irq_status.isp_miv2_mis1 != 0) {
 		raised_irq_count++;
 	}
+	
+	if(isp_dev->mcm_mode){
+		isp_dev->irq_status.isp_fe = hailo15_isp_read_reg(isp_dev, FE_MIS);
+
+		if(isp_dev->irq_status.isp_fe != 0)
+			raised_irq_count++;
+
+		if(isp_dev->fe_dev)
+			isp_dev->fe_dev->fe_dma_irq(isp_dev->fe_dev);
+	}
 
 	event_size = hailo15_isp_get_event_queue_size(isp_dev);
 
@@ -374,6 +399,15 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 					   HAILO15_ISP_IRQ_ENEVT_MI_MIS);
 		hailo15_isp_post_irq_event(isp_dev,
 					   HAILO15_ISP_IRQ_ENEVT_MI_MIS1);
+		if(isp_dev->mcm_mode){
+			hailo15_isp_post_irq_event(isp_dev,
+					   HAILO15_ISP_IRQ_ENEVT_FE);
+		}
+	}
+
+	if(isp_dev->mcm_mode && isp_dev->irq_status.isp_mis & ISP_MIS_FRAME_OUT){
+		/* @TODO move to tasklet */
+		isp_dev->fe_dev->fe_isp_irq_work(isp_dev->fe_dev);
 	}
 }
 

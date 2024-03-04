@@ -29,6 +29,7 @@
 #include <linux/spi/spi-mem.h>
 #include <linux/timer.h>
 #include <linux/bitrev.h>
+#include <asm/neon-intrinsics.h>
 
 #define CQSPI_NAME			"cadence-qspi"
 #define CQSPI_MAX_CHIPSELECT		16
@@ -118,7 +119,6 @@ struct cqspi_driver_platdata {
 #define CQSPI_ADDRESS_LENGTH		(4)
 #define CQSPI_MAX_DATA_LENGTH		(4 * 1024)
 #define CQSPI_MAX_MESSAGE_LENGTH	(CQSPI_OPCODE_LENGTH + CQSPI_ADDRESS_LENGTH + CQSPI_DUMMY_BYTES_MAX + CQSPI_MAX_DATA_LENGTH)
-#define CQSPI_MESSAGE_AMOUNT_TO_WRITE (4)
 
 /* Register map */
 #define CQSPI_REG_CONFIG			0x00
@@ -1357,43 +1357,110 @@ static int cqspi_of_get_pdata(struct cqspi_st *cqspi)
 }
 
 /**
- * cqspi_spi_empty_small_rx_fifo - read from RX FIFO to input buffer
+ * cqspi_spi_read_small_rx_fifo - read from RX FIFO to output buffer
  */
- static void *cqspi_spi_empty_small_rx_fifo(struct cqspi_st *cqspi, void *rx_buf, int rx_len)
+static u8 *cqspi_spi_read_small_rx_fifo(struct cqspi_st *cqspi, u8 *rx_buf, int rx_len)
 {
-	while (rx_len) {
-			memcpy(rx_buf, cqspi->ahb_base, 1);
-			rx_buf++;
-			cqspi->remaining_message_rx_bytes--;
-			rx_len--;
+	cqspi->remaining_message_rx_bytes -= rx_len;
+
+	while (rx_len >= 8) {
+		*((u64 *)rx_buf) = readq(cqspi->ahb_base);
+		rx_buf += 8;
+		rx_len -= 8;
+	}
+	if (rx_len >= 4) {
+		*((u32 *)rx_buf) = readl(cqspi->ahb_base);
+		rx_buf += 4;
+		rx_len -= 4;
+	}
+	if (rx_len >= 2) {
+		*((u16 *)rx_buf) = readw(cqspi->ahb_base);
+		rx_buf += 2;
+		rx_len -= 2;
+	}
+	if (rx_len) {
+		*rx_buf = readb(cqspi->ahb_base);
+		rx_buf++;
+		rx_len--;
 	}
 
 	return rx_buf;
 }
 
 /**
- * cqspi_spi_fill_small_tx_fifo - Fills the TX FIFO while making sure RX FIFO doesn't overdlow
+ * cqspi_spi_write_small_tx_fifo - write to TX FIFO from input buffer
  */
-static void *cqspi_spi_fill_small_tx_fifo(struct cqspi_st *cqspi, const void *tx_buf, void *rx_buf, int tx_len)
+static const u8 *cqspi_spi_write_small_tx_fifo(struct cqspi_st *cqspi, const u8 *tx_buf, int tx_len)
 {
-	int amount_to_write = 0;
+	cqspi->remaining_message_rx_bytes += tx_len;
 
-	while (tx_len) {
-		if (tx_len > CQSPI_MESSAGE_AMOUNT_TO_WRITE)
-			amount_to_write = CQSPI_MESSAGE_AMOUNT_TO_WRITE;
-		else
-			amount_to_write = tx_len;
-
-		memcpy_toio(cqspi->ahb_base, tx_buf, amount_to_write);
-		tx_len -= amount_to_write;
-		tx_buf += amount_to_write;
-
-		cqspi->remaining_message_rx_bytes += amount_to_write;
-		/* if reached 2/3 of small fifo size start empty the rx fifo*/
-		if (cqspi->remaining_message_rx_bytes >= (cqspi->small_fifo_size * 2 / 3)) {
-			rx_buf = cqspi_spi_empty_small_rx_fifo(cqspi, rx_buf, amount_to_write);
-		}
+	if (tx_len == 32) {
+		vst4_u8((u8 *)cqspi->ahb_base, vld4_u8(tx_buf));
+		tx_buf += 32;
+		tx_len -= 32;
 	}
+	if (tx_len >= 16) {
+		vst2_u8((u8 *)cqspi->ahb_base, vld2_u8(tx_buf));
+		tx_buf += 16;
+		tx_len -= 16;
+	}
+	if (tx_len >= 8) {
+		writeq(*((const u64 *)tx_buf), cqspi->ahb_base);
+		tx_buf += 8;
+		tx_len -= 8;
+	}
+	if (tx_len >= 4) {
+		writel(*((const u32 *)tx_buf), cqspi->ahb_base);
+		tx_buf += 4;
+		tx_len -= 4;
+	}
+	if (tx_len >= 2) {
+		writew(*((const u16 *)tx_buf), cqspi->ahb_base);
+		tx_buf += 2;
+		tx_len -= 2;
+	}
+	if (tx_len) {
+		writeb(*tx_buf, cqspi->ahb_base);
+		tx_buf++;
+		tx_len--;
+	}
+
+	return tx_buf;
+}
+
+/**
+ * cqspi_spi_fill_small_tx_fifo - Fills the TX FIFO while making sure RX FIFO doesn't overflow
+ */
+static void *cqspi_spi_fill_small_tx_fifo(struct cqspi_st *cqspi, const u8 *tx_buf, u8 *rx_buf, int tx_len)
+{
+	int initial_tx = 0;
+
+	/* write first 32 wholly */
+	initial_tx = min(32, tx_len);
+	tx_buf = cqspi_spi_write_small_tx_fifo(cqspi, tx_buf, initial_tx);
+	tx_len -= initial_tx;
+
+	while (tx_len >= 8) {
+		rx_buf = cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, 8);
+		tx_buf = cqspi_spi_write_small_tx_fifo(cqspi, tx_buf, 8);
+		tx_len -= 8;
+	}
+	if (tx_len >= 4) {
+		rx_buf = cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, 4);
+		tx_buf = cqspi_spi_write_small_tx_fifo(cqspi, tx_buf, 4);
+		tx_len -= 4;
+	}
+	if (tx_len >= 2) {
+		rx_buf = cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, 2);
+		tx_buf = cqspi_spi_write_small_tx_fifo(cqspi, tx_buf, 2);
+		tx_len -= 2;
+	}
+	if (tx_len) {
+		rx_buf = cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, 1);
+		tx_buf = cqspi_spi_write_small_tx_fifo(cqspi, tx_buf, 1);
+		tx_len--;
+	}
+
 	return rx_buf;
 }
 
@@ -1458,7 +1525,7 @@ static int cqspi_transfer_one_message(struct spi_master *master,
 	local_irq_enable();
 
 	/* read the rest of rx buffer */
-	cqspi_spi_empty_small_rx_fifo(cqspi, rx_buf, cqspi->remaining_message_rx_bytes);
+	cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, cqspi->remaining_message_rx_bytes);
 
 	rx_buf = cqspi->rx_buf;
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {

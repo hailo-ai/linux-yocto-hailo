@@ -91,11 +91,13 @@
 #define ISP_MIS_AFM_LUM_OF BIT(13)
 #define ISP_MIS_AFM_FIN BIT(14)
 #define ISP_MIS_VSM_DONE BIT(19)
-
+#define ISP_MIS_FRAME_OUT BIT(1)
 #define ISP_VSM_DELTA_H 0x2f1c
 #define ISP_VSM_DELTA_V 0x2f20
 
 #define ISP_VSM_DELTA_SIGN_MASK BIT(11)
+
+#define FE_MIS 0x3d74
 
 /*ISP*/
 #define ISP_CTRL 0x400

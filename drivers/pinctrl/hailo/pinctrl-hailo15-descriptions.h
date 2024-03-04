@@ -1222,6 +1222,7 @@ static const struct h15_pin_function h15_pin_functions[] = {
 	H15_PIN_FUNCTION(I2S_SD),
 
 	H15_PIN_FUNCTION(usb_overcurrent_in),
+	H15_PIN_FUNCTION(usb_drive_vbus_out),
 
 	H15_PIN_FUNCTION(pcie_mperst_out),
 

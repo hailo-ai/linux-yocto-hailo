@@ -344,6 +344,18 @@ static inline int ns16550a_goto_highspeed(struct uart_8250_port *up)
 	return 1;
 }
 
+static inline bool serial8250_can_read_empty_fifo(struct uart_8250_port *up)
+{
+	if (!(up->bugs & UART_BUG_RXEMPT)) {
+		return true;
+	}
+	if (!(up->fcr & UART_FCR_ENABLE_FIFO)) {
+		return true;
+	}
+
+	return !!(serial_in(up, UART_LSR) & UART_LSR_DR);
+}
+
 static inline int serial_index(struct uart_port *port)
 {
 	return port->minor - 64;

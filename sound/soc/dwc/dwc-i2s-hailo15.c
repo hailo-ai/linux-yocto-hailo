@@ -432,12 +432,12 @@ int hailo15_extra_probe(struct platform_device *pdev)
 	data->l_rx_sync_ring.size = ring_size;
 	data->r_rx_sync_ring.size = ring_size;
 
-	data->l_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size, GFP_KERNEL);
+	data->l_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
 	if (!data->l_rx_sync_ring.buf) {
 		return -ENOMEM;
 	}
 
-	data->r_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size, GFP_KERNEL);
+	data->r_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
 	if (!data->r_rx_sync_ring.buf) {
 		return -ENOMEM;
 	}

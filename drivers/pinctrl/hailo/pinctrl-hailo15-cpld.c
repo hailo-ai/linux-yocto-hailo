@@ -44,7 +44,7 @@ enum overlay_type_id {
 	EVB_SDIO_8BIT
 };
 
-static const struct hailo15_cpld_of_overlay hailo15_cpld_of_overlays[] __initconst = {
+static const struct hailo15_cpld_of_overlay hailo15_cpld_of_overlays[] = {
        HAILO15_CPLD_OF_OVERLAY(evb, rev1),
        HAILO15_CPLD_OF_OVERLAY(evb, rev2),
        HAILO15_CPLD_OF_OVERLAY(evb, sdio8bit),

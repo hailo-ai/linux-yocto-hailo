@@ -47,6 +47,7 @@ struct dma_heap_attachment {
 	struct sg_table table;
 	struct list_head list;
 	bool mapped;
+	int dma_map_attrs;
 };
 
 static int cma_heap_attach(struct dma_buf *dmabuf,
@@ -60,18 +61,21 @@ static int cma_heap_attach(struct dma_buf *dmabuf,
 	if (!a)
 		return -ENOMEM;
 
-	ret = sg_alloc_table_from_pages(&a->table, buffer->pages,
-					buffer->pagecount, 0,
-					buffer->pagecount << PAGE_SHIFT,
-					GFP_KERNEL);
+	// Allocate an empty table and add a single contigous entry
+	ret = sg_alloc_table(&a->table, 1, GFP_KERNEL);
 	if (ret) {
 		kfree(a);
 		return ret;
 	}
+	
+	sg_set_page(a->table.sgl, buffer->pages[0],
+		    buffer->pagecount * PAGE_SIZE, 0);
 
 	a->dev = attachment->dev;
 	INIT_LIST_HEAD(&a->list);
 	a->mapped = false;
+	// Skip cpu sync anyhow, assuming any cpu usage will be done after explicit sync
+	a->dma_map_attrs = DMA_ATTR_SKIP_CPU_SYNC;
 
 	attachment->priv = a;
 
@@ -101,9 +105,10 @@ static struct sg_table *cma_heap_map_dma_buf(struct dma_buf_attachment *attachme
 {
 	struct dma_heap_attachment *a = attachment->priv;
 	struct sg_table *table = &a->table;
+	int attrs = a->dma_map_attrs;
 	int ret;
 
-	ret = dma_map_sgtable(attachment->dev, table, direction, 0);
+	ret = dma_map_sgtable(attachment->dev, table, direction, attrs);
 	if (ret)
 		return ERR_PTR(-ENOMEM);
 	a->mapped = true;
@@ -115,27 +120,28 @@ static void cma_heap_unmap_dma_buf(struct dma_buf_attachment *attachment,
 				   enum dma_data_direction direction)
 {
 	struct dma_heap_attachment *a = attachment->priv;
+	int attrs = a->dma_map_attrs;
 
 	a->mapped = false;
-	dma_unmap_sgtable(attachment->dev, table, direction, 0);
+	dma_unmap_sgtable(attachment->dev, table, direction, attrs);
 }
 
 static int cma_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 					     enum dma_data_direction direction)
 {
 	struct cma_heap_buffer *buffer = dmabuf->priv;
-	struct dma_heap_attachment *a;
+	phys_addr_t paddr;
 
 	mutex_lock(&buffer->lock);
 
 	if (buffer->vmap_cnt)
 		invalidate_kernel_vmap_range(buffer->vaddr, buffer->len);
 
-	list_for_each_entry(a, &buffer->attachments, list) {
-		if (!a->mapped)
-			continue;
-		dma_sync_sgtable_for_cpu(a->dev, &a->table, direction);
+	if (buffer->pagecount > 0) {
+		paddr = page_to_phys(buffer->pages[0]);
+		arch_sync_dma_for_cpu(paddr, buffer->pagecount * PAGE_SIZE, direction);
 	}
+
 	mutex_unlock(&buffer->lock);
 
 	return 0;
@@ -145,18 +151,18 @@ static int cma_heap_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 					   enum dma_data_direction direction)
 {
 	struct cma_heap_buffer *buffer = dmabuf->priv;
-	struct dma_heap_attachment *a;
+	phys_addr_t paddr;
 
 	mutex_lock(&buffer->lock);
 
 	if (buffer->vmap_cnt)
 		flush_kernel_vmap_range(buffer->vaddr, buffer->len);
 
-	list_for_each_entry(a, &buffer->attachments, list) {
-		if (!a->mapped)
-			continue;
-		dma_sync_sgtable_for_device(a->dev, &a->table, direction);
+	if (buffer->pagecount > 0) {
+		paddr = page_to_phys(buffer->pages[0]);
+		arch_sync_dma_for_device(paddr, buffer->pagecount * PAGE_SIZE, direction);
 	}
+
 	mutex_unlock(&buffer->lock);
 
 	return 0;

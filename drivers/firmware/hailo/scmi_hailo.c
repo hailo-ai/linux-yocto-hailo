@@ -12,10 +12,10 @@ struct scmi_protocol_handle *ph = NULL;
 
 static int scmi_hailo_probe(struct scmi_device *sdev)
 {
+	int ret;
 	struct scmi_handle *handle = sdev->handle;
 	struct scmi_protocol_handle *proto_handle;
 	const struct scmi_hailo_proto_ops *proto_ops;
-	int ret;
 
 	if (!handle)
 		return -ENODEV;
@@ -30,9 +30,9 @@ static int scmi_hailo_probe(struct scmi_device *sdev)
 
 	hailo_notify_ops = (struct scmi_notify_ops *)handle->notify_ops;
 
-	ret = scmi_hailo_fs_init(sdev);
+	ret = scmi_hailo_ops_init(sdev);
 	if (ret) {
-		pr_err("Failed to create fuse file\n");
+		pr_err("Failed to initialize Hailo ops\n");
 		return ret;
 	}
 
@@ -42,8 +42,6 @@ static int scmi_hailo_probe(struct scmi_device *sdev)
 static void scmi_hailo_remove(struct scmi_device *sdev)
 {
     const struct scmi_handle *handle = sdev->handle;
-
-	scmi_hailo_fs_fini(sdev);
 
 	/* Remove global ph and hailo_ops so that they won't be used via ops */
 	hailo_ops = NULL;

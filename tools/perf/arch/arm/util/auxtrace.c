@@ -12,6 +12,7 @@
 #include "../../../util/debug.h"
 #include "../../../util/evlist.h"
 #include "../../../util/pmu.h"
+#include "../../../util/hailo-ddr.h"
 #include "cs-etm.h"
 #include "arm-spe.h"
 
@@ -54,8 +55,10 @@ struct auxtrace_record
 *auxtrace_record__init(struct evlist *evlist, int *err)
 {
 	struct perf_pmu	*cs_etm_pmu;
+	struct perf_pmu *hailo_ddr_pmu;
 	struct evsel *evsel;
 	bool found_etm = false;
+	bool found_hailo_ddr = false;
 	struct perf_pmu *found_spe = NULL;
 	struct perf_pmu **arm_spe_pmus = NULL;
 	int nr_spes = 0;
@@ -66,8 +69,12 @@ struct auxtrace_record
 
 	cs_etm_pmu = perf_pmu__find(CORESIGHT_ETM_PMU_NAME);
 	arm_spe_pmus = find_all_arm_spe_pmus(&nr_spes, err);
+	hailo_ddr_pmu = perf_pmu__find(HAILO_DDR_PMU);
 
 	evlist__for_each_entry(evlist, evsel) {
+		if (hailo_ddr_pmu && evsel->core.attr.type == hailo_ddr_pmu->type)
+			found_hailo_ddr = true;
+
 		if (cs_etm_pmu &&
 		    evsel->core.attr.type == cs_etm_pmu->type)
 			found_etm = true;
@@ -90,12 +97,21 @@ struct auxtrace_record
 		return NULL;
 	}
 
+	if (found_hailo_ddr && (found_spe || found_etm)) {
+		pr_err("Concurrent Hailo DDR and CoreSight operation not currently supported\n");
+		*err = -EOPNOTSUPP;
+		return NULL;
+	}
+
 	if (found_etm)
 		return cs_etm_record_init(err);
 
 #if defined(__aarch64__)
 	if (found_spe)
 		return arm_spe_recording_init(err, found_spe);
+
+	if (found_hailo_ddr)
+		return hailo_ddr_recording_init(err, hailo_ddr_pmu);
 #endif
 
 	/*
