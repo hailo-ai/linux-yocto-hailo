@@ -29,7 +29,8 @@
 #include <linux/spi/spi-mem.h>
 #include <linux/timer.h>
 #include <linux/bitrev.h>
-#include <asm/neon-intrinsics.h>
+#include <asm/neon.h>
+#include "spi-cadence-quadspi-neon.h"
 
 #define CQSPI_NAME			"cadence-qspi"
 #define CQSPI_MAX_CHIPSELECT		16
@@ -1395,12 +1396,12 @@ static const u8 *cqspi_spi_write_small_tx_fifo(struct cqspi_st *cqspi, const u8 
 	cqspi->remaining_message_rx_bytes += tx_len;
 
 	if (tx_len == 32) {
-		vst4_u8((u8 *)cqspi->ahb_base, vld4_u8(tx_buf));
+		neon_write_32B(tx_buf, cqspi->ahb_base);
 		tx_buf += 32;
 		tx_len -= 32;
 	}
 	if (tx_len >= 16) {
-		vst2_u8((u8 *)cqspi->ahb_base, vld2_u8(tx_buf));
+		neon_write_16B(tx_buf, cqspi->ahb_base);
 		tx_buf += 16;
 		tx_len -= 16;
 	}
@@ -1519,10 +1520,19 @@ static int cqspi_transfer_one_message(struct spi_master *master,
 		offset += xfer->len;
 	}
 
-	/* send all tx buffer - this should be atomic action since we don't want the spi clock to be closed */
+	/* we use NEON operations when filling the TX fifo. We must wrap the NEON operations with
+	   kernel_neon_begin/end() to work with NEON. kernel_neon_begin() has to be called before local_irq_disable()
+	   because kernel_neon_begin() must run when may_use_simd() is true, and may_use_simd() checks
+	   irqs_disabled() is false. */
+	kernel_neon_begin();
+	/* If the TX fifo empties, the controller closes the clock and chip-select,
+	   and treats new bytes in the TX fifo as a new message.
+	   We disable interrupts because we want to prevent interrupting the code that fills
+	   the TX fifo to prevent the TX fifo of ever being emptied in the middle of a message. */
 	local_irq_disable();
 	rx_buf = cqspi_spi_fill_small_tx_fifo(cqspi, tx_buf, rx_buf, offset);
 	local_irq_enable();
+	kernel_neon_end();
 
 	/* read the rest of rx buffer */
 	cqspi_spi_read_small_rx_fifo(cqspi, rx_buf, cqspi->remaining_message_rx_bytes);

@@ -168,32 +168,27 @@ static int cma_heap_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 	return 0;
 }
 
-static vm_fault_t cma_heap_vm_fault(struct vm_fault *vmf)
-{
-	struct vm_area_struct *vma = vmf->vma;
-	struct cma_heap_buffer *buffer = vma->vm_private_data;
-
-	if (vmf->pgoff > buffer->pagecount)
-		return VM_FAULT_SIGBUS;
-
-	vmf->page = buffer->pages[vmf->pgoff];
-	get_page(vmf->page);
-
-	return 0;
-}
-
-static const struct vm_operations_struct dma_heap_vm_ops = {
-	.fault = cma_heap_vm_fault,
-};
-
 static int cma_heap_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 {
+	int ret;
 	struct cma_heap_buffer *buffer = dmabuf->priv;
+	size_t vma_size = vma->vm_end - vma->vm_start;
 
 	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
 		return -EINVAL;
 
-	vma->vm_ops = &dma_heap_vm_ops;
+	if (vma->vm_pgoff >= buffer->pagecount)
+		return -EINVAL;
+
+	if (((buffer->pagecount - vma->vm_pgoff) * PAGE_SIZE) < vma_size)
+		return -EINVAL;
+
+	ret = remap_pfn_range(vma, vma->vm_start,
+			       page_to_pfn(buffer->pages[vma->vm_pgoff]), vma_size,
+			       vma->vm_page_prot);
+	if (ret)
+		return ret;
+
 	vma->vm_private_data = buffer;
 
 	return 0;
