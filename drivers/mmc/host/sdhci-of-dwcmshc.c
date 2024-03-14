@@ -20,6 +20,8 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/reset.h>
 #include "sdhci-pltfm.h"
+#include <linux/gpio/consumer.h>
+#include <linux/delay.h>
 
 #define DWCMSHC_EMMC_CTRL_R  			0x0000052C
 #define DWCMSHC_EMMC_CTRL_R__CARD_IS_EMMC            BIT(0)
@@ -161,6 +163,8 @@ struct hailo_priv {
 	bool is_clk_divider_bypass;
 	hailo15_phy_config sdio_phy_config;
 	u64 data_error_count;
+	struct gpio_desc *vdd_gpio;
+	bool is_sd_vsel_polarity_high;
 };
 struct dwcmshc_priv {
 	struct clk	*bus_clk;
@@ -442,6 +446,7 @@ static int dwcmshc_hailo15_get_phy_config_from_dts(struct device *dev, struct ha
 	of_node_put(phy_config_node);
 	return 0;
 }
+
 static u64 hailo15_dwcmshc_get_data_error_count(struct sdhci_host *host){
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
@@ -458,9 +463,51 @@ static void hailo15_dwcmshc_increase_data_error_count(struct sdhci_host *host){
 	hailo_priv->data_error_count++;
 }
 
+static void hailo15_dwcmshc_set_vdd_gpio(struct sdhci_host *host, bool enable)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+	struct hailo_priv *hailo_priv = dwc_priv->priv;
+	int gpio_1_8_val = hailo_priv->is_sd_vsel_polarity_high ? 1 : 0;
+	int gpio_3_3_val = hailo_priv->is_sd_vsel_polarity_high ? 0 : 1;
+
+	if (hailo_priv->vdd_gpio == NULL)
+		return;
+
+	if (enable) {
+		/* Set to 1.8v */
+		gpiod_set_value(hailo_priv->vdd_gpio, gpio_1_8_val);
+		pr_debug("%s hailo15_dwcmshc_voltage_switch to 1.8 vdd polarity %d\n", mmc_hostname(host->mmc), gpio_1_8_val);
+	} else {
+		/* Set to 3.3v */
+		gpiod_set_value(hailo_priv->vdd_gpio, gpio_3_3_val);
+		pr_debug("%s hailo15_dwcmshc_voltage_switch to 3.3 vdd vdd polarity %d\n", mmc_hostname(host->mmc), gpio_3_3_val);
+	}
+
+	usleep_range(2500, 3000);
+}
+
+static void dwcmshc_hailo15_get_sd_vsel_from_dts(struct device *dev, struct sdhci_host *host, struct hailo_priv *hailo_priv)
+{
+		hailo_priv->is_sd_vsel_polarity_high = false;
+		hailo_priv->vdd_gpio = devm_gpiod_get_optional(dev, "sd-vsel", GPIOD_OUT_LOW);
+		if (hailo_priv->vdd_gpio == NULL)
+			return;
+		if (of_property_read_bool(dev->of_node, "sd-vsel-polarity-high"))
+			hailo_priv->is_sd_vsel_polarity_high = true;
+
+		hailo15_dwcmshc_set_vdd_gpio(host, false);
+}
+
 static void hailo15_dwcmshc_hw_reset(struct sdhci_host *host)
 {
 	dwcmshc_hailo15_phy_config(host);
+	hailo15_dwcmshc_set_vdd_gpio(host, false);
+}
+
+static void hailo15_dwcmshc_voltage_switch(struct sdhci_host *host)
+{
+	hailo15_dwcmshc_set_vdd_gpio(host, true);
 }
 
 static unsigned int hailo15_dwcmshc_get_min_clock(struct sdhci_host *host)
@@ -512,6 +559,7 @@ static const struct sdhci_ops hailo15_dwcmshc_ops = {
 	.reset			= sdhci_reset,
 	.adma_write_desc	= dwcmshc_adma_write_desc,
 	.hw_reset = hailo15_dwcmshc_hw_reset,
+	.voltage_switch = hailo15_dwcmshc_voltage_switch,
 	.get_data_error_count = hailo15_dwcmshc_get_data_error_count,
 	.increase_data_error_count = hailo15_dwcmshc_increase_data_error_count,
 };
@@ -756,6 +804,9 @@ static int dwcmshc_hailo_init(struct sdhci_host *host, struct dwcmshc_priv *dwc_
 	if (err)
 		return err;
 	
+
+	dwcmshc_hailo15_get_sd_vsel_from_dts(dev, host, priv);
+
 	priv->div_clk_bypass = devm_clk_get(dev, "clk_div_bypass");
     	if (IS_ERR(priv->div_clk_bypass)){
 		dev_err(dev, "Failed to get div_clk_bypass\n");
@@ -815,7 +866,6 @@ static int hailo_init_sdio_pins_and_muxes(struct device *dev)
 	}
 	return err;
 }
-
 
 static int dwcmshc_probe(struct platform_device *pdev)
 {
@@ -904,6 +954,7 @@ static int dwcmshc_probe(struct platform_device *pdev)
 			err = -ENOMEM;
 			goto err_clk;
 		}
+
 		priv->priv = hailo_priv;
 		err = dwcmshc_hailo_init(host, priv);
 		if (err) {
@@ -938,21 +989,28 @@ free_pltfm:
 static int dwcmshc_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct device *dev = &pdev->dev;
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
 	struct rk3568_priv *rk_priv = priv->priv;
 	const struct sdhci_pltfm_data *pltfm_data;
+	bool is_hailo = false;
 	pltfm_data = of_device_get_match_data(&pdev->dev);
 	if (!pltfm_data) {
 		dev_err(&pdev->dev, "Error: No device match data found\n");
 		return -ENODEV;
 	}
 
+	if (of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-0")||
+	    of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-1")) {
+		is_hailo = true;
+		hailo15_dwcmshc_set_vdd_gpio(host, false);
+	}
 	sdhci_remove_host(host, 0);
 
 	clk_disable_unprepare(pltfm_host->clk);
 	clk_disable_unprepare(priv->bus_clk);
-	if (rk_priv)
+	if ((rk_priv) && (!is_hailo))
 		clk_bulk_disable_unprepare(RK3568_MAX_CLKS,
 					   rk_priv->rockchip_clks);
 	sdhci_pltfm_free(pdev);
