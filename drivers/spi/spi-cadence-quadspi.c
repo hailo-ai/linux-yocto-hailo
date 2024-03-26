@@ -93,6 +93,11 @@ struct cqspi_st {
 	void		*rx_buf;
 
 	struct cqspi_flash_pdata f_pdata[CQSPI_MAX_CHIPSELECT];
+	/* 
+	  Whether the HW auto poll for completion of the transfer is enabled. 
+	  If true, the controller will hold the bus while wrtiting to poll for completion.
+	*/
+	bool is_auto_poll_enabled;
 };
 
 struct cqspi_driver_platdata {
@@ -837,7 +842,10 @@ static int cqspi_write_setup(struct cqspi_flash_pdata *f_pdata,
 	 * care of polling the status register.
 	 */
 	reg = readl(reg_base + CQSPI_REG_WR_COMPLETION_CTRL);
-	reg |= CQSPI_REG_WR_DISABLE_AUTO_POLL;
+	if (cqspi->is_auto_poll_enabled)
+		reg &= ~CQSPI_REG_WR_DISABLE_AUTO_POLL;
+	else
+		reg |= CQSPI_REG_WR_DISABLE_AUTO_POLL;
 	writel(reg, reg_base + CQSPI_REG_WR_COMPLETION_CTRL);
 
 	reg = readl(reg_base + CQSPI_REG_SIZE);
@@ -1352,6 +1360,7 @@ static int cqspi_of_get_pdata(struct cqspi_st *cqspi)
 		cqspi->small_fifo_size = CQSPI_DEFAULT_SMALL_FIFO_SIZE;
 	}
 
+	cqspi->is_auto_poll_enabled = of_property_read_bool(np, "cdns,enable-auto-poll");
 	cqspi->rclk_en = of_property_read_bool(np, "cdns,rclk-en");
 
 	return 0;

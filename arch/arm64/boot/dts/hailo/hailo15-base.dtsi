@@ -924,6 +924,7 @@
         cdns,trigger-address = <0>;
         num-cs = <4>;
         small-fifo-size = <32>;
+        cdns,enable-auto-poll;
 
         interrupts = <GIC_SPI HW_INTERRUPTS__QSPI_FLASH_IRQ IRQ_TYPE_LEVEL_HIGH>;
 

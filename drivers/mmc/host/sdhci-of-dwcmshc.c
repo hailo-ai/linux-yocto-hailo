@@ -470,7 +470,7 @@ static void hailo15_dwcmshc_set_vdd_gpio(struct sdhci_host *host, bool enable)
 	struct hailo_priv *hailo_priv = dwc_priv->priv;
 	int gpio_1_8_val = hailo_priv->is_sd_vsel_polarity_high ? 1 : 0;
 	int gpio_3_3_val = hailo_priv->is_sd_vsel_polarity_high ? 0 : 1;
-
+	
 	if (hailo_priv->vdd_gpio == NULL)
 		return;
 
@@ -804,9 +804,9 @@ static int dwcmshc_hailo_init(struct sdhci_host *host, struct dwcmshc_priv *dwc_
 	if (err)
 		return err;
 	
-
+	
 	dwcmshc_hailo15_get_sd_vsel_from_dts(dev, host, priv);
-
+	
 	priv->div_clk_bypass = devm_clk_get(dev, "clk_div_bypass");
     	if (IS_ERR(priv->div_clk_bypass)){
 		dev_err(dev, "Failed to get div_clk_bypass\n");
@@ -954,7 +954,7 @@ static int dwcmshc_probe(struct platform_device *pdev)
 			err = -ENOMEM;
 			goto err_clk;
 		}
-
+		
 		priv->priv = hailo_priv;
 		err = dwcmshc_hailo_init(host, priv);
 		if (err) {
@@ -1004,7 +1004,7 @@ static int dwcmshc_remove(struct platform_device *pdev)
 	if (of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-0")||
 	    of_device_is_compatible(dev->of_node,"hailo,dwcmshc-sdhci-1")) {
 		is_hailo = true;
-		hailo15_dwcmshc_set_vdd_gpio(host, false);
+		hailo15_dwcmshc_set_vdd_gpio(host, false);	
 	}
 	sdhci_remove_host(host, 0);
 
