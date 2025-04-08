@@ -27,12 +27,47 @@
     };
 };
 
+&integrated_nnc {
+    compatible = "hailo,integrated-nnc,hailo10h2";
+    vdma0: vdma@0 {
+        reg = <0x7c080000 0x800>, <0x7c082000 0x2000>;
+        reg-names = "channel-regs", "engine-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP0_M2D_INT_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP0_D2M_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "input", "output";
+    };
+
+    vdma1: vdma@1 {
+        reg = <0x7c084000 0x800>, <0x7c086000 0x2000>;
+        reg-names = "channel-regs", "engine-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP1_M2D_INT_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP1_D2M_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "input", "output";
+    };
+
+    vdma2: vdma@2 {
+        reg = <0x7c088000 0x800>, <0x7c08a000 0x2000>;
+        reg-names = "channel-regs", "engine-regs";
+        interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP2_M2D_INT_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP2_D2M_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "input", "output";
+    };
+};
+
 &gp_vdma {
     status = "disabled";
 };
 
 &edac {
     reg = <0x0 0x7c050000 0x0 0x00002000>;
+};
+
+&nocpmu {
+    reg = <0 0x000a5000 0 0x2000>;
+};
+
+&scu_log {
+    reg = <0 0x000a7000 0 0x1000>;
 };
 
 /delete-node/ &cpu_2;

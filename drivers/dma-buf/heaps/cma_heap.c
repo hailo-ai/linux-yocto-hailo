@@ -330,6 +330,9 @@ static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
 		memset(page_address(cma_pages), 0, size);
 	}
 
+	/* Flush the cma pages to memory */
+	arch_sync_dma_for_device(page_to_phys(cma_pages), size, DMA_TO_DEVICE);
+
 	buffer->pages = kmalloc_array(pagecount, sizeof(*buffer->pages), GFP_KERNEL);
 	if (!buffer->pages) {
 		ret = -ENOMEM;

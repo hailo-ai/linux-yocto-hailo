@@ -4,4 +4,3 @@
  */
 
 #include "hailo15-base.dtsi"
-#include "hailo10-cma-config.dtsi"

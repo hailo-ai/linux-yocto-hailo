@@ -12,7 +12,8 @@
     // Reserve memory only for integrated nnc dma.
     integrated_nnc_dma_cma: integrated_nnc_dma_cma,cma {
         compatible = "shared-dma-pool";
-        reg = <0x0 0x88000000 0x0 0x40000000>;
+        size = <0x0 0x80000000>;
+        alignment = <0 0x10000>;
         no-map;
     };
 

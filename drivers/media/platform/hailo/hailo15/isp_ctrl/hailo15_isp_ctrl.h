@@ -84,8 +84,7 @@
 #define HAILO15_ISP_CID_CAC_BASE (V4L2_CID_USER_BASE + 0x3900)
 #define HAILO15_ISP_CID_CA_BASE (V4L2_CID_USER_BASE + 0x3A00)
 #define HAILO15_ISP_CID_DCI_BASE (V4L2_CID_USER_BASE + 0x3B00)
-#define HAILO15_CID_VID_CAP_BASE (V4L2_CID_USER_BASE + 0x3C00)
-#define HAILO15_ISP_CID_GENERAL_BASE (V4L2_CID_USER_BASE + 0x3D00)
+#define HAILO15_ISP_CID_GENERAL_BASE (V4L2_CID_USER_BASE + 0x3C00)
 
 int hailo15_isp_ctrl_init(struct hailo15_isp_device *isp_dev);
 int hailo15_isp_ctrl_destroy(struct hailo15_isp_device *isp_dev);

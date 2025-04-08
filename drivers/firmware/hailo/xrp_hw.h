@@ -26,7 +26,7 @@ void map_dsp_to_physical_address(struct xvp *xvp, uint32_t dsp_address, phys_add
 
 int xrp_enable_dsp(struct xvp *xvp);
 
-int xrp_disable_dsp(struct xvp *xvp);
+void xrp_disable_dsp(struct xvp *xvp);
 
 void xrp_halt_dsp(struct xvp *xvp);
 

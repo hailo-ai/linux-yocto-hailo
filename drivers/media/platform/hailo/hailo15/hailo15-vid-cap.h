@@ -17,7 +17,7 @@
 
 #define MAX_NUM_FORMATS (8)
 #define MAX_SUBDEVS_NUM (8)
-#define MAX_VIDEO_NODE_NUM (5)
+#define MAX_VIDEO_NODE_NUM (64)
 #define CONFIG_HAILO_DEVICE_TPG
 #define CONFIG_HAILO_DEVICE_TPG_USE_FILE
 
@@ -25,8 +25,6 @@ struct dev_node {
 	struct device_node *node;
 	int id;
 };
-
-struct hailo15_vid_cap_device;
 
 struct hailo15_video_node {
 	struct device *dev;
@@ -45,7 +43,7 @@ struct hailo15_video_node {
 
 	struct hailo15_event_resource event_resource;
 
-	struct mutex  qlock;
+	struct mutex qlock;
 	struct list_head buf_queue;
 	bool skip_first_list_entry;
 
@@ -61,9 +59,9 @@ struct hailo15_video_node {
 	int path;
 	int sequence;
 	int pipeline_init;
+	int hdr_timestamp_mode;
 	bool tuning_state;
 	wait_queue_head_t stream_wait;
-	struct hailo15_vid_cap_device *parent_vid_dev;
 };
 
 struct hailo15_vid_cap_device {
@@ -71,9 +69,6 @@ struct hailo15_vid_cap_device {
 	struct media_device mdev;
 	struct v4l2_async_notifier subdev_notifier;
 	struct hailo15_video_node *vid_nodes[MAX_VIDEO_NODE_NUM];
-	
-	struct v4l2_ctrl_handler ctrl_handler;
-	struct v4l2_ctrl *timestamp_mode_ctrl;
 };
 
 struct hailo15_get_vsm_params {

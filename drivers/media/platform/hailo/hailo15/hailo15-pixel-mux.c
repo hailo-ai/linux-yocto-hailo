@@ -25,6 +25,7 @@
 #define RES_MIN
 
 #include "common.h"
+#include "hailo15-media.h"
 #include "hailo15-pixel-mux.h"
 
 struct pm_config {
@@ -107,10 +108,11 @@ static const struct of_device_id hailo_pixel_mux_of_table[] = {
 MODULE_DEVICE_TABLE(of, hailo_pixel_mux_of_table);
 
 enum pixel_mux_pads {
-	PIXEL_MUX_PAD_SINK_0,
-	PIXEL_MUX_PAD_SINK_1,
-	PIXEL_MUX_PAD_SOURCE_0,
-	PIXEL_MUX_PAD_SOURCE_1,
+	PIXEL_MUX_SINK_PAD_0,
+	PIXEL_MUX_SINK_PAD_1,
+	PIXEL_MUX_SINK_PAD_MAX,
+	PIXEL_MUX_SOURCE_PAD_0 = PIXEL_MUX_SINK_PAD_MAX,
+	PIXEL_MUX_SOURCE_PAD_1,
 	PIXEL_MUX_PAD_MAX,
 };
 
@@ -127,8 +129,6 @@ struct pixel_mux_priv {
 	void __iomem *base;
 	struct clk *vision_clk;
 	struct clk *vision_hclk;
-	struct clk *csi_rx0_xtal_clk;
-	struct clk *csi_rx1_xtal_clk;
 	int irq;
 
 	u8 num_lanes;
@@ -136,16 +136,27 @@ struct pixel_mux_priv {
 	u8 max_streams;
 
 	struct v4l2_subdev subdev;
-	struct v4l2_async_notifier notifier;
+	struct v4l2_async_notifier subdev_notifier;
+	struct v4l2_async_notifier video_notifier;
 	struct media_pad pads[PIXEL_MUX_PAD_MAX];
 	struct v4l2_mbus_framefmt pad_fmts[PIXEL_MUX_PAD_MAX];
 	int num_exposures;
 
+	bool enabled;
+
 	/* Remote source */
-	struct v4l2_subdev *source_subdev;
+	struct {
+		struct v4l2_subdev *subdev;
+		int pad;
+		int configured;
+	} remote_sources[PIXEL_MUX_SINK_PAD_MAX];
+
 	const struct pm_config *pm_cfg;
-	int source_pad;
-	int dest_configured;
+};
+
+struct indexed_v4l2_async_subdev {
+	struct v4l2_async_subdev asd;
+	int index;
 };
 
 static const struct v4l2_mbus_framefmt fmt_default = {
@@ -158,13 +169,13 @@ static const struct v4l2_mbus_framefmt fmt_default = {
 
 static const struct hailo15_mux_cfg isp_cfg = {
 	.pixel_mux_cfg =
-		P2A0_2_SW_DBG_P2A1_2_CSIRX0_ISP0_2_CSIRX0_ISP1_2_SW_DBG,
+		P2A0_DIS_P2A1_DIS_ISP0_2_CSIRX0_ISP1_2_CSIRX1,
 	.isp0_stream0 = ENABLE_VC_0_DT_RAW_12,
 	.isp0_stream1 = ENABLE_VC_1_DT_RAW_12,
 	.isp0_stream2 = ENABLE_VC_2_DT_RAW_12,
-	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
-	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
-	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
+	.isp1_stream0 = ENABLE_VC_0_DT_RAW_12,
+	.isp1_stream1 = ENABLE_VC_1_DT_RAW_12,
+	.isp1_stream2 = ENABLE_VC_2_DT_RAW_12,
 	.vision_buffer_ready_ap_int_mask = 0x0
 };
 
@@ -177,7 +188,7 @@ static const struct hailo15_mux_cfg p2a_cfg_3dol = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xff4
+	.vision_buffer_ready_ap_int_mask = 0xf44
 };
 
 static const struct hailo15_mux_cfg p2a_cfg_2dol = {
@@ -189,7 +200,7 @@ static const struct hailo15_mux_cfg p2a_cfg_2dol = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xff2
+	.vision_buffer_ready_ap_int_mask = 0xf22
 };
 
 static const struct hailo15_mux_cfg p2a_cfg_sdr = {
@@ -201,7 +212,7 @@ static const struct hailo15_mux_cfg p2a_cfg_sdr = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xff1
+	.vision_buffer_ready_ap_int_mask = 0xf00	// bit CSI-RX-1[7:4], CSI-RX-0[3:0] are enabled/disabled by rxwrapper.
 };
 
 static const struct hailo15_mux_interrupt_cfg int_cfg = {
@@ -221,10 +232,14 @@ static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
     struct hailo15_p2a_buffer_regs_addr *p2a_buffer_regs = arg;
 	int ret = 0;
 
+	dev_dbg(pixel_mux->dev, "%s called with cmd: %d, arg: %p\n", __func__, cmd, arg);
+
 	switch (cmd) {
 	case VIDEO_GET_P2A_REGS:
-		if (!arg)
+		if (!arg) {
 			ret = -EINVAL;
+			break;
+		}
 		p2a_buffer_regs->buffer_ready_ap_int_mask_addr = pixel_mux->base + 
 			pixel_mux->pm_cfg->hailo15_buffer_ready_ap_int_mask_offset;
 		p2a_buffer_regs->buffer_ready_ap_int_status_addr = pixel_mux->base + 
@@ -234,8 +249,14 @@ static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		p2a_buffer_regs->buffer_ready_ap_int_w1s_addr = pixel_mux->base + 
 			pixel_mux->pm_cfg->hailo15_buffer_ready_ap_int_w1s_offset;
 		break;
+
+	case VIDIOC_QUERYCAP:
+		pr_debug("pixel_mux does't supports querycap\n");
+		ret = -ENOENT;
+		break;
+
 	default:
-		pr_debug("pixel_mux: got unsupported ioctl 0x%x\n", cmd);
+		pr_debug("pixel_mux: got unsupported ioctl 0x%x, Context(process: %s, PID: %d)\n", cmd, current->comm, current->pid);
 		ret = -ENOENT;
 		break;
 	}
@@ -255,32 +276,44 @@ v4l2_subdev_to_pixel_mux(struct v4l2_subdev *subdev)
 	return container_of(subdev, struct pixel_mux_priv, subdev);
 }
 
-static int hailo_pixel_mux_async_bound(struct v4l2_async_notifier *notifier,
+static int hailo15_pixel_mux_async_bound(struct v4l2_async_notifier *subdev_notifier,
 				       struct v4l2_subdev *s_subdev,
 				       struct v4l2_async_subdev *asd)
 {
-	struct v4l2_subdev *subdev = notifier->sd;
+	struct v4l2_subdev *subdev = subdev_notifier->sd;
 	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(subdev);
+	struct indexed_v4l2_async_subdev *iasd = container_of(asd,
+							       struct indexed_v4l2_async_subdev,
+							       asd);
+	int index = iasd->index;
+	int result;
 
-	pixel_mux->source_pad = media_entity_get_fwnode_pad(
+	pr_debug("%s: subdev %s bounded\n", __func__, s_subdev->name);
+
+	pixel_mux->remote_sources[index].pad = media_entity_get_fwnode_pad(
 		&s_subdev->entity, s_subdev->fwnode, MEDIA_PAD_FL_SOURCE);
 	dev_info(pixel_mux->dev, "%s source pad %d\n", __func__,
-		 pixel_mux->source_pad);
-	if (pixel_mux->source_pad < 0) {
+		 pixel_mux->remote_sources[index].pad);
+	if (pixel_mux->remote_sources[index].pad < 0) {
 		dev_err(pixel_mux->dev,
 			"Couldn't find output pad for subdev %s\n",
 			s_subdev->name);
-		return pixel_mux->source_pad;
+		return pixel_mux->remote_sources[index].pad;
 	}
-	pixel_mux->source_subdev = s_subdev;
+	pixel_mux->remote_sources[index].subdev = s_subdev;
 
 	dev_dbg(pixel_mux->dev, "Bound %s pad: %d\n", s_subdev->name,
-		pixel_mux->source_pad);
+		pixel_mux->remote_sources[index].pad);
 
-	return media_create_pad_link(
-		&pixel_mux->source_subdev->entity, pixel_mux->source_pad,
-		&pixel_mux->subdev.entity, 0,
-		MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
+	result = media_create_pad_link(
+			&pixel_mux->remote_sources[index].subdev->entity,
+			pixel_mux->remote_sources[index].pad,
+			&pixel_mux->subdev.entity,
+			iasd->index,
+			MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
+
+	pr_debug("%s: media_create_pad_link result %d\n", __func__, result);
+	return result;
 }
 
 unsigned int hailo15_mux_isp_stream_cfg_to_reg(
@@ -299,6 +332,7 @@ hailo_pixel_mux_configure_dest(const struct pixel_mux_priv *pixel_mux,
 			       const struct hailo15_mux_cfg *mux_cfg)
 {
 	const struct pm_config *pm_cfg = pixel_mux->pm_cfg;
+	u32 mask;
 	pr_debug("%s enter\n", __func__);
 
 	writel(mux_cfg->pixel_mux_cfg, pixel_mux->base + pm_cfg->pixel_mux_cfg_offset);
@@ -315,8 +349,11 @@ hailo_pixel_mux_configure_dest(const struct pixel_mux_priv *pixel_mux,
 	writel(hailo15_mux_isp_stream_cfg_to_reg(pixel_mux, &mux_cfg->isp1_stream2),
 		pixel_mux->base + pm_cfg->isp1_stream2_offset);
 
-	writel(mux_cfg->vision_buffer_ready_ap_int_mask,
+
+	mask = readl(pixel_mux->base + pm_cfg->vision_buffer_ready_ap_int_mask_offset);
+	writel((mask | mux_cfg->vision_buffer_ready_ap_int_mask),
 		pixel_mux->base + pm_cfg->vision_buffer_ready_ap_int_mask_offset);
+
 	writel(int_cfg.pixel_mux_vsync_mask,
 		pixel_mux->base + pm_cfg->hailo15_pixel_mux_vsync_mask_offset);
 	writel(int_cfg.vision_subsys_asf_int_mask,
@@ -331,6 +368,30 @@ hailo_pixel_mux_configure_dest(const struct pixel_mux_priv *pixel_mux,
 		pixel_mux->base + pm_cfg->vision_subsys_err_int_agg_mask_offset);
 }
 
+static int pixel_mux_grp_id_to_pad_index(int grp_id)
+{
+	switch (grp_id) {
+		case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
+		case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
+		case HAILO15_VID_GRP_SX_CSI0_P2A:
+		case HAILO15_VID_GRP_S0_CSI0_P2A:
+		case HAILO15_VID_GRP_S1_CSI0_P2A:
+		case HAILO15_VID_GRP_S2_CSI0_P2A:
+		case HAILO15_VID_GRP_S3_CSI0_P2A:
+			return PIXEL_MUX_SINK_PAD_0;
+		case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
+		case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
+		case HAILO15_VID_GRP_SX_CSI1_P2A:
+		case HAILO15_VID_GRP_S0_CSI1_P2A:
+		case HAILO15_VID_GRP_S1_CSI1_P2A:
+		case HAILO15_VID_GRP_S2_CSI1_P2A:
+		case HAILO15_VID_GRP_S3_CSI1_P2A:
+			return PIXEL_MUX_SINK_PAD_1;
+		default:
+			return -EINVAL;
+	}
+}
+
 static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(sd);
@@ -338,10 +399,15 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 	struct media_pad *pad;
 	int ret;
 
+	pr_debug("%s: enable=%d\n", __func__, enable);
+
 	if (!pixel_mux)
 		return -EINVAL;
 
-	if (enable && !pixel_mux->dest_configured) {
+	if (pixel_mux_grp_id_to_pad_index(sd->grp_id) < 0)
+		return -EINVAL;
+
+	if (enable && !pixel_mux->enabled) {
 		dev_dbg(pixel_mux->dev, "%s enabling vision_hclk\n", __func__);
 		ret = clk_prepare_enable(pixel_mux->vision_hclk);
 		if (ret) {
@@ -354,34 +420,31 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 			pr_err("%s - failed enabling vision_clk\n", __func__);
 			return -EAGAIN;
 		}
-		// TODO - understand who should open the csi xtal clk, and why
-		dev_dbg(pixel_mux->dev, "%s enabling csi_rx0_xtal_clk\n",
-			__func__);
-		ret = clk_prepare_enable(pixel_mux->csi_rx0_xtal_clk);
-		if (ret) {
-			pr_err("%s - failed enabling csi_rx0_xtal_clk\n",
-			       __func__);
-			return -EAGAIN;
-		}
+		pixel_mux->enabled = 1;
+	}
 
-		if (sd->grp_id == VID_GRP_ISP_MP ||
-		    sd->grp_id == VID_GRP_ISP_SP) {
+	if (enable && !pixel_mux->remote_sources[sd->grp_id].configured) {
+		if (hailo15_is_isp_grp_id(sd->grp_id)) {
 			hailo_pixel_mux_configure_dest(pixel_mux, &isp_cfg);
-		} else if (sd->grp_id == VID_GRP_P2A) {
+		} else if (hailo15_is_p2a_grp_id(sd->grp_id)) {
 			switch (pixel_mux->num_exposures) {
 				case 1:
+					dev_dbg(pixel_mux->dev, "Configuring P2A for 1 exposure\n");
 					hailo_pixel_mux_configure_dest(pixel_mux,
 									&p2a_cfg_sdr);
 					break;
 				case 2:
+					dev_dbg(pixel_mux->dev, "Configuring P2A for 2 exposures\n");
 					hailo_pixel_mux_configure_dest(pixel_mux,
 									&p2a_cfg_2dol);
 					break;
 				case 3:
+					dev_dbg(pixel_mux->dev, "Configuring P2A for 3 exposures\n");
 					hailo_pixel_mux_configure_dest(pixel_mux,
 									&p2a_cfg_3dol);
 					break;
 				default:
+					dev_dbg(pixel_mux->dev, "Configuring P2A for 1 exposure (default)\n");
 					hailo_pixel_mux_configure_dest(pixel_mux,
 									&p2a_cfg_sdr);
 					break;
@@ -390,14 +453,11 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 			ret = -EINVAL;
 			goto err_bad_src_grp;
 		}
-		pixel_mux->dest_configured = 1;
-	} 
-
-	if(!enable){
-		pixel_mux->dest_configured = 0;
 	}
 
-	pad = &pixel_mux->pads[0];
+	pixel_mux->remote_sources[sd->grp_id].configured = enable;
+
+	pad = &pixel_mux->pads[pixel_mux_grp_id_to_pad_index(sd->grp_id)];
 	if (pad)
 		pad = media_entity_remote_pad(pad);
 
@@ -431,12 +491,12 @@ static int pixel_mux_get_fmt(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *dst_format;
 	if (!pixel_mux || !fmt || fmt->pad >= PIXEL_MUX_PAD_MAX)
 		return -EINVAL;
-	
+
 	src_format = &pixel_mux->pad_fmts[fmt->pad];
 	dst_format = &fmt->format;
 	if (!src_format || !dst_format)
 		return -EINVAL;
-	
+
 	*dst_format = *src_format;
 	return 0;
 }
@@ -448,15 +508,17 @@ static int pixel_mux_set_fmt(struct v4l2_subdev *sd,
 	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(sd);
 	struct v4l2_subdev *subdev;
 	struct media_pad *pad;
-	unsigned int sink_pad_idx = PIXEL_MUX_PAD_SOURCE_0;
+	unsigned int sink_pad_idx = PIXEL_MUX_SOURCE_PAD_0;
 	const struct v4l2_mbus_framefmt *src_format = &fmt->format;
 	struct v4l2_mbus_framefmt *dst_format;
 	struct v4l2_subdev_format csi_fmt = {0};
 	int ret = 0;
 
+	dev_dbg(pixel_mux->dev, "%s: enter\n", __func__);
+
 	if (!pixel_mux)
 		return -EINVAL;
-	
+
 	/* set format in pixel_mux->pad_fmts */
 	dst_format = &pixel_mux->pad_fmts[fmt->pad];
 	if (!dst_format)
@@ -480,30 +542,35 @@ static int pixel_mux_set_fmt(struct v4l2_subdev *sd,
 		pixel_mux->num_exposures = 1;
 		break;
 	}
-	
+
 	memcpy(&csi_fmt, fmt, sizeof(struct v4l2_subdev_format));
 
 	/* change format to one of two: x16 or x32 */
-	if (sd->grp_id == VID_GRP_ISP_MP ||
-		sd->grp_id == VID_GRP_ISP_SP) {
+	if (hailo15_is_isp_grp_id(sd->grp_id)) {
 		csi_fmt.format.code = MEDIA_BUS_FMT_SRGGB12_1X32;
-	} else if (sd->grp_id == VID_GRP_P2A) {
-		csi_fmt.format.code = MEDIA_BUS_FMT_SRGGB12_1X12;
+	} else if (hailo15_is_p2a_grp_id(sd->grp_id)) {
+		csi_fmt.format.code = (src_format->code == MEDIA_BUS_FMT_YVYU8_2X8)
+							? MEDIA_BUS_FMT_YVYU8_2X8
+							: MEDIA_BUS_FMT_SRGGB12_1X12;
 	} else {
 		ret = -EINVAL;
 		goto err_bad_src_grp;
 	}
 
 	/* Propagate fake format to sink */
-	sink_pad_idx = (int)(csi_fmt.pad/2);
+	sink_pad_idx = pixel_mux_grp_id_to_pad_index(sd->grp_id);
 	pad = &pixel_mux->pads[sink_pad_idx];
 	if (pad)
 		pad = media_entity_remote_pad(pad);
-	
+
 	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
 		subdev = media_entity_to_v4l2_subdev(pad->entity);
 		subdev->grp_id = sd->grp_id;
 		ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, &csi_fmt);
+		if (ret) {
+			dev_err(pixel_mux->dev, "%s - failed to set format %x on sink subdev %s, ret %d\n",
+				__func__, csi_fmt.format.code, subdev->name, ret);
+		}
 	}
 	goto finish;
 
@@ -514,12 +581,141 @@ finish:
 	return ret;
 }
 
-static struct v4l2_subdev_core_ops pixel_mux_core_ops = {
-	.ioctl = pixel_mux_priv_ioctl,
+static bool hailo_pixel_mux_async_check_subdev_notifier_completion(struct v4l2_async_notifier *video_notifier)
+{
+	// The pixel mux subdevice notifier is the child of the video notifier
+	struct v4l2_async_notifier *subdev_notifier = hailo15_media_find_child_notifier(video_notifier);
+	bool result;
+
+	pr_debug("hailo15_pixel_mux: checking subdev notifier completion\n");
+
+	if (!subdev_notifier) {
+		// If the subdevice notifier could not be found, we cannot complete the registration
+		dev_info(video_notifier->v4l2_dev->dev, "Could not find child notifier in the list");
+		return false;
+	}
+
+	result = hailo15_media_check_completion(subdev_notifier);
+	pr_debug("hailo15_pixel_mux: subdev notifier completion is %d\n", result);
+
+	return result;
+}
+
+static int hailo15_pixel_mux_async_complete(struct v4l2_async_notifier *video_notifier)
+{
+	struct v4l2_device *video_dev = video_notifier->v4l2_dev;
+	int ret = 0;
+
+	pr_debug("hailo15_pixel_mux: complete function invoked\n");
+
+	/* Since Linux invokes the complete function on the root notifier (which doesnt hold the subdevice),
+	 * we need to check if the subdevice notifier is ready */
+	if (!hailo_pixel_mux_async_check_subdev_notifier_completion(video_notifier))
+		return 0;
+
+	if (!video_dev) {
+		dev_err(video_dev->dev, "Complete function was invoked, but the notifier does not hold a v4l2 video device!");
+		return -EINVAL;
+	}
+
+	ret = hailo15_media_register_video_subdev_nodes(video_dev);
+	if (ret) {
+		dev_err(video_dev->dev, "Failed registering the subdevs with code %d", ret);
+		return ret;
+	}
+
+	pr_debug("hailo15_pixel_mux: complete function finished\n");
+
+	return 0;
+}
+
+static const struct v4l2_async_notifier_operations
+hailo15_pixel_mux_subdev_notifier_ops = {
+	.bound = hailo15_pixel_mux_async_bound,
+},
+hailo15_pixel_mux_video_notifier_ops = {
+	.complete = hailo15_pixel_mux_async_complete,
 };
 
-static const struct v4l2_async_notifier_operations pixel_mux_notifier_ops = {
-	.bound = hailo_pixel_mux_async_bound,
+static int
+hailo15_pixel_mux_parse_dt(struct pixel_mux_priv *hailo15_pixel_mux)
+{
+	struct indexed_v4l2_async_subdev *asd;
+	struct fwnode_handle *fwh;
+	struct device_node *ep;
+	int ret;
+	int i = 0;
+	bool valid_ep_found = false;
+
+	dev_dbg(hailo15_pixel_mux->dev, "Parsing DT\n");
+	v4l2_async_notifier_init(&hailo15_pixel_mux->subdev_notifier);
+	v4l2_async_notifier_init(&hailo15_pixel_mux->video_notifier);
+
+	hailo15_pixel_mux->video_notifier.ops = &hailo15_pixel_mux_video_notifier_ops;
+	v4l2_async_notifier_register(hailo15_pixel_mux->subdev.v4l2_dev, &hailo15_pixel_mux->video_notifier);
+
+	hailo15_pixel_mux->subdev_notifier.parent = &hailo15_pixel_mux->video_notifier;
+
+	/* Iterate over sink ports (0-1) */
+	/* NOTE: pad number matches port number */
+	for (i = 0; i < PIXEL_MUX_SINK_PAD_MAX; ++i) {
+		ep = of_graph_get_endpoint_by_regs(hailo15_pixel_mux->dev->of_node, i, -1);
+		if (!ep) {
+			dev_dbg(hailo15_pixel_mux->dev, "No endpoint found for port #%d\n", i);
+			continue;
+		}
+
+		fwh = of_fwnode_handle(ep);
+
+		ret = fwnode_device_is_available(fwnode_graph_get_remote_port_parent(fwh));
+		if (!ret) {
+			dev_dbg(hailo15_pixel_mux->dev, "The device of port #%d is disabled in the device tree (fwnode_device_is_available returned %d)", i, ret);
+			continue;
+		}
+
+		asd = v4l2_async_notifier_add_fwnode_remote_subdev(
+			&hailo15_pixel_mux->subdev_notifier, fwh, struct indexed_v4l2_async_subdev);
+		of_node_put(ep);
+		if (IS_ERR(asd)) {
+			dev_err(hailo15_pixel_mux->dev, "Failed to add port #%d remote subdev notifier\n", i);
+			return PTR_ERR(asd);
+		}
+
+		asd->index = i;
+
+		valid_ep_found = true;
+	}
+
+	if (!valid_ep_found) {
+		dev_err(hailo15_pixel_mux->dev, "No valid sink endpoints in DT\n");
+		return -ENODEV;
+	}
+
+	hailo15_pixel_mux->subdev_notifier.ops = &hailo15_pixel_mux_subdev_notifier_ops;
+	hailo15_pixel_mux->subdev_notifier.sd = &hailo15_pixel_mux->subdev;
+	ret = v4l2_async_subdev_notifier_register(&hailo15_pixel_mux->subdev,
+						  &hailo15_pixel_mux->subdev_notifier);
+	if (ret) {
+		dev_err(hailo15_pixel_mux->dev, "Failed to register subdev notifier\n");
+		v4l2_async_notifier_cleanup(&hailo15_pixel_mux->subdev_notifier);
+	}
+
+	return ret;
+}
+
+static int hailo15_pixel_mux_registered(struct v4l2_subdev* sd)
+{
+	struct pixel_mux_priv *hailo15_pixel_mux_priv =
+		v4l2_subdev_to_pixel_mux(sd);
+	return hailo15_pixel_mux_parse_dt(hailo15_pixel_mux_priv);
+}
+
+static struct v4l2_subdev_internal_ops hailo15_pixel_mux_internal_ops = {
+	.registered = hailo15_pixel_mux_registered,
+};
+
+static struct v4l2_subdev_core_ops pixel_mux_core_ops = {
+	.ioctl = pixel_mux_priv_ioctl,
 };
 
 static const struct media_entity_operations pixel_mux_sd_media_ops = {
@@ -541,51 +737,7 @@ static struct v4l2_subdev_ops pixel_mux_subdev_ops = {
 	.pad = &pixel_mux_pad_ops,
 };
 
-static int pixel_mux_get_ep(struct pixel_mux_priv *pixel_mux)
-{
-	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
-	struct v4l2_async_subdev *asd;
-	struct fwnode_handle *fwh;
-	struct device_node *ep;
-	int ret;
 
-	dev_info(pixel_mux->dev, "%s enter\n", __func__);
-	ep = of_graph_get_endpoint_by_regs(pixel_mux->dev->of_node, 0, 0);
-	if (!ep) {
-		dev_err(pixel_mux->dev, "no endpoint found\n");
-		return -EINVAL;
-	}
-
-	fwh = of_fwnode_handle(ep);
-	ret = v4l2_fwnode_endpoint_parse(fwh, &v4l2_ep);
-	if (ret) {
-		dev_err(pixel_mux->dev, "Could not parse v4l2 endpoint\n");
-		of_node_put(ep);
-		return ret;
-	}
-
-	v4l2_async_notifier_init(&pixel_mux->notifier);
-
-	asd = v4l2_async_notifier_add_fwnode_remote_subdev(
-		&pixel_mux->notifier, fwh, struct v4l2_async_subdev);
-	of_node_put(ep);
-	if (IS_ERR(asd)) {
-		dev_err(pixel_mux->dev, "%s error asd\n", __func__);
-		return PTR_ERR(asd);
-	}
-
-	pixel_mux->notifier.ops = &pixel_mux_notifier_ops;
-
-	ret = v4l2_async_subdev_notifier_register(&pixel_mux->subdev,
-						  &pixel_mux->notifier);
-	if (ret) {
-		dev_err(pixel_mux->dev,
-			"%s failed to register subdev notifier\n", __func__);
-		v4l2_async_notifier_cleanup(&pixel_mux->notifier);
-	}
-
-	return ret;
-}
 
 /* Initialize the dma context.                                                  */
 /* The dma context holds the required information for proper buffer management. */
@@ -605,53 +757,34 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	int ret;
 	struct resource *res;
 	unsigned int i;
-	struct device_node *np = pdev->dev.of_node;
-	const struct pm_config *pm_config = NULL;
 
 	dev_info(&pdev->dev, "probe started");
 
-	pixel_mux = kzalloc(sizeof(*pixel_mux), GFP_KERNEL);
+	pixel_mux = devm_kzalloc(&pdev->dev, sizeof(*pixel_mux), GFP_KERNEL);
 	if (!pixel_mux)
 		return -ENOMEM;
 
-	if (np) {
-		const struct of_device_id *match;
-
-		match = of_match_node(hailo_pixel_mux_of_table, np);
-		if (match && match->data) {
-			pm_config = match->data;
-		}
+	pixel_mux->pm_cfg  = (const struct pm_config *)of_device_get_match_data(&pdev->dev);
+	if (!pixel_mux->pm_cfg) {
+		dev_err(&pdev->dev, "No pm_config match found\n");
+		return -EINVAL;
 	}
-
-	if (!pm_config) {
-		dev_err(&pdev->dev, "pm_config is NULL\n");
-		goto error_free_dev;
-	}
-
-	pixel_mux->pm_cfg = pm_config;
 
 	platform_set_drvdata(pdev, pixel_mux);
 
 	pixel_mux->dev = &pdev->dev;
-	ret = pixel_mux_get_ep(pixel_mux);
-	if (ret) {
-		dev_err(&pdev->dev, "%s getting endpoint failed, ret=%d\n",
-			__func__, ret);
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
 		pr_err("cant find resources\n");
 		return -EINVAL;
 	}
-	pixel_mux->base = devm_ioremap_resource(&pdev->dev, res);
+	dev_dbg(&pdev->dev, "using %pR\n", res);	
 
-	pixel_mux->csi_rx0_xtal_clk =
-		devm_clk_get(&pdev->dev, "csi_rx0_xtal_clk");
-	if (IS_ERR(pixel_mux->csi_rx0_xtal_clk)) {
-		dev_err(&pdev->dev,
-			"Couldn't get pixel_mux->csi_rx0_xtal_clk clock\n");
-		return PTR_ERR(pixel_mux->csi_rx0_xtal_clk);
+	pixel_mux->base = devm_ioremap_resource(&pdev->dev, res);
+    if (IS_ERR(pixel_mux->base)) {
+        dev_err(&pdev->dev, "Failed to remap IO memory %pR, err = (%pe)\n", res, pixel_mux->base);
+        return PTR_ERR(pixel_mux->base);
 	}
 
 	pixel_mux->vision_clk = devm_clk_get(&pdev->dev, "vision_clk");
@@ -676,14 +809,15 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	// v4l2_set_subdevdata(&pixel_mux->subdev, &pdev->dev);
 	snprintf(subdev->name, V4L2_SUBDEV_NAME_SIZE, "%s.%s", KBUILD_MODNAME,
 		 dev_name(&pdev->dev));
+	subdev->internal_ops = &hailo15_pixel_mux_internal_ops;
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	subdev->entity.function = MEDIA_ENT_F_VID_MUX;
-	pixel_mux->pads[PIXEL_MUX_PAD_SOURCE_0].flags = MEDIA_PAD_FL_SOURCE;
-	pixel_mux->pads[PIXEL_MUX_PAD_SOURCE_1].flags = MEDIA_PAD_FL_SOURCE;
-	pixel_mux->pads[PIXEL_MUX_PAD_SINK_0].flags = MEDIA_PAD_FL_SINK;
-	pixel_mux->pads[PIXEL_MUX_PAD_SINK_1].flags = MEDIA_PAD_FL_SINK;
+	pixel_mux->pads[PIXEL_MUX_SOURCE_PAD_0].flags = MEDIA_PAD_FL_SOURCE;
+	pixel_mux->pads[PIXEL_MUX_SOURCE_PAD_1].flags = MEDIA_PAD_FL_SOURCE;
+	pixel_mux->pads[PIXEL_MUX_SINK_PAD_0].flags = MEDIA_PAD_FL_SINK;
+	pixel_mux->pads[PIXEL_MUX_SINK_PAD_1].flags = MEDIA_PAD_FL_SINK;
 
-	for (i = PIXEL_MUX_PAD_SOURCE_0; i < PIXEL_MUX_PAD_MAX; i++)
+	for (i = PIXEL_MUX_SOURCE_PAD_0; i < PIXEL_MUX_PAD_MAX; i++)
 		pixel_mux->pad_fmts[i] = fmt_default;
 
 	/*create media pads*/
@@ -715,6 +849,7 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 
+	subdev->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	ret = v4l2_async_register_subdev(subdev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "%s Async register failed, ret=%d\n",
@@ -724,7 +859,13 @@ static int pixel_mux_probe(struct platform_device *pdev)
 
 	mutex_init(&pixel_mux->lock);
 
-	dev_info(&pdev->dev, "%s hailo pixel mux probed succesfully\n",
+	ret = hailo15_media_create_connections(&pdev->dev, subdev);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "%s Failed to create connections\n", __func__);
+		goto probe_err_entity_cleanup;
+	}
+
+	dev_info(&pdev->dev, "%s hailo pixel mux probed successfully\n",
 		 __func__);
 	return 0;
 
@@ -732,8 +873,6 @@ probe_err_entity_cleanup:
 err_init_dma_ctx:
 err_alloc_dma_ctx:
 	media_entity_cleanup(&subdev->entity);
-error_free_dev:
-	kfree(pixel_mux);
 	return ret;
 }
 
@@ -757,9 +896,8 @@ static int pixel_mux_remove(struct platform_device *pdev)
 static struct platform_driver pixel_mux_driver = {
 	.probe	= pixel_mux_probe,
 	.remove	= pixel_mux_remove,
-
 	.driver	= {
-		.name		= "hailo-pixel-mux",
+		.name = "hailo-pixel-mux",
 		.of_match_table	= hailo_pixel_mux_of_table,
 	},
 };

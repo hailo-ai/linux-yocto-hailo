@@ -15,7 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/align.h>
 #include <linux/io.h>
-#include <linux/reset.h>
 #include <linux/mailbox_client.h>
 #include <linux/kernel.h>
 #include <linux/irqreturn.h>
@@ -272,12 +271,6 @@ int xrp_enable_dsp(struct xvp *xvp)
 
     pm_runtime_get_sync(xvp->dev);
 
-    ret = reset_control_deassert(xvp->dsp_reset);
-    if (ret) {
-        dev_err(xvp->dev, "failed to deassert reset (%d)\n", ret);
-        goto exit;
-    }
-
     ret = dsp_config_poweron(xvp);
     if (ret) {
         goto exit;
@@ -310,10 +303,8 @@ exit:
     return ret;
 }
 
-int xrp_disable_dsp(struct xvp *xvp)
+void xrp_disable_dsp(struct xvp *xvp)
 {
-    int ret;
-
     dev_dbg(xvp->dev, "Disable DSP\n");
 
     xrp_destroy_mbox(xvp);
@@ -322,16 +313,7 @@ int xrp_disable_dsp(struct xvp *xvp)
 
     dsp_config_poweroff(xvp);
 
-    ret = reset_control_assert(xvp->dsp_reset);
-    if (ret) {
-        xvp->state = DSP_STATE_FATAL_ERROR;
-        dev_err(xvp->dev, "Failed to assert reset (%d)\n", ret);
-        return ret;
-    }
-
     pm_runtime_put_sync(xvp->dev);
-
-    return 0;
 }
 
 void xrp_halt_dsp(struct xvp *xvp)
@@ -393,13 +375,6 @@ long xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp)
     xvp->dsp_config = devm_ioremap_resource(&pdev->dev, mem);
     if (IS_ERR(xvp->dsp_config)) {
         ret = dev_err_probe(&pdev->dev, PTR_ERR(xvp->dsp_config), "Error in mapping dsp_config\n");
-        goto err;
-    }
-
-    dev_dbg(&pdev->dev, "Requesting reset object\n");
-    xvp->dsp_reset = reset_control_get_exclusive(&pdev->dev, "dsp-reset");
-    if (IS_ERR(xvp->dsp_reset)) {
-        ret = dev_err_probe(&pdev->dev, PTR_ERR(xvp->dsp_reset), "Error in getting reset object\n");
         goto err;
     }
 

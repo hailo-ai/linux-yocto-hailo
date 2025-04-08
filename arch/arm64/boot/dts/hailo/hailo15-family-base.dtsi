@@ -7,6 +7,7 @@
 #include <dt-bindings/soc/hailo15_scu_fw_version.h>
 #include <dt-bindings/mailbox/pl320-mailbox.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/soc/hailo15_video_path.h>
 #include <dt-bindings/soc/hailo_interrupts.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/phy/phy.h>
@@ -430,14 +431,12 @@
             cap-mmc-hw-reset;
             disable-wp;
             memory-region = <&sdio0_reserved>;
-            resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_0_CD_FROM_PINMUX>;
             reset-names = "sdio-cd-input";
             bus-width = <4>;
         };
 
-        nocpmu: nocpmu@dc000 {
+        nocpmu: nocpmu {
             compatible = "hailo,noc-pmu";
-            reg = <0 0x000dc000 0 0x2000>;
             reg-names = "noc_pmu_samples";
         };
     };
@@ -547,9 +546,8 @@
         };
     };
 
-    scu_log {
+    scu_log: scu_log {
         compatible = "hailo,scu-log";
-        reg = <0 0xDF000 0 0x1000>;
     };
 
     integrated_nnc: integrated_nnc {
@@ -643,29 +641,6 @@
         reg = <0x7c05C1E0 0x20>;
     };
 
-    };
-
-    xrp: xrp@0 {
-        status = "disabled";
-        // DSP has only 32 bit address space. address-cells must be "1"
-        #address-cells = <1>;
-        #size-cells = <1>;
-        compatible = "hailo,hailo15-dsp";
-        memory-region = <&xrp_reserved>, <&cma>;
-        memory-region-names = "dsp-fw", "cma";
-        mboxes = <&pl320_mailbox 5 5 4 PL320_MBOX_TXDONE_BY_IRQ>;
-        firmware-name = "dsp-fw.elf";
-        // FW code reserved memory is mapped to 0x80000000 in dsp address space
-        ranges = <
-            0          0 0          0x80000000
-            0x80000000 0 0x80000000 0x8000000>;
-        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_DSP>;
-        reset-names = "dsp-reset";
-        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_DSP_CONFIG>,
-                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_VIRTUAL_DSP>;
-        clock-names = "dsp-config-clock", "dsp-clock";
-        dsp@0 {
-        };
     };
 
     regulator_3p3v: regulator-3p3v {

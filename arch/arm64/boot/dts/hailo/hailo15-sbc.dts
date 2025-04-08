@@ -92,10 +92,6 @@
     status = "okay";
 };
 
-&csi2rx1 {
-    status = "ok";
-};
-
 &hailo_vid_cap {
     status = "ok";
 };

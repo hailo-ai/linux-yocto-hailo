@@ -4,7 +4,7 @@
  */
 
 /dts-v1/;
-#include "hailo10-m2-base.dtsi"
+#include "hailo10-m2.dts"
 
 &sdio1 {
     status = "okay";

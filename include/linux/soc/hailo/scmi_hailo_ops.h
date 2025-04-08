@@ -7,6 +7,7 @@
 #include <linux/kconfig.h>
 
 #include <linux/scmi_protocol.h>
+#include <linux/soc/hailo/scmi_hailo_protocol.h>
 
 struct scmi_hailo_ops {
     int (*register_notifier)(u8 evt_id, struct notifier_block *nb);

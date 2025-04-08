@@ -56,6 +56,7 @@
 
 #include "hailo15-isp.h"
 
+
 #define HAILO15_ISP_CID_HDR_ENABLE (HAILO15_ISP_CID_HDR_BASE + 0x0000)
 #define HAILO15_ISP_CID_HDR_RATIO (HAILO15_ISP_CID_HDR_BASE + 0x0001)
 #define HAILO15_ISP_CID_HDR_EXT_BIT (HAILO15_ISP_CID_HDR_BASE + 0x0002)
@@ -65,6 +66,5 @@
 int hailo15_isp_hdr_ctrl_count(void);
 int hailo15_isp_hdr_ctrl_create(struct hailo15_isp_device *isp_dev);
 
-extern int hdr_timestamp_mode;
 
 #endif

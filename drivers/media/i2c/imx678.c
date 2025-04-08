@@ -890,7 +890,7 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	/* 0x3400: Using default value (GAIN_PGC_FIDMD) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x355A, 0x64 },
 	{ 0x3A02, 0x7A },
@@ -1330,7 +1330,7 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	/* 0x3400: Using default value (GAIN_PGC_FIDMD) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x355A, 0x64 },
 	{ 0x3A02, 0x7A },
@@ -1771,7 +1771,7 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	/* 0x3400: Using default value (GAIN_PGC_FIDMD) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x355A, 0x64 },
 	{ 0x3A02, 0x7A },
@@ -2175,6 +2175,7 @@ static const struct imx678_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 	{ 0x3064, 0xAA },
 	{ 0x3065, 0x00 },
 	{ 0x30A6, 0x00 },
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x355A, 0x64 },
 	{ 0x3A02, 0x7A },
@@ -2540,7 +2541,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	{
 	.width = 3840,
 	.height = 2160,
-	.hblank = 560,
+	.hblank = 550,
 	.vblank = 2340,
 	.vblank_min = 90,
 	.vblank_max = IMX678_MAX_VBLANK_4K,
@@ -2562,7 +2563,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	{
 	.width = 3840,
 	.height = 2160,
-	.hblank = 560,
+	.hblank = 550,
 	.vblank = 90,
 	.vblank_min = 90,
 	.vblank_max = IMX678_MAX_VBLANK_4K,

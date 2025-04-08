@@ -108,7 +108,6 @@ struct xvp {
 
     const struct xrp_hw_ops *hw_ops;
 
-    struct reset_control *dsp_reset;
     struct clk *dsp_config_clock;
     struct clk *dsp_clock;
     struct mbox_client mbox_client;

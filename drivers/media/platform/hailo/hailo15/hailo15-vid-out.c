@@ -135,7 +135,7 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 	if (format == NULL) {
 		return -EINVAL;
 	}
-	
+
 	if (pix_mp->width % format->width_modulus){
 		return -EINVAL;
 	}
@@ -180,12 +180,18 @@ static int
 hailo15_video_out_node_subdev_set_stream(struct hailo15_video_out_node *vid_node,
 				     int enable)
 {
+	int ret;
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 
 	// set the grp_id of subdev to indicate from which pad the call came
 	vid_node->direct_sd->grp_id = vid_node->path;
-	return hailo15_subdev_call(vid_node, video, s_stream, enable);
+	ret = hailo15_subdev_call(vid_node, video, s_stream, enable);
+	if (ret) {
+		pr_warn("%s - s_stream %s to subdev %s failed, err = (%pe)\n",
+			__func__, enable ? "on" : "off", vid_node->direct_sd->name, ERR_PTR(ret));
+	}
+	return ret;
 }
 
 static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
@@ -258,8 +264,12 @@ int hailo15_reqbufs(struct file *file, void *priv,
 	req.pad = pad->index;
 	req.num_buffers = p->count;
 
-	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS,
-				    &req);
+	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS, &req);
+	if (ret) {
+		pr_err("%s - reqbufs from subdev %s failed, err = (%pe)\n",
+			__func__, vid_node->direct_sd->name, ERR_PTR(ret));
+	}
+
 	return ret;
 }
 
@@ -287,7 +297,7 @@ static int hailo15_video_out_node_stream_cancel(struct hailo15_video_out_node *v
 	if (!vid_node->streaming)
 		return -EINVAL;
 
-	vid_node->streaming = 0;
+	vid_node->streaming = STREAM_OFF;
 	ret = hailo15_video_out_node_subdev_set_stream(vid_node, STREAM_OFF);
 	if (ret) {
 		dev_err(vid_node->dev,
@@ -491,9 +501,9 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	int ret;
 
 	vid_node = NULL;
-	if (grp_id < 0 || grp_id >= VID_GRP_MAX)
+	if (grp_id < 0 || grp_id >= HAILO15_VID_GRP_MAX)
 		return -EINVAL;
-	
+
 	ret = hailo15_video_node_get_private_data(ctx, grp_id,
 						  (void **)&vid_node);
 	if (ret)
@@ -558,7 +568,7 @@ int hailo15_video_out_node_start_streaming(struct vb2_queue *q, unsigned int cou
 			goto out;
 		}
 
-		vid_node->streaming = 1;
+		vid_node->streaming = STREAM_ON;
 	}
 	goto out;
 out:
@@ -715,7 +725,7 @@ hailo15_video_out_node_video_device_init(struct hailo15_video_out_node *vid_node
 
 	mutex_init(&vid_node->ioctl_mutex);
 
-	sprintf(vid_node->video_dev->name, "hailo-vid-out-%d", vid_node->id);
+	sprintf(vid_node->video_dev->name, "hailo-vid-out-%s", hailo15_grp_id_to_str(vid_node->path));
 	/*initialize video device*/
 	vid_node->video_dev->release =
 		video_device_release_empty; /* We will release the video device on our own */
@@ -915,7 +925,7 @@ static int hailo15_video_init_vid_nodes(struct hailo15_vid_out_device *vid_dev)
 
 		// read path property so s_stream knows from where it was called
 		ret = fwnode_property_read_u32(ep, "path", &path);
-		if (ret || path >= VID_GRP_MAX) {
+		if (ret || path >= HAILO15_VID_GRP_MAX) {
 			pr_err("failed to read path property from video node %d, skipping...\n",
 			       fwnode_ep.port);
 			fwnode_handle_put(ep);
@@ -966,12 +976,12 @@ static int hailo15_video_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct hailo15_vid_out_device *vid_dev;
-	
+
 	pr_info("video out probe start!\n");
-	ret = hailo15_media_get_endpoints_status(&pdev->dev);
+	ret = hailo15_media_get_sink_endpoints_status(&pdev->dev);
 
 	if(ret){
-		pr_info("endpoints not ready!\n");
+		pr_info("out endpoints not ready!\n");
 		return ret;
 	}
 

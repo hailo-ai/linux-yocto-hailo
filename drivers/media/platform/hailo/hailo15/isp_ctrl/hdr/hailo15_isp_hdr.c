@@ -71,6 +71,7 @@ static int hailo15_isp_hdr_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
+
 	default:
 		dev_err(isp_dev->dev, "unknow v4l2 ctrl id %d\n", ctrl->id);
 		return -EACCES;
@@ -95,6 +96,7 @@ static int hailo15_isp_hdr_g_ctrl(struct v4l2_ctrl *ctrl)
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
+
 	default:
 		dev_err(isp_dev->dev, "unknow v4l2 ctrl id %d\n", ctrl->id);
 		return -EACCES;

@@ -22,7 +22,7 @@ struct hailo15_media_connection {
 };
 
 int hailo15_media_create_links(struct device* dev, struct media_entity* entity, int id);
-int hailo15_media_get_endpoints_status(struct device* dev);
+int hailo15_media_get_sink_endpoints_status(struct device* dev);
 int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd);
 int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id);
 void hailo15_media_init_media_device(struct device* dev);

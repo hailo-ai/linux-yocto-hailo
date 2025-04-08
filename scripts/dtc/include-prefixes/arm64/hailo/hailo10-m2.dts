@@ -5,3 +5,11 @@
 
 /dts-v1/;
 #include "hailo10-m2-base.dtsi"
+#include "hailo10-cma-config.dtsi"
+
+/ {
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000002 0x00000000>;
+    };
+};

@@ -1,0 +1,21 @@
+    xrp: xrp@0 {
+        status = "disabled";
+        // DSP has only 32 bit address space. address-cells must be "1"
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "hailo,hailo15-dsp";
+        memory-region = <&xrp_reserved>, <&cma>;
+        memory-region-names = "dsp-fw", "cma";
+        mboxes = <&pl320_mailbox 5 5 4 PL320_MBOX_TXDONE_BY_IRQ>;
+        firmware-name = "dsp-fw.elf";
+        // FW code reserved memory is mapped to 0x80000000 in dsp address space
+        ranges = <
+            0          0 0          0x80000000
+            0x80000000 0 0x80000000 0x8000000>;
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_DSP_CONFIG>,
+                 <&scmi_clk HAILO15_SCMI_CLOCK_IDX_VIRTUAL_DSP>;
+        clock-names = "dsp-config-clock", "dsp-clock";
+        power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_DSP>;
+        dsp@0 {
+        };
+    };

@@ -7,7 +7,7 @@
 #define HAILO15_SCU_FW_VERSION_H
 
 #define SCU_FW_MAJOR 0
-#define SCU_FW_MINOR 46
+#define SCU_FW_MINOR 47
 #define SCU_FW_REVISION 2
 #define SCU_FW_SCMI_VERSION (((SCU_FW_MAJOR) << 24) | ((SCU_FW_MINOR) << 16) | (SCU_FW_REVISION))
 

@@ -36,6 +36,12 @@
 #define CSI2RX_STATIC_CFG_LANES_MASK GENMASK(11, 8)
 #define CSI2RX_STATIC_CFG_EXTENDED_VC_EN BIT(4)
 
+#define CSI2RX_ERROR_IRQS_REG 0x028
+#define CSI2RX_ERROR_IRQS_MASK_CFG_REG 0x02c
+#define CSI2RX_ERROR_IRQS_MASK 0xFFFFFFFF
+
+#define CSI2RX_ERROR_IRQ_OVERFLOW_ERROR_BIT(n) BIT((n) + 16)
+
 #define CSI2RX_DPHY_LANE_CONTROL_REG_OFFSET 0x40
 #define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_RESET 0x1f
 #define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_ENABLE 0x1f01f
@@ -55,13 +61,21 @@
 #define CSI2RX_STREAM_DATA_CFG_REG(n) (CSI2RX_STREAM_BASE(n) + 0x008)
 #define CSI2RX_STREAM_DATA_CFG_EN_VC_SELECT BIT(31)
 #define CSI2RX_STREAM_DATA_CFG_VC_SELECT(n) BIT((n) + 16)
-#define CSI2RX_STREAM_DATA_CFG_DT0_RAW10 0x2b
-#define CSI2RX_STREAM_DATA_CFG_DT0_RAW12 0x2c
+#define CSI2RX_STREAM_DATA_CFG_DT0_RAW10 	0x2b
+#define CSI2RX_STREAM_DATA_CFG_DT0_RAW12 	0x2c
+#define CSI2RX_STREAM_DATA_CFG_DT0_YUV422_8b 	0x1e
 #define CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE BIT(7)
 
 #define CSI2RX_STREAM_CFG_REG(n) (CSI2RX_STREAM_BASE(n) + 0x00c)
-#define CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF (1 << 8)
-#define CSI2RX_STREAM_CFG_FIFO_FILL_LEVEL (2880 << 16)
+
+enum csi2rx_fifo_mode {
+    CSI2RX_FIFO_MODE_FULL_BUF = 0,
+    CSI2RX_FIFO_MODE_LARGE_BUF = 1,
+    CSI2RX_FIFO_MODE_ELASTIC_BUF = 2,
+    CSI2RX_FIFO_MODE_SHORT_BUF = 3,
+};
+
+#define CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF (CSI2RX_FIFO_MODE_LARGE_BUF << 8)
 #define CSI2RX_STREAM_CFG_2_PPC (1<<4)
 
 #define CSI2RX_STREAM_MONITOR_CTRL_REG(n) (CSI2RX_STREAM_BASE(n) + 0x010)
@@ -114,6 +128,7 @@ const struct v4l2_ctrl_config csi2rx_mode_sel_ctrl_cfg = {
 struct csi2rx_priv {
 	struct device *dev;
 	unsigned int count;
+	int id;
 
 	/*
 	 * Used to prevent race conditions between multiple,
@@ -148,11 +163,16 @@ struct csi2rx_priv {
 	u64 link_freq[CSI2RX_LINK_FREQ_MAX];
 
 	enum csi2rx_mode cur_mode;
+    int irq;
 };
 
 static const struct csi2rx_fmt csi2rx_formats[] = {
 	{
 		.code	= MEDIA_BUS_FMT_SRGGB12_1X12,
+		.bpp	= 2,
+	},
+	{
+		.code	= MEDIA_BUS_FMT_YVYU8_2X8,
 		.bpp	= 2,
 	},
 	{
@@ -168,6 +188,32 @@ static const struct v4l2_mbus_framefmt fmt_default = {
 	.field		= V4L2_FIELD_NONE,
 	.colorspace	= V4L2_COLORSPACE_DEFAULT,
 };
+
+static irqreturn_t csi2rx_error_irq_handler(int irq, void *data)
+{
+    struct csi2rx_priv *csi2rx = data;
+    u32 errors;
+    int i;
+
+    errors = readl(csi2rx->base + CSI2RX_ERROR_IRQS_REG);
+
+    /* Ignore if there are no CSI errors */
+    if (!errors)
+        return IRQ_NONE;
+
+    /* Clear the error IRQs */
+    writel(errors, csi2rx->base + CSI2RX_ERROR_IRQS_REG);
+
+    dev_err(csi2rx->dev, "CSI2RX error IRQ #%d. error_irqs: 0x%08X\n", irq, errors);
+
+    for (i = 0; i < csi2rx->max_streams; i++) {
+        if (errors & CSI2RX_ERROR_IRQ_OVERFLOW_ERROR_BIT(i)) {
+            dev_err(csi2rx->dev, "CSI Stream %d fifo overflow error!\n", i);
+        }
+    }
+
+    return IRQ_HANDLED;
+}
 
 /**
  * csi2rx_set_ctrl() - Set subdevice control
@@ -332,13 +378,13 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 
 		writel(CSI2RX_STREAM_CTRL_SOFT_RESET,
 		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
-		
+
 		csi2rx_stream_cfg_flags = CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF;
 		csi2rx_stream_cfg_flags |= fmt->bpp == 2 ? CSI2RX_STREAM_CFG_2_PPC : 0;
 
 		if (csi2rx->cur_mode == CSI2RX_MODE_HDR && mfmt->code == MEDIA_BUS_FMT_SRGGB12_1X32) {
 			// TODO MSW-4940: support rggb10: generalize csi2rx_stream_cfg_fifo_fill_level calculation
-			csi2rx_stream_cfg_fifo_fill_level |= (mfmt->width * 3 / 2) << 16;
+			csi2rx_stream_cfg_fifo_fill_level = (mfmt->width * 3 / 2) << 16;
 			pr_debug("%s - mode hdr set fill level to 0x%x\n", 
 			__func__, csi2rx_stream_cfg_fifo_fill_level);
 			csi2rx_stream_cfg_flags |= csi2rx_stream_cfg_fifo_fill_level;
@@ -346,9 +392,19 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 		writel(csi2rx_stream_cfg_flags,
 				csi2rx->base + CSI2RX_STREAM_CFG_REG(i));
 
-		writel(CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE |
-			       CSI2RX_STREAM_DATA_CFG_DT0_RAW12,
+		switch (mfmt->code) {
+		case MEDIA_BUS_FMT_YVYU8_2X8:
+			reg = CSI2RX_STREAM_DATA_CFG_DT0_YUV422_8b;
+			break;
+		default:
+			reg = CSI2RX_STREAM_DATA_CFG_DT0_RAW12;
+			break;
+		}
+		writel(CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE | reg,
 		       csi2rx->base + CSI2RX_STREAM_DATA_CFG_REG(i));
+
+		writel(CSI2RX_ERROR_IRQS_MASK, csi2rx->base + CSI2RX_ERROR_IRQS_MASK_CFG_REG);
+
 		writel(CSI2RX_STREAM_CTRL_START,
 		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
 	}
@@ -566,6 +622,11 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 	u32 dev_cfg;
 	int ret;
 
+	if (device_property_read_u32(&pdev->dev, "id", &csi2rx->id)) {
+		dev_notice(&pdev->dev, "csi id property not found, setting to 0\n");
+		csi2rx->id = 0;
+	}
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	csi2rx->base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(csi2rx->base))
@@ -770,13 +831,35 @@ static int csi2rx_init_controls(struct csi2rx_priv *csi2rx)
 	return 0;
 }
 
+static int csi2rx_init_irq_handler(struct csi2rx_priv *csi2rx,
+				struct platform_device *pdev)
+{
+    int ret;
+
+    ret = platform_get_irq(pdev, 0);
+    if (ret < 0) {
+        dev_err(csi2rx->dev, "Failed to get error IRQ. Error %d\n", ret);
+        return ret;
+    }
+    csi2rx->irq = ret;
+
+    ret = devm_request_irq(&pdev->dev, csi2rx->irq, csi2rx_error_irq_handler,
+                           IRQF_SHARED, "csi2rx-error", csi2rx);
+     if (ret) {
+        dev_err(csi2rx->dev, "Failed to request error IRQ. Error %d\n", ret);
+        return ret;
+    }
+
+    return 0;
+}
+
 static int csi2rx_probe(struct platform_device *pdev)
 {
 	struct csi2rx_priv *csi2rx;
 	unsigned int i;
 	int ret;
 
-    dev_info(&pdev->dev, "probe started");
+	dev_info(&pdev->dev, "probe started");
 
 	csi2rx = kzalloc(sizeof(*csi2rx), GFP_KERNEL);
 	if (!csi2rx)
@@ -793,12 +876,16 @@ static int csi2rx_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_free_priv;
 
+	ret = csi2rx_init_irq_handler(csi2rx, pdev);
+	if (ret)
+		goto err_cleanup;
+
 	csi2rx->subdev.owner = THIS_MODULE;
 	csi2rx->subdev.dev = &pdev->dev;
 	v4l2_subdev_init(&csi2rx->subdev, &csi2rx_subdev_ops);
 	v4l2_set_subdevdata(&csi2rx->subdev, &pdev->dev);
-	snprintf(csi2rx->subdev.name, V4L2_SUBDEV_NAME_SIZE, "%s.%s",
-		 KBUILD_MODNAME, dev_name(&pdev->dev));
+	snprintf(csi2rx->subdev.name, V4L2_SUBDEV_NAME_SIZE, "%s_%d.%s",
+		 KBUILD_MODNAME, csi2rx->id, dev_name(&pdev->dev));
 
 	/* Create our media pads */
 	csi2rx->subdev.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
@@ -828,7 +915,7 @@ static int csi2rx_probe(struct platform_device *pdev)
 
 	dev_info(
 		&pdev->dev,
-		"Probed CSI2RX with %u/%u lanes, %u streams, %s D-PHY\n",
+		"Probed CSI2RX successfully with %u/%u lanes, %u streams, %s D-PHY\n",
 		csi2rx->num_lanes, csi2rx->max_lanes, csi2rx->max_streams,
 		csi2rx->has_internal_dphy ? "internal" : "external");
 

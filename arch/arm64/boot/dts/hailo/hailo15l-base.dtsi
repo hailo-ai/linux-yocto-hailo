@@ -18,6 +18,7 @@
 
     #include "hailo-ethernet.dtsi"
     #include "hailo15-vision.dtsi"
+    #include "hailo15-dsp.dtsi"
 
     pl320_mailbox: mailbox {
         reg = <0 0x78003000 0 0x1000>;
@@ -195,12 +196,14 @@
         reg = <0x7c050000 0x800>, <0x7c052000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
         interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP0_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
     };
 
     vdma1: vdma@1 {
         reg = <0x7c054000 0x800>, <0x7c056000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
         interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP1_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
     };
 };
 
@@ -219,6 +222,7 @@
     compatible = "hailo,h15l-dwcmshc-sdhci-0";
     clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_M_HCLK>,
         <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CLK_DIV_BYPASS>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CARD_CLK>;
+    resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_0_CD_FROM_PINMUX>;
     clock-names = "core", "bus", "clk_div_bypass","card_clk";
 };
 
@@ -240,4 +244,12 @@
 
 &edac {
     reg = <0x0 0x7c060000 0x0 0x00002000>;
+};
+
+&nocpmu {
+    reg = <0 0x000dc000 0 0x2000>;
+};
+
+&scu_log {
+    reg = <0 0x000df000 0 0x1000>;
 };

@@ -30,6 +30,11 @@
 #ifndef _XRP_KERNEL_DEFS_H
 #define _XRP_KERNEL_DEFS_H
 
+#ifndef __KERNEL__
+#include <stdint.h>
+#else
+#include <linux/types.h>
+#endif
 
 /************************************************************************************
 ** This header describe the interface between XRP Kernel Driver and XRP user space.
@@ -46,9 +51,9 @@
 #define XRP_IOCTL_STATS     _IO(XRP_IOCTL_MAGIC, 6)
 
 struct xrp_ioctl_alloc {
-    __u32 size;
-    __u32 align;
-    __u64 addr;
+    uint32_t size;
+    uint32_t align;
+    uint64_t addr;
 };
 
 enum ioctl_buffer_flags {
@@ -63,12 +68,12 @@ enum ioctl_memory_type {
 };
 
 struct xrp_ioctl_buffer {
-    __u32 flags;
-    __u32 size;
-    __u32 memory_type;
+    uint32_t flags;
+    uint32_t size;
+    uint32_t memory_type;
     union{
-        __u64 addr;
-        __s32 fd;
+        uint64_t addr;
+        int32_t fd;
     };
 };
 
@@ -83,26 +88,26 @@ enum {
 };
 
 typedef struct {
-    __u64 kernel_received_ioctl;
-    __u64 waiting_on_mutex;
-    __u64 mutex_acquired;
-    __u64 irq_sent;
-    __u64 fw_finished;
-    __u64 mutex_released;
+    uint64_t kernel_received_ioctl;
+    uint64_t waiting_on_mutex;
+    uint64_t mutex_acquired;
+    uint64_t irq_sent;
+    uint64_t fw_finished;
+    uint64_t mutex_released;
 } kernel_perf_stats_t;
 
 struct xrp_ioctl_queue {
-    __u32 flags;
-    __u32 in_data_size;
-    __u32 out_data_size;
-    __u32 buffer_size;
-    __u64 in_data_addr;
-    __u64 out_data_addr;
-    __u64 buffer_addr;
-    __u64 nsid_addr;
+    uint32_t flags;
+    uint32_t in_data_size;
+    uint32_t out_data_size;
+    uint32_t buffer_size;
+    uint64_t in_data_addr;
+    uint64_t out_data_addr;
+    uint64_t buffer_addr;
+    uint64_t nsid_addr;
 
-    __u8 perf_stats_enabled;
-    __u64 kernel_perf_stats_addr;
+    uint8_t perf_stats_enabled;
+    uint64_t kernel_perf_stats_addr;
 };
 
 enum ioctl_sync_access_time {
@@ -111,19 +116,19 @@ enum ioctl_sync_access_time {
 };
 
 struct xrp_ioctl_sync_buffer {
-    __u32 direction;
-    __u32 access_time;
-    __u32 size;
-    __u64 addr;
+    uint32_t direction;
+    uint32_t access_time;
+    uint32_t size;
+    uint64_t addr;
 };
 
 struct xrp_ioctl_stats {
-    __u8 reset;
-    __u64 total_dsp_time_us;
-    __u64 max_dsp_command_time_us;
-    __u32 total_dsp_commands;
-    __u8 current_threads_using_dsp;
-    __u8 max_threads_using_dsp;
+    uint8_t reset;
+    uint64_t total_dsp_time_us;
+    uint64_t max_dsp_command_time_us;
+    uint32_t total_dsp_commands;
+    uint8_t current_threads_using_dsp;
+    uint8_t max_threads_using_dsp;
 };
 
 #endif

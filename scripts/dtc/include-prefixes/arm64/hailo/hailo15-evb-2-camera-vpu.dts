@@ -11,6 +11,24 @@
     status = "okay";
     pinctrl-names = "default";
     pinctrl-0 = <&pinctrl_i2c2>, <&pinctrl_i2c2_current_src_en_out>;
+
+    sensor_1: camera-sensor@1a {
+        status = "okay";
+        compatible = "sony,imx334", "sony,imx675", "sony,imx678", "sony,imx715";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <1>;
+        reset-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
+        port {
+            sensor_out_csi2rx1: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx1_in_sensor>;
+                link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
+            };
+        };
+    };
 };
 
 / {
@@ -32,21 +50,151 @@
     };
 };
 
+&rxwrapper1 {
+    status = "okay";
+    ports {
+        port@0 {
+            rxwrapper1_in_mux: endpoint {
+                remote-endpoint = <&mux_out_rxwrapper1>;
+            };
+        };
+        port@1 {
+            rxwrapper_out_csi1_sX: endpoint {
+                remote-endpoint = <&vid5_in>;
+            };
+        };
+        port@2 {
+            rxwrapper_out_csi1_s0: endpoint {
+                remote-endpoint = <&vid50_in>;
+            };
+        };
+        port@3 {
+            rxwrapper_out_csi1_s1: endpoint {
+                remote-endpoint = <&vid51_in>;
+            };
+        };
+        port@4 {
+            rxwrapper_out_csi1_s2: endpoint {
+                remote-endpoint = <&vid52_in>;
+            };
+        };
+        port@5 {
+            rxwrapper_out_csi1_s3: endpoint {
+                remote-endpoint = <&vid53_in>;
+            };
+        };
+        port@6 {
+            rxwrapper1_out_isp: endpoint {
+                remote-endpoint = <&isp_in_rxwrapper1>;
+            };
+        };
+    };
+};
+
+// TODO: uncomment when ISP will support streaming from CSI-1
+&hailo_isp {
+    ports {
+        port@4 {
+            reg = <4>;
+            isp_out_s1_vid4: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid4_in>;
+            };
+        };
+        port@6 {
+            reg = <6>;
+            isp_out_s1_vid6: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid6_in>;
+            };
+        };
+    };
+};
+
+&hailo_vid_cap {
+    ports {
+        // TODO: uncomment when ISP will support streaming from CSI-1
+        port@4{
+            reg = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+            vid4_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+                remote-endpoint = <&isp_out_s1_vid4>;
+            };
+        };
+        port@6{
+            reg = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+            vid6_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+                remote-endpoint = <&isp_out_s1_vid6>;
+            };
+        };
+        port@5{
+            reg = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+            vid5_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_sX>;
+            };
+        };
+        port@50{
+            reg = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+            vid50_in: endpoint {
+                reg = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s0>;
+            };
+        };
+        port@51{
+            reg = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+            vid51_in: endpoint {
+                reg = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s1>;
+            };
+        };
+        port@52{
+            reg = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+            vid52_in: endpoint {
+                reg = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s2>;
+            };
+        };
+        port@53{
+            reg = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+            vid53_in: endpoint {
+                reg = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s3>;
+            };
+        };
+    };
+};
+
 &i2c_0 {
-    imx334: camera-sensor@1a {
+    sensor_0: camera-sensor@1a {
         status = "okay";
-        compatible = "sony,imx334";
+        compatible = "sony,imx334", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
         clock-frequency = <24000000>;
         csi-id = <0>;
-        reset-gpios = <&gpio0 0 0>;
+        reset-gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
         port {
             sensor_out_csi2rx: endpoint {
                 data-lanes = <1 2 3 4>;
                 remote-endpoint = <&csi2rx_in_sensor>;
-		        link-frequencies = /bits/ 64 <891000000>;
+		        link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
             };
         };
      };
@@ -128,13 +276,6 @@
 
     gpio-line-names = GPIO_LINE_NAMES;
 
-    pin_cam1_reset_n {
-        gpio-hog;
-        gpios = <1 GPIO_ACTIVE_HIGH>;
-        output-low;
-        line-name = "cam1_reset_n";
-    };
-
     pin_DSI_RST {
         gpio-hog;
         gpios = <2 GPIO_ACTIVE_HIGH>;
@@ -195,5 +336,16 @@
         gpios = <13 GPIO_ACTIVE_HIGH>;
         output-low;
         line-name = "DSI_INTR";
+    };
+};
+
+&csi2rx1 {
+    status = "okay";
+    ports {
+        port@0 {
+            csi2rx1_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx1>;
+            };
+        };
     };
 };

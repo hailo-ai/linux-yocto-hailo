@@ -31,12 +31,14 @@
 #ifndef _XRP_KERNEL_DSP_INTERFACE_H
 #define _XRP_KERNEL_DSP_INTERFACE_H
 
-#ifndef XRP_DSP_COMM_BASE_MAGIC
-#define XRP_DSP_COMM_BASE_MAGIC		0x20161006
+#ifndef __KERNEL__
+#include <stdint.h>
+#else
+#include <linux/types.h>
 #endif
 
-#ifndef __KERNEL__
-#include "xrp_types.h"
+#ifndef XRP_DSP_COMM_BASE_MAGIC
+#define XRP_DSP_COMM_BASE_MAGIC		0x20161006
 #endif
 
 #define DSP_FASTBUS_MEM_MAPPED (0x88000000)
@@ -62,9 +64,9 @@ enum {
 };
 
 struct xrp_dsp_tlv {
-    __u32 type;
-    __u32 length;
-    __u32 value[0];
+    uint32_t type;
+    uint32_t length;
+    uint32_t value[0];
 };
 
 typedef struct {
@@ -72,13 +74,13 @@ typedef struct {
 } xrp_hailo_sync_data_t;
 
 struct xrp_dsp_sync_v1 {
-    __u32 sync;
-    __u32 hw_sync_data[0];
+    uint32_t sync;
+    uint32_t hw_sync_data[0];
 };
 
 struct xrp_dsp_sync_v2 {
-    __u32 sync;
-    __u32 reserved[3];
+    uint32_t sync;
+    uint32_t reserved[3];
     struct xrp_dsp_tlv hw_sync_data[0];
 };
 
@@ -92,10 +94,10 @@ struct xrp_dsp_buffer {
      * When submitted to DSP: types of access allowed
      * When returned to host: actual access performed
      */
-    __u32 access_flags;
-    __u32 map_flags;
-    __u32 size;
-    __u64 addr;
+    uint32_t access_flags;
+    uint32_t map_flags;
+    uint32_t size;
+    uint64_t addr;
 };
 
 enum {
@@ -111,24 +113,24 @@ enum {
 #define XRP_DSP_CMD_STRIDE 128
 
 struct xrp_dsp_cmd {
-    __u32 flags;
-    __u32 in_data_size;
-    __u32 out_data_size;
-    __u32 buffer_size;
+    uint32_t flags;
+    uint32_t in_data_size;
+    uint32_t out_data_size;
+    uint32_t buffer_size;
     union {
-        __u32 in_data_addr;
-        __u8 in_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
+        uint32_t in_data_addr;
+        uint8_t in_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
     };
     union {
-        __u32 out_data_addr;
-        __u8 out_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
+        uint32_t out_data_addr;
+        uint8_t out_data[XRP_DSP_CMD_INLINE_DATA_SIZE];
     };
     union {
-        __u32 buffer_addr;
+        uint32_t buffer_addr;
         struct xrp_dsp_buffer buffer_data[XRP_DSP_CMD_INLINE_BUFFER_COUNT];
-        __u8 buffer_alignment[XRP_DSP_CMD_INLINE_DATA_SIZE];
+        uint8_t buffer_alignment[XRP_DSP_CMD_INLINE_DATA_SIZE];
     };
-    __u8 nsid[XRP_DSP_CMD_NAMESPACE_ID_SIZE];
+    uint8_t nsid[XRP_DSP_CMD_NAMESPACE_ID_SIZE];
 };
 
 #endif

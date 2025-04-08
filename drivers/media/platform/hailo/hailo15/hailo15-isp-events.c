@@ -174,14 +174,14 @@ int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,
 					sizeof(struct v4l2_mbus_framefmt));
 }
 
-int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev)
+int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev, int pad)
 {
-	return hailo15_isp_s_stream_event(isp_dev, 0, 1);
+	return hailo15_isp_s_stream_event(isp_dev, pad, 1);
 }
 
-int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev)
+int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int pad)
 {
-	return hailo15_isp_s_stream_event(isp_dev, 0, 0);
+	return hailo15_isp_s_stream_event(isp_dev, pad, 0);
 }
 
 int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,

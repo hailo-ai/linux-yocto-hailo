@@ -40,11 +40,44 @@ enum hailo15_sink_pads {
 
 enum hailo15_source_pads {
 	HAILO15_ISP_SOURCE_PAD_MP_S0 = HAILO15_ISP_SINK_PAD_MAX,
-	HAILO15_ISP_SOURCE_PAD_MP_S1,
 	HAILO15_ISP_SOURCE_PAD_SP_S0,
+	HAILO15_ISP_SOURCE_PAD_MP_S1,
+	HAILO15_ISP_SINK_PAD_MCM_IN,
 	HAILO15_ISP_SOURCE_PAD_SP_S1,
 	HAILO15_ISP_SOURCE_PAD_MAX,
 };
+
+static inline int HAILO15_VID_GRP_TO_ISP_SINK_PAD(int grp_id)
+{
+	switch (grp_id) {
+	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
+	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
+		return HAILO15_ISP_SINK_PAD_S0;
+	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
+	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
+		return HAILO15_ISP_SINK_PAD_S1;
+	default:
+		return -1;
+	}
+}
+
+static inline int HAILO15_VID_GRP_TO_ISP_SOURCE_PAD(int grp_id)
+{
+	switch (grp_id) {
+	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
+		return HAILO15_ISP_SOURCE_PAD_MP_S0;
+	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
+		return HAILO15_ISP_SOURCE_PAD_SP_S0;
+	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
+		return HAILO15_ISP_SOURCE_PAD_MP_S1;
+	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
+		return HAILO15_ISP_SOURCE_PAD_SP_S1;
+	case HAILO15_VID_GRP_MCM_IN:
+		return HAILO15_ISP_SINK_PAD_MCM_IN;
+	default:
+		return -1;
+	}
+}
 
 #define HAILO15_ISP_PADS_NR (HAILO15_ISP_SOURCE_PAD_MAX)
 #define HAILO15_ISP_SOURCE_PADS_NR (HAILO15_ISP_SOURCE_PAD_MAX - HAILO15_ISP_SINK_PAD_MAX)
@@ -94,13 +127,6 @@ struct hailo15_isp_sink_pad_handle {
 	int remote_pad;
 };
 
-enum hailo15_isp_path {
-	ISP_MP,
-	ISP_SP2,
-	ISP_MCM_IN,
-	ISP_MAX_PATH,
-};
-
 struct hailo15_isp_pad_data {
 	uint32_t stream;
 	uint32_t sequence;
@@ -145,7 +171,6 @@ struct hailo15_isp_device {
 	struct hailo15_event_resource event_resource;
 	struct hailo15_isp_irq_status irq_status;
 	struct hailo15_rmem rmem;
-	struct hailo15_buf_ctx *buf_ctx[ISP_MAX_PATH];
 	struct hailo15_buffer *cur_buf[ISP_MAX_PATH];
 	struct v4l2_subdev_format fmt[ISP_MAX_PATH];
 	struct clk *ip_clk;
@@ -157,7 +182,7 @@ struct hailo15_isp_device {
 	int mi_stopped[ISP_MAX_PATH];
 	dma_addr_t fbuf_phys;
 	void *fbuf_vaddr;
-	void *private_data[ISP_MAX_PATH];
+	void *private_data[HAILO15_VID_GRP_SX_MAX];
 	int current_vsm_index[ISP_MAX_PATH];
 	struct hailo15_vsm current_vsm;
 	struct hailo15_vsm vsm_list[HAILO15_MAX_BUFFERS][ISP_MAX_PATH];
@@ -208,8 +233,8 @@ void hailo15_isp_reset_hw(struct hailo15_isp_device*);
 int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,
 				     int pad,
 				     struct v4l2_mbus_framefmt *format);
-int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev);
-int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev);
+int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev, int pad);
+int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int pad);
 int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 				      int pad, uint32_t num_buffers);
 int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status);

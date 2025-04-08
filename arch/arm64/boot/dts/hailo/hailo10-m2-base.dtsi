@@ -6,13 +6,6 @@
 #include "hailo10-base.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 
-/ {
-    memory {
-        device_type = "memory";
-        reg = <0x00000000 0x80000000 0x00000002 0x00000000>;
-    };
-};
-
 &i2c_1 {
     status = "ok";
     ina231_3v3_pci: 3v3_pci@40 {

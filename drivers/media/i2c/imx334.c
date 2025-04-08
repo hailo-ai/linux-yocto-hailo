@@ -352,7 +352,7 @@ static const struct imx334_mode supported_modes[] = {
     {
 	.width = 3840,
 	.height = 2160,
-	.hblank = 560,
+	.hblank = 550,
 	.vblank = 2340,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
@@ -371,7 +371,7 @@ static const struct imx334_mode supported_modes[] = {
     {
 	.width = 3840,
 	.height = 2160,
-	.hblank = 560,
+	.hblank = 550,
 	.vblank = 90,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
@@ -390,7 +390,7 @@ static const struct imx334_mode supported_modes[] = {
 	{
 	.width = 3840,
 	.height = 2160,
-	.hblank = 560,
+	.hblank = 550,
 	.vblank = 6840,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
@@ -998,7 +998,7 @@ static int imx334_start_streaming(struct imx334 *imx334)
 		dev_err(imx334->dev, "fail to start streaming");
 		return ret;
 	}
-    pr_info("imx334: start_streaming successful\n");
+	pr_info("imx334: start_streaming successful\n");
 	return 0;
 }
 

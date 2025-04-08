@@ -196,10 +196,7 @@ static int xrp_shutdown_hw(struct xvp *xvp)
     xrp_halt_dsp(xvp);
 
     if (unsafe_enable_reset) {
-        int ret = xrp_disable_dsp(xvp);
-        if (ret < 0) {
-            return ret;
-        }
+        xrp_disable_dsp(xvp);
     }
 
     return 0;

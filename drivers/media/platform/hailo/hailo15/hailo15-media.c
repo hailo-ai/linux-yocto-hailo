@@ -4,7 +4,7 @@
 struct list_head connections;
 struct list_head endpoints_list;
 struct media_device mdev;
-struct mutex mdev_lock; 
+struct mutex mdev_lock;
 int init;
 
 struct media_device* hailo15_media_get_media_device(){
@@ -53,6 +53,7 @@ static int hailo15_media_register_subdev_to_v4l2(struct hailo15_media_device* md
 	}
 
 	if(mdev->sd->v4l2_dev == NULL){
+		dev_dbg(mdev->sd->dev, "Registering subdev %s to v4l2 device %s\n", mdev->sd->name, v4l2_dev->name);
 		mutex_unlock(&mdev_lock);
 		ret = v4l2_device_register_subdev(v4l2_dev, mdev->sd);
 		mutex_lock(&mdev_lock);
@@ -85,8 +86,11 @@ int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id){
 	struct hailo15_media_device* mdev;
 	int sink = 0, ret = -EINVAL;
 	int reg = 0;
-	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
 
+	dev_dbg(dev, "Registering v4l2 device %s\n", v4l2_dev->name);
+
+	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
+		struct fwnode_handle *remote_parent;
 		ret = fwnode_property_read_u32(handle, "sink", &sink);
 		if(ret || !sink){
 			continue;
@@ -102,6 +106,14 @@ int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id){
 		if(!remote_handle){
 			fwnode_handle_put(handle);
 			return -EINVAL;
+		}
+
+		/* Handle cases were parent is not available (status != ok in dt) */
+		remote_parent = fwnode_graph_get_port_parent(remote_handle);
+		if (remote_parent && !fwnode_device_is_available(remote_parent)) {
+			pr_info("skipping remote-ep %s because its device is not available\n",
+				 remote_handle->ops->get_name(remote_handle));
+			continue;
 		}
 
 		if(!hailo15_media_remote_handle_available(remote_handle)){
@@ -117,39 +129,73 @@ int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id){
 		fwnode_handle_put(remote_handle);
 		break;
 	}
-	
+
 	return ret;
 }
 EXPORT_SYMBOL(hailo15_media_register_v4l2_device);
 
-int hailo15_media_get_endpoints_status(struct device* dev){
+int hailo15_media_get_sink_endpoints_status(struct device* dev){
 	struct fwnode_handle *handle, *remote_handle;
+	struct fwnode_endpoint fwnode_ep, fwnode_remote_ep;
 	int sink = 0, ret = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
-
+		struct fwnode_handle *remote_parent;
 		ret = fwnode_property_read_u32(handle, "sink", &sink);
 		if(ret || !sink){
 			continue;
 		}
-		
+
+		ret = fwnode_graph_parse_endpoint(handle, &fwnode_ep);
+		if (ret) {
+			pr_err("failed to parse sink-ep of node %s, skipping...", dev_name(dev));
+			continue;
+		}
+
 		remote_handle = fwnode_graph_get_remote_endpoint(handle);
 		if(!remote_handle){
+			pr_err("failed to get remote-ep connected to sink-ep: [%s, port %d, id %d], aborting...",
+				 dev_name(dev), fwnode_ep.port, fwnode_ep.id);
 			fwnode_handle_put(handle);
 			return -EINVAL;
 		}
-		if(!hailo15_media_remote_handle_available(remote_handle)){
+
+		/* Handle cases were parent is not available (status != ok in dt) */
+		remote_parent = fwnode_graph_get_port_parent(remote_handle);
+		if (!remote_parent) {
+			pr_err("failed to get parent of remote-ep connected to sink-ep: [%s, port %d, id %d], aborting...",
+				 dev_name(dev), fwnode_ep.port, fwnode_ep.id);
 			fwnode_handle_put(handle);
 			fwnode_handle_put(remote_handle);
+			return -EINVAL;
+		}
+
+		if (!fwnode_device_is_available(remote_parent)) {
+			pr_debug("parent node of remote-ep: [%s, port %d, id %d] connected to sink-ep: [%s, port %d, id %d], is not available, skipping...\n",
+				 remote_parent->ops->get_name(remote_parent), fwnode_remote_ep.port, fwnode_remote_ep.id, 
+				 dev_name(dev), fwnode_ep.port, fwnode_ep.id);
+			fwnode_handle_put(remote_handle);
+			fwnode_handle_put(remote_parent);
+			continue;
+		}
+
+		if(!hailo15_media_remote_handle_available(remote_handle)){
+			pr_debug("remote-ep: [%s, port %d, id %d] connected to sink-ep: [%s, port %d, id %d], parent remote-ep not registered, aborting with -EPROBE_DEFER\n",
+				 remote_parent->ops->get_name(remote_parent), fwnode_remote_ep.port, fwnode_remote_ep.id, 
+				 dev_name(dev), fwnode_ep.port, fwnode_ep.id);
+			fwnode_handle_put(handle);
+			fwnode_handle_put(remote_handle);
+			fwnode_handle_put(remote_parent);
 			return -EPROBE_DEFER;
 		}
 
 		fwnode_handle_put(remote_handle);
+		fwnode_handle_put(remote_parent);
 	}
 
 	return 0;
 }
-EXPORT_SYMBOL(hailo15_media_get_endpoints_status);
+EXPORT_SYMBOL(hailo15_media_get_sink_endpoints_status);
 
 int hailo15_media_get_subdev(struct device *dev, int id, struct v4l2_subdev **sd){
 	struct fwnode_handle *handle, *remote_handle;
@@ -159,12 +205,12 @@ int hailo15_media_get_subdev(struct device *dev, int id, struct v4l2_subdev **sd
 	int reg = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
-		
+		struct fwnode_handle *remote_parent;
 		ret = fwnode_property_read_u32(handle, "sink", &sink);
 		if(ret || !sink){
 			continue;
 		}
-		
+
 		ret = fwnode_property_read_u32(handle, "reg", &reg);
 		if(ret)
 			continue;
@@ -176,7 +222,15 @@ int hailo15_media_get_subdev(struct device *dev, int id, struct v4l2_subdev **sd
 			fwnode_handle_put(handle);
 			return -EINVAL;
 		}
-		
+
+		/* Handle cases were parent is not available (status != ok in dt) */
+		remote_parent = fwnode_graph_get_port_parent(remote_handle);
+		if (remote_parent && !fwnode_device_is_available(remote_parent)) {
+			pr_info("skipping remote-ep %s because its device is not available\n",
+				 remote_handle->ops->get_name(remote_handle));
+			continue;
+		}
+
 		if((med_dev = hailo15_media_get_endpoint(remote_handle)) == NULL){
 			fwnode_handle_put(handle);
 			fwnode_handle_put(remote_handle);
@@ -195,34 +249,75 @@ EXPORT_SYMBOL(hailo15_media_get_subdev);
 int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd){
 	struct hailo15_media_connection* connection;
 	struct fwnode_handle *handle, *remote_handle;
+	struct fwnode_endpoint fwnode_ep, fwnode_remote_ep;
 	struct hailo15_media_device *sink_mdev, *source_mdev;
 	int ret = 0;
 	int sink = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
-		
+		struct fwnode_handle *remote_parent;
 		ret = fwnode_property_read_u32(handle, "sink", &sink);
 		if(ret || !sink){
 			if(!ret){
-				sink_mdev = kzalloc(sizeof(struct hailo15_media_device), GFP_KERNEL);
-				if(!sink_mdev){
+				source_mdev = kzalloc(sizeof(struct hailo15_media_device), GFP_KERNEL);
+				if(!source_mdev){
 					fwnode_handle_put(handle);
 					return -ENOMEM;
 				}
-				sink_mdev->sd = sd;
-				sink_mdev->endpoint = handle;
-				hailo15_media_register_subdevice(sink_mdev);
+				source_mdev->sd = sd;
+				source_mdev->endpoint = handle;
+				ret = fwnode_graph_parse_endpoint(handle, &fwnode_ep);
+				if (ret) {
+					pr_err("failed to parse source-ep %s of subdev %s, skipping...",
+						handle->ops->get_name(handle), sd->name);
+					continue;
+				}
+
+				pr_info("Registering source-ep: [%s, port %d, id %d]\n", 
+					sd->name, fwnode_ep.port, fwnode_ep.id);
+				hailo15_media_register_subdevice(source_mdev);
 			}
 			continue;
 		}
-		
+
 		remote_handle = fwnode_graph_get_remote_endpoint(handle);
 		if(!remote_handle){
+			pr_err("failed to get remote-ep connected to sink-ep: [%s, port %d, id %d], aborting with -EINVAL",
+				sd->name, fwnode_ep.port, fwnode_ep.id);
 			fwnode_handle_put(handle);
 			return -EINVAL;
 		}
-		
+
+		ret = fwnode_graph_parse_endpoint(remote_handle, &fwnode_remote_ep);
+		if (ret) {
+			pr_notice("failed to parse remote-ep connected to sink-ep: [%s, port %d, id %d], skipping sink-ep ...",
+				sd->name, fwnode_ep.port, fwnode_ep.id);
+			fwnode_handle_put(remote_handle);
+			continue;			
+		}
+
+		/* Handle cases were parent is not available (status != ok in dt) */
+		remote_parent = fwnode_graph_get_port_parent(remote_handle);
+		if (!remote_parent) {
+			pr_notice("failed to get parent of remote-ep connected to sink-ep: [%s, port %d, id %d], skipping sink-ep ...",
+				 sd->name, fwnode_ep.port, fwnode_ep.id);
+			fwnode_handle_put(remote_handle);
+			continue;			
+		}
+
+		if (!fwnode_device_is_available(remote_parent)) {
+			pr_info("remote-ep: [%s, port %d, id %d] connected to sink-ep: [%s, port %d, id %d], parent remote-ep not available, skipping...\n",
+				 remote_parent->ops->get_name(remote_parent), fwnode_remote_ep.port, fwnode_remote_ep.id, 
+				 sd->name, fwnode_ep.port, fwnode_ep.id);
+			fwnode_handle_put(remote_parent);
+			fwnode_handle_put(remote_handle);
+			continue;
+		}
+
 		if((source_mdev = hailo15_media_get_endpoint(remote_handle)) == NULL){
+			pr_err("remote-ep: [%s, port %d, id %d] connected to sink-ep: [%s, port %d, id %d], is not registered, aborting...\n",
+				 remote_parent->ops->get_name(remote_parent), fwnode_remote_ep.port, fwnode_remote_ep.id, 
+				 sd->name, fwnode_ep.port, fwnode_ep.id);
 			ret = -ENOENT;
 			goto out_loop;
 		}
@@ -241,7 +336,7 @@ int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd)
 			ret = -ENOMEM;
 			goto out_loop;
 		}
-	
+
 		connection->source = source_mdev;
 		connection->sink = sink_mdev;
 		mutex_lock(&mdev_lock);
@@ -250,11 +345,12 @@ int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd)
 
 out_loop:
 		fwnode_handle_put(remote_handle);
+		fwnode_handle_put(remote_parent);
 		if(ret){
 			fwnode_handle_put(handle);
 			return ret;
 		}
-		
+
 	}
 
 	return 0;
@@ -272,12 +368,12 @@ int hailo15_media_create_links(struct device* dev, struct media_entity* entity, 
 
 	memset(&link, 0, sizeof(link));
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
-		
+		struct fwnode_handle *remote_parent;
 		ret = fwnode_property_read_u32(handle, "sink", &sink);
 		if(ret || !sink){
 			continue;
 		}
-		
+
 		if(id != -1){
 			ret = fwnode_property_read_u32(handle, "reg", &reg);
 			if(ret)
@@ -291,15 +387,29 @@ int hailo15_media_create_links(struct device* dev, struct media_entity* entity, 
 			fwnode_handle_put(handle);
 			return -EINVAL;
 		}
+
+		/* Handle cases were parent is not available (status != ok in dt) */
+		remote_parent = fwnode_graph_get_port_parent(remote_handle);
+		if (remote_parent && !fwnode_device_is_available(remote_parent)) {
+			pr_info("skipping remote-ep %s because its device is not available\n",
+				 remote_handle->ops->get_name(remote_handle));
+			continue;
+		}
+
 		if((med_dev = hailo15_media_get_endpoint(remote_handle)) == NULL){
 			ret = -ENOENT;
+			goto out_loop;
+		}
+		if (!med_dev->sd->entity.graph_obj.mdev) {
+			ret = -ENODEV;
+			dev_err(dev, "Remote source subdevice %s failed to register\n", med_dev->sd->name);
 			goto out_loop;
 		}
 		ret = v4l2_fwnode_parse_link(remote_handle, &link);
 		if(ret){
 			goto out_loop;
 		}
-		
+
 		ret = media_create_pad_link(&med_dev->sd->entity, link.local_port, entity, id == -1 ? link.remote_port : link.remote_port - id, MEDIA_LNK_FL_ENABLED);
 		if(ret){
 			v4l2_fwnode_put_link(&link);
@@ -313,7 +423,6 @@ out_loop:
 			fwnode_handle_put(handle);
 			return ret;
 		}
-		
 	}
 
 	return 0;
@@ -364,7 +473,7 @@ bool hailo15_media_check_completion(struct v4l2_async_notifier *notifier) {
 	}
 
 	list_for_each_entry(sd, &notifier->done, async_list) {
-		struct v4l2_async_notifier *subdev_notifier = 
+		struct v4l2_async_notifier *subdev_notifier =
 			hailo15_media_find_subdev_notifier(sd, notifiers_list);
 
 		if (!subdev_notifier)
@@ -399,7 +508,7 @@ void hailo15_media_entity_clean(struct media_entity* entity){
 			kfree(connection);
 		}
 	}
-	
+
 	list_for_each_safe(pos, npos, &endpoints_list){
 		mdev = list_entry(pos, struct hailo15_media_device, link);
 		if(&mdev->sd->entity == entity){
@@ -428,7 +537,7 @@ static int hailo15_media_init(void){
 		sizeof(mdev.model));
 	mutex_init(&mdev_lock);
 	init = 0;
-	return 0;	
+	return 0;
 }
 module_init(hailo15_media_init);
 

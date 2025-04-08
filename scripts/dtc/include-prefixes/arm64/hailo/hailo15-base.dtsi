@@ -21,6 +21,7 @@
 
     #include "hailo-ethernet.dtsi"
     #include "hailo15-vision.dtsi"
+    #include "hailo15-dsp.dtsi"
 
     qspi: qspi@10c000 {
         compatible = "hailo,qspi-nor";
@@ -149,6 +150,11 @@
         rxwrapper0: rxwrapper0@7c010000 {
             compatible = "hailo,hailo15-rxwrapper";
         };
+    
+        rxwrapper1: rxwrapper1@7c014000 {
+            power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_CSI_RX1>;
+            compatible = "hailo,hailo15-rxwrapper";
+        };
     };
 
     i2c_0: i2c@104000 {
@@ -174,31 +180,34 @@
         reg = <0x7c050000 0x800>, <0x7c052000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
         interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP0_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
     };
 
     vdma1: vdma@1 {
         reg = <0x7c054000 0x800>, <0x7c056000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
         interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP1_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
     };
 
     vdma2: vdma@2 {
         reg = <0x7c058000 0x800>, <0x7c05A000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
         interrupts = <GIC_SPI HW_INTERRUPTS__DRAM_DMA_AP2_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "both";
     };
 };
 
 &xrp {
     reg = <0 0x7c040000 0 0x8000>; // dsp config
     clock-frequency = <700000000>;
-    power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_DSP>;
 };
 
 &sdio0 {
     compatible = "hailo,dwcmshc-sdhci-0";
     clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_M_HCLK>,
         <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CLK_DIV_BYPASS>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_0_CARD_CLK>;
+    resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_0_CD_FROM_PINMUX>;
     clock-names = "core", "bus", "clk_div_bypass","card_clk";
 };
 
@@ -218,14 +227,18 @@
           <0 0x7c2a10f0 0 0xC>;
 };
 
-&hailo_vc8000e {
-    power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_H265>;
-};
-
 &hailo_isp {
     power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_ISP>;
 };
 
 &edac {
     reg = <0x0 0x7c060000 0x0 0x00002000>;
+};
+
+&nocpmu {
+    reg = <0 0x000dc000 0 0x2000>;
+};
+
+&scu_log {
+    reg = <0 0x000df000 0 0x1000>;
 };

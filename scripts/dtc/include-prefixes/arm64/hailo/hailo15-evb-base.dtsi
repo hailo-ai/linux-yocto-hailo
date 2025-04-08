@@ -137,10 +137,6 @@
     status = "okay";
 };
 
-&csi2rx1 {
-    status = "okay";
-};
-
 &hailo_vid_cap {
     status = "okay";
 };
@@ -174,15 +170,15 @@
 };
 
 &sdio0 {
-    phy-config {
+	phy-config {
 		card-is-emmc = <0x0>;
 		cmd-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-        	dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-        	rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-        	clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-        	sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
-        	drive-strength = <0xC 0xC>; //pad_sp, pad_sn	
-    };
+		dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+		rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+		clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
+		sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
+		drive-strength = <0xC 0xC>; //pad_sp, pad_sn
+	};
 };
 &sdio1 {
     non-removable;
