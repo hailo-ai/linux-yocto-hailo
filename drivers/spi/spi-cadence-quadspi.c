@@ -1403,6 +1403,36 @@ static int cqspi_of_get_flash_pdata(struct platform_device *pdev,
 	return 0;
 }
 
+// same as cqspi_of_get_flash_pdata, but with support for default values
+static void cqspi_of_get_nonflash_pdata(struct platform_device *pdev,
+				    struct cqspi_flash_pdata *f_pdata,
+				    struct device_node *np)
+{
+	if (of_property_read_u32(np, "cdns,read-delay", &f_pdata->read_delay)) {
+		f_pdata->read_delay = 0;
+	}
+
+	if (of_property_read_u32(np, "cdns,tshsl-ns", &f_pdata->tshsl_ns)) {
+		f_pdata->tshsl_ns = 0;
+	}
+
+	if (of_property_read_u32(np, "cdns,tsd2d-ns", &f_pdata->tsd2d_ns)) {
+		f_pdata->tsd2d_ns = 0;
+	}
+
+	if (of_property_read_u32(np, "cdns,tchsh-ns", &f_pdata->tchsh_ns)) {
+		f_pdata->tchsh_ns = 0;
+	}
+
+	if (of_property_read_u32(np, "cdns,tslch-ns", &f_pdata->tslch_ns)) {
+		f_pdata->tslch_ns = 0;
+	}
+
+	if (of_property_read_u32(np, "spi-max-frequency", &f_pdata->clk_rate)) {
+		f_pdata->clk_rate = 0;
+	}
+}
+
 static int cqspi_of_get_pdata(struct cqspi_st *cqspi)
 {
 	struct device *dev = &cqspi->pdev->dev;
@@ -1803,8 +1833,10 @@ static int cqspi_setup_flash(struct cqspi_st *cqspi)
 		f_pdata->cqspi = cqspi;
 		f_pdata->cs = cs;
 
-		if(of_property_read_bool(np, "hailo,non-flash-device"))
+		if(of_property_read_bool(np, "hailo,non-flash-device")) {
+			cqspi_of_get_nonflash_pdata(pdev, f_pdata, np);
 			continue;
+		}
 
 		ret = cqspi_of_get_flash_pdata(pdev, f_pdata, np);
 		if (ret) {

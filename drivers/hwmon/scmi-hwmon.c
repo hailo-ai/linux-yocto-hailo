@@ -86,7 +86,7 @@ static int scmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	sensor = *(scmi_sensors->info[type] + channel);
 
 	switch (attr) {
-	case hwmon_temp_input:
+	case hwmon_temp_input: // hwmon_in_input = hwmon_temp_input and the read way is the same for hwmon_temp and hwmon_in
 		ret = sensor_ops->reading_get(scmi_sensors->ph, sensor->id,
 					      &value);
 		if (ret) {
@@ -112,10 +112,17 @@ static int scmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	return ret;
 }
 
+enum trip_direction {
+	TRIP_DIR_UP = 0,
+	TRIP_DIR_DOWN = 1,
+};
+
 static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 					   unsigned long event, void *data)
 {
 	int ret, trip_point_id;
+	u32 hwmon_temp_attr;
+	enum trip_direction trip_dir;
 	struct scmi_sensor_trip_point_report *trip_point_report = data;
 	struct scmi_sensors *scmi_sensors =
 		container_of(nb, struct scmi_sensors, notifier_block);
@@ -123,13 +130,21 @@ static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 		scmi_sensors->ph, trip_point_report->sensor_id);
 
 	trip_point_id = (trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_ID_MASK);
+	if (trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_DIR_MASK) {
+		trip_dir = TRIP_DIR_UP;
+		hwmon_temp_attr = hwmon_temp_max;
+	} else {
+		trip_dir = TRIP_DIR_DOWN;
+		hwmon_temp_attr = hwmon_temp_min;
+	}
+
 	dev_info(
 		scmi_sensors->dev,
 		"trip_point_cb: event[%lu] from: agent_id[%x], sensor_id[%x], trip_point_desc[%x] (dir=%s, trip_point_id=%d)\n",
 		event, trip_point_report->agent_id,
 		trip_point_report->sensor_id,
 		trip_point_report->trip_point_desc,
-		(trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_DIR_MASK) ? "cross-positive" : "cross-negative",
+		trip_dir ? "cross-negative" :  "cross-positive",
 		trip_point_id);
 
 	switch (sensor_info->type) {
@@ -139,7 +154,7 @@ static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 		if (event == SCMI_EVENT_SENSOR_TRIP_POINT_EVENT) {
 			ret = hwmon_notify_event(scmi_sensors->hwdev,
 						hwmon_temp,
-						hwmon_temp_max,
+						hwmon_temp_attr,
 						trip_point_report->sensor_id);
 			if (ret != 0) {
 				dev_warn(
@@ -182,10 +197,11 @@ scmi_hwmon_is_visible(const void *drvdata, enum hwmon_sensor_types type,
 	sensor = *(scmi_sensors->info[type] + channel);
 	if (sensor) {
 		switch (attr) {
-		case hwmon_temp_input:
+		case hwmon_temp_input: // hwmon_in_input = hwmon_temp_input and the permissions is the same for hwmon_temp and hwmon_in
 			return 0444;
 			break;
 		case hwmon_temp_max:
+		case hwmon_temp_min:
 			return 0400;
 			break;
 		default:

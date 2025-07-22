@@ -569,6 +569,9 @@ struct scmi_hailo_proto_ops {
 	int (*send_boot_success_ind)(const struct scmi_protocol_handle *ph, struct scmi_hailo_boot_success_indication_a2p *params);
 	int (*send_swupdate_ind)(const struct scmi_protocol_handle *ph);
 	int (*send_components_version)(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_components_version_p2a *info);
+	int (*set_i2s_source_clk)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_i2s_source_clock_a2p *params);
+	int (*set_spi_interrupt_forwarding)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
+	int (*get_mbist_subservers_status)(const struct scmi_protocol_handle *ph, struct scmi_hailo_mbist_subservers_status_p2a *params);
 };
 
 #endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */

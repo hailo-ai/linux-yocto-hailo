@@ -2,3 +2,4 @@
 *.h   diff=cpp
 *.dtsi diff=dts
 *.dts  diff=dts
+changelog.csv merge=union

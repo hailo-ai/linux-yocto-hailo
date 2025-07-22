@@ -8,6 +8,11 @@
 #define MSRZ_SCALE_CALC(in, out)                                               \
 	((uint32_t)((((out)-1) * SCALE_FACTOR) / ((in)-1)) + 1)
 
+#define HAILO15_LINE_BUF_CFG_VBLANK_VC_MASK 0xF
+#define HAILO15_LINE_BUF_CFG_VBLANK_VC_SHIFT 10
+#define HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK 0x1FFF
+#define HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT 14
+
 /* @TODO get real vdid when calling read/write reg */
 uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 {
@@ -40,6 +45,15 @@ void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
 }
 EXPORT_SYMBOL(hailo15_isp_write_reg);
 
+void hailo15_isp_post_fe_write(struct hailo15_isp_device *isp_dev, uint32_t reg,
+			   uint32_t val)
+{
+	if (isp_dev->fe_enable && isp_dev->fe_dev) {
+		isp_dev->fe_dev->fe_register_post_fe_write(isp_dev->fe_dev, 0, reg, val);
+	}
+}
+EXPORT_SYMBOL(hailo15_isp_post_fe_write);
+
 void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
 				   uint32_t reg, uint32_t val)
 {
@@ -48,16 +62,65 @@ void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
 
 void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
 {
+	const struct isp_wrapper_config *wrapper_cfg = isp_dev->wrapper_cfg;
+	const struct hailo15_hw_shifter_config *shifter_cfg = &wrapper_cfg->shifter_cfg;
+	const struct hailo15_isp_line_buf_config *line_buf_cfg = &wrapper_cfg->line_buf_cfg;
+	const uint32_t pixel_width = isp_dev->input_fmt.format.width;
+	uint32_t reg_val = 0;
+	size_t i = 0;
+
 	pr_debug("%s - writting to isp wrapper interrupt masks\n", __func__);
 	hailo15_isp_wrapper_write_reg(isp_dev,
-		isp_dev->wrapper_cfg->fatal_asf_int_mask_offset,
-		isp_dev->wrapper_cfg->fatal_asf_int_mask_value);
+		wrapper_cfg->fatal_asf_int_mask_offset,
+		wrapper_cfg->fatal_asf_int_mask_value);
 	hailo15_isp_wrapper_write_reg(isp_dev, 
-		isp_dev->wrapper_cfg->func_int_mask_offset,
-		isp_dev->wrapper_cfg->func_int_mask_value);
+		wrapper_cfg->func_int_mask_offset,
+		wrapper_cfg->func_int_mask_value);
 	hailo15_isp_wrapper_write_reg(isp_dev,
-		isp_dev->wrapper_cfg->err_int_mask_offset,
-		isp_dev->wrapper_cfg->err_int_mask_value);
+		wrapper_cfg->err_int_mask_offset,
+		wrapper_cfg->err_int_mask_value);
+
+	// The shifter should only be configured for HDR
+	reg_val = isp_dev->hdr_enabled ? shifter_cfg->shift_value : 0;
+
+	dev_dbg(isp_dev->dev, "config isp_wrapper with %ld shifter regs, shift value %d\n",
+		shifter_cfg->shifter_regs, reg_val);
+
+	/* Will only be relevant when there are shifter regs being used.0
+	 * There is a HW bug in some of the chips, which causes the data to lose percision
+	 * when it enter's the ISP stitcher. The shifter is used to fix this issue.
+	 * On hardwares where the shifter is not available, a different solution is used.
+	 **/
+	for (i = 0; i < shifter_cfg->shifter_regs; ++i) {
+		uint32_t offset = shifter_cfg->first_shifter_offset + (i * sizeof(reg_val));
+		hailo15_isp_wrapper_write_reg(isp_dev, offset, reg_val);
+	}
+
+	// Configure line buffer if needed
+	if (!line_buf_cfg->enabled) {
+		return;
+	}
+
+	for (i = 0; i < line_buf_cfg->repeat; ++i) {
+		uint32_t channel_offset = i * sizeof(uint32_t);
+
+		// Set vblank_vc, and a fifo fill level, with a value of 1 line of pixels
+        reg_val = (line_buf_cfg->values.vblank_vc & HAILO15_LINE_BUF_CFG_VBLANK_VC_MASK) << HAILO15_LINE_BUF_CFG_VBLANK_VC_SHIFT;
+        reg_val |= (pixel_width & HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK) << HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT;
+
+		hailo15_isp_wrapper_write_reg(isp_dev, line_buf_cfg->offsets.line_buf_cfg + channel_offset, reg_val);
+
+		hailo15_isp_wrapper_write_reg(isp_dev,
+			line_buf_cfg->offsets.line_buf_cfg_line_width + channel_offset, pixel_width);
+		hailo15_isp_wrapper_write_reg(isp_dev,
+			line_buf_cfg->offsets.line_buf_cfg_min_vblank_duration + channel_offset,
+			line_buf_cfg->values.line_buf_cfg_min_vblank_duration);
+		hailo15_isp_wrapper_write_reg(isp_dev,
+			line_buf_cfg->offsets.line_buf_cfg_min_hblank_duration + channel_offset,
+			line_buf_cfg->values.line_buf_cfg_min_hblank_duration);
+
+		dev_dbg(isp_dev->dev, "configured line buf cfg for channel %ld\n", i);
+	}
 }
 
 void hailo15_isp_reset_hw(struct hailo15_isp_device* isp_dev){
@@ -72,6 +135,7 @@ static enum mcm_rd_fmt hailo15_isp_mcm_rd_cfg(int mcm_mode) {
         case ISP_MCM_MODE_STITCHING:
             return MCM_RD_FMT_20BIT;
         case ISP_MCM_MODE_INJECTION:
+        case ISP_MCM_MODE_RAW12_PACKED:
             return MCM_RD_FMT_12BIT;
         case ISP_MCM_MODE_OFF:
         case ISP_MCM_MODE_MAX:
@@ -83,7 +147,8 @@ static enum mcm_rd_fmt hailo15_isp_mcm_rd_cfg(int mcm_mode) {
 static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device* isp_dev){
 
 	int width, height;
-	uint32_t mi_mcm_ctrl, mcm_rd_cfg, mi_ctrl, mi_mcm_fmt, mi_imsc;
+	uint32_t mi_mcm_ctrl, mcm_rd_cfg, mi_ctrl, mi_mcm_fmt, mi_imsc,
+		isp_acq_prop, llength;
 
 	uint32_t rd_cfg_for_mcm_mode = hailo15_isp_mcm_rd_cfg(isp_dev->mcm_mode);
 
@@ -94,26 +159,38 @@ static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device* isp_dev){
 
 	width = isp_dev->input_fmt.format.width;
 	height = isp_dev->input_fmt.format.height;
+
+	/* In raw12 packed we only have 1.5 bytes per pixel */
+	llength = isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED ?
+		(width * 3) / 2 : width * sizeof(uint16_t);
+
 	mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
 	mi_ctrl &= ~MI_CTRL_MCM_RAW_RDMA_START_CON;
 	mi_ctrl |= MI_CTRL_MCM_RAW_RDMA_PATH_ENABLE;
 	hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
 	mi_mcm_ctrl = hailo15_isp_read_reg(isp_dev, MI_MCM_CTRL);
 	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_WIDTH, width);
-	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_LLENGTH, width*sizeof(uint16_t));
-	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_LVAL, width*sizeof(uint16_t));
-	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_SIZE, width*height*sizeof(uint16_t));
-	mcm_rd_cfg = hailo15_isp_read_reg(isp_dev, MCM_RD_CFG);
+	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_LLENGTH, llength);
+	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_LVAL, llength);
+	hailo15_isp_write_reg(isp_dev, MI_MCM_DMA_RAW_PIC_SIZE, llength*height);
 	mcm_rd_cfg = rd_cfg_for_mcm_mode;
 	hailo15_isp_write_reg(isp_dev, MCM_RD_CFG, mcm_rd_cfg);
 	mi_mcm_fmt = hailo15_isp_read_reg(isp_dev, MI_MCM_FMT);
-	mi_mcm_fmt |= MCM_RD_RAW_BIT;
+	mi_mcm_fmt |= isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED ? MCM_RD_RAW12_BIT : MCM_RD_RAW16_BIT;
 	hailo15_isp_write_reg(isp_dev, MI_MCM_FMT, mi_mcm_fmt);
+
+	/* pin_mapping in MCM raw12 should be 0 (undo append 4 zeros mode)*/
+	if (isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED) {
+		isp_acq_prop = hailo15_isp_read_reg(isp_dev, ISP_ACQ_PROP);
+		isp_acq_prop &= ~BIT(18);
+		hailo15_isp_write_reg(isp_dev, ISP_ACQ_PROP, isp_acq_prop);
+	}
+
 	hailo15_isp_write_reg(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl | MCM_RD_CFG_UPD);
 	mi_imsc = hailo15_isp_read_reg(isp_dev, MI_IMSC);
 	mi_imsc |= MCM_DMA_RAW_READY;
 	hailo15_isp_write_reg(isp_dev, MI_IMSC, mi_imsc);
-	if(isp_dev->mcm_mode == ISP_MCM_MODE_STITCHING) {
+	if (isp_dev->mcm_mode == ISP_MCM_MODE_STITCHING) {
 		hailo15_isp_write_reg(isp_dev, MCM_RETIMING0, MCM_RETIMING_VSYNC);
 		hailo15_isp_write_reg(isp_dev, MCM_RETIMING1, MCM_RETIMING_HSYNC);
 	}
@@ -196,7 +273,6 @@ static inline void
 hailo15_isp_configure_rdma_frame_base(struct hailo15_isp_device *isp_dev,
 				    dma_addr_t addr[FMT_MAX_PLANES])
 {
-	int mi_ctrl;
 	int mi_mcm_ctrl;
 	struct isp_fe_switch_t fe_switch;
 	memset(&fe_switch, 0, sizeof(fe_switch));
@@ -205,9 +281,10 @@ hailo15_isp_configure_rdma_frame_base(struct hailo15_isp_device *isp_dev,
 	mi_mcm_ctrl = hailo15_isp_read_reg(isp_dev, MI_MCM_CTRL);
 	mi_mcm_ctrl |= MCM_RD_CFG_UPD;
 	hailo15_isp_write_reg(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl);
-	mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
-	mi_ctrl |= MI_CTRL_MCM_RAW_RDMA_START;
-	hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
+
+	// MI_CTRL's RAW RDMA START should be triggered post-FE, due to HW issue in FE,
+	// In which this exact command sometimes causes FE to get stuck, never to return (causing ever lasting FE DMA timetout)
+	hailo15_isp_post_fe_write(isp_dev, MI_CTRL, MI_CTRL_MCM_RAW_RDMA_START);
 	if(isp_dev->fe_enable)
 		isp_dev->fe_dev->fe_switch(isp_dev->fe_dev, &fe_switch);
 }

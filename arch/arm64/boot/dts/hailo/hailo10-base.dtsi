@@ -4,3 +4,9 @@
  */
 
 #include "hailo15-base.dtsi"
+
+/ {
+    soc {
+        compatible = "hailo,hailo10h";
+    };
+};

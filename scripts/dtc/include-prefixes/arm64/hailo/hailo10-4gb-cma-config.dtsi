@@ -1,0 +1,28 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
+ */
+
+&reserved_memory {
+    // Override linux CMA - decrease it to 32MiB and move (no media library)
+    cma: linux,cma {
+        reg = <0 0x86000000 0 0x02000000>;
+    };
+
+    // Reserve memory only for integrated nnc dma.
+    integrated_nnc_dma_cma: integrated_nnc_dma_cma,cma {
+        compatible = "shared-dma-pool";
+        size = <0x0 0x2EE00000>;
+        alignment = <0 0x10000>;
+        no-map;
+    };
+
+    hailo_media_buf_cma: hailo_media_buf,cma {
+        status = "disabled";
+    };
+};
+
+&integrated_nnc {
+    memory-region = <&hailo_nnc_fw_cma>, <&integrated_nnc_dma_cma>;
+    memory-region-names = "nnc-fw-cma", "nnc-dma-cma";
+};

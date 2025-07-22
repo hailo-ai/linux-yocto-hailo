@@ -4,7 +4,7 @@
  */
 
 #define HAILO_SOC_TYPE HAILO_SOC_HAILO15
-#include "hailo15-family-base.dtsi"
+#include "hailo1x-base.dtsi"
 
 
 / {
@@ -12,7 +12,7 @@
         compatible = "hailo,hailo15";
     };
 
-    sram@d0000 {
+    sram@60000000 {
         cpu_scp_i2s_dma_shmem: scp-shmem@10a0 {
             compatible = "hailo,hailo15-i2s-shmem";
             reg = <0 0x10a0 0 0xf60>;
@@ -113,6 +113,8 @@
     };
 
     vision_subsys: vision_subsys {
+        null-addr = <0x60700000>;
+
         csi2rx0: csi-bridge@7c011000 {
             phys = <&dphyrx0>;
             phy-names = "dphy";
@@ -236,9 +238,62 @@
 };
 
 &nocpmu {
-    reg = <0 0x000dc000 0 0x2000>;
+    compatible = "hailo,hailo15-noc-pmu";
+    reg = <0 0x000dc000 0 0x2100>;
 };
 
 &scu_log {
     reg = <0 0x000df000 0 0x1000>;
+};
+
+&gp_vdma {
+    reg = <0 0x7c05E000 0 0x200>;
+    dma-channel@0 {
+        reg = <0x7c05C000 0x20>;
+    };
+    dma-channel@1 {
+        reg = <0x7c05C020 0x20>;
+    };
+    dma-channel@2 {
+        reg = <0x7c05C040 0x20>;
+    };
+    dma-channel@3 {
+        reg = <0x7c05C060 0x20>;
+    };
+    dma-channel@4 {
+        reg = <0x7c05C080 0x20>;
+    };
+    dma-channel@5 {
+        reg = <0x7c05C0A0 0x20>;
+    };
+    dma-channel@6 {
+        reg = <0x7c05C0C0 0x20>;
+    };
+    dma-channel@7 {
+        reg = <0x7c05C0E0 0x20>;
+    };
+    dma-channel@8 {
+        reg = <0x7c05C100 0x20>;
+    };
+    dma-channel@9 {
+        reg = <0x7c05C120 0x20>;
+    };
+    dma-channel@A {
+        reg = <0x7c05C140 0x20>;
+    };
+    dma-channel@B {
+        reg = <0x7c05C160 0x20>;
+    };
+    dma-channel@C {
+        reg = <0x7c05C180 0x20>;
+    };
+    dma-channel@D {
+        reg = <0x7c05C1A0 0x20>;
+    };
+    dma-channel@E {
+        reg = <0x7c05C1C0 0x20>;
+    };
+    dma-channel@F {
+        reg = <0x7c05C1E0 0x20>;
+    };
 };

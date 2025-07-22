@@ -9,19 +9,23 @@
 &i2c_0 {
     status = "okay";
     /* @note I2C-BUS-0 SCL,SDA pads are non-muxable pins */
+    i2c-sda-falling-time-ns = <1000>;
 };
 
 &i2c_1 {
     status = "okay";
+    i2c-sda-falling-time-ns = <1000>;
     /* @note I2C-BUS-1 SCL,SDA pads are non-muxable pins */
     /* @todo - M.2 Ekey, clock buffer, DSI */
     codec_tlv320aic3104: tlv320aic3104@18 {
         #sound-dai-cells = <0>;
         compatible = "ti,tlv320aic3104";
         reg = <0x18>;
-        /* @note : If using I2S slave mode, update property as follow:
-         * - ai3x-source-clk = "mclk";
+        /* @note, If using I2S Controller mode as:
+         * - Master: set: ai3x-source-clk = "bclk";
+         * - Slave: set: ai3x-source-clk = "mclk";
          */
+
         ai3x-source-clk = "bclk";
         ai3x-micbias-vg = <2>;
 		/* Regulators */
@@ -88,17 +92,18 @@
     clock-frequency = <400000>;
     pinctrl-names = "default";
     pinctrl-0 = <&pinctrl_gpio_16>, <&pinctrl_gpio_17>;
+    i2c-sda-falling-time-ns = <190>;
 
-    gyro_icm42670: icm42670@68 {
-        compatible = "invensense,icm42670";
-        reg = <0x68>;
+    gyro_lsm6dsr_2: lsm6dsr_2@6a {
+        compatible = "st,lsm6dsr";
+        reg = <0x6a>;
         vdd-supply = <&regulator_1p8v>;
         vddio-supply = <&regulator_1p8v>;
         interrupt-parent = <&gpio1>;
-        interrupts = <11 IRQ_TYPE_EDGE_RISING>;
+        interrupts = <11 IRQ_TYPE_LEVEL_HIGH>;
         pinctrl-names = "default";
         pinctrl-0 = <&pinctrl_gpio_27>;
-	};
+    };
 };
 
 &serial0 {
@@ -146,7 +151,7 @@
             dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-            sdclkdl-cnfg = <0x0 0x2>; //extdly_en, cckdl_dc
+            sdclkdl-cnfg = <0x0 0x50>; //extdly_en, cckdl_dc
             drive-strength = <0xC 0xC>; //pad_sp, pad_sn
     };
 };
@@ -160,60 +165,59 @@
             dat-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             rst-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             clk-pad-values = <0x2 0x2 0x0 0x0>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-            sdclkdl-cnfg = <0x1 0x32>; //extdly_en, cckdl_dc
-            drive-strength = <0x9 0x8>; //pad_sp, pad_sn
+            sdclkdl-cnfg = <0x0 0x64>; //extdly_en, cckdl_dc
+            drive-strength = <0xA 0xA>; //pad_sp, pad_sn
             u-boot,dm-spl;
     };
 };
 
-/* @note : If using I2S slave mode uncomment the following:
- * hailo_i2s_fractional_divider_clock: hailo_i2s_fractional_divider_clock {
- *   status = "disabled";
- * };
- */
-
-&i2s_0_cpu {
+&i2s_hailo {
     status = "okay";
-    pinctrl-names = "default";
-    pinctrl-0 = <&pinctrl_i2s0_sck>,
-                <&pinctrl_i2s0_sdi>,
-                <&pinctrl_i2s0_sdo>,
-                <&pinctrl_i2s0_ws>;
-
-    /* @note : If using I2S slave mode, update properties with as follow:
-     * - clocks (remove property)
-     * - clocks-name (remove property)
-     */
-    clocks = <&hailo_i2s_fractional_divider_clock>;
-    clock-names = "i2sclk";
+    i2s_0_cpu: audio-controller-0@10d000 {
+        status = "okay";
+        pinctrl-names = "default";
+        pinctrl-0 = <&pinctrl_i2s0_sck>,
+                    <&pinctrl_i2s0_sdi>,
+                    <&pinctrl_i2s0_sdo>,
+                    <&pinctrl_i2s0_ws>;
+        /* Possible audio-controller configuration to override into you specific board DTS.
+         * - Master:
+         *   - set one of the following:
+         *     - HAILO_I2S_CTRL_CFG(0, XTAL);
+         *     - HAILO_I2S_CTRL_CFG(0, PCLK);
+         *     - HAILO_I2S_CTRL_CFG(0, FAST_ACLK);
+         *     - HAILO_I2S_CTRL_CFG(0, EXTERNAL_MCLK, <OSC Hz>); - E.g: OSC Hz: 12288000
+         * - Slave:
+         *   - set: HAILO_I2S_CTRL_CFG(0, SLAVE_CLK); - default
+         */
+         HAILO_I2S_CTRL_CFG(0, PCLK);
+    };
 };
 
 &audio_card_0 {
     status = "okay";
-    /* @note : If using I2S slave mode, update properties with as follow:
-     * - simple-audio-card,bitclock-master = <&codec_dai_0>;
-     * - simple-audio-card,frame-master = <&codec_dai_0>;
-     * - simple-audio-card,name = "Hailo15l-Audio-slave-0"
+    /* Possible audio-card configuration to override into you specific board DTS.
+     * If using I2S Controller mode as:
+     * - Masrer: set SIMPLE_AUDIO_CARD_CFG(0, MASTER);
+     * - Slave: set SIMPLE_AUDIO_CARD_CFG(0, SLAVE);
      */
-    simple-audio-card,bitclock-master = <&cpu_dai_0>;
-    simple-audio-card,frame-master = <&cpu_dai_0>;
-
+    SIMPLE_AUDIO_CARD_CFG(0, MASTER);
     cpu_dai_0: simple-audio-card,cpu {
-        sound-dai = <&i2s_0_cpu>;
-        /* @note : If using I2S slave mode, update properties with as follow:
-         * - system-clock-frequency = <12288000>;
-         * - system-clock-direction-out (remove property);
+        /* Possible CPU DAI configuration to override into you specific board DTS.
+         * If using I2S Controller mode as:
+         * - Maser: set CPU_DAI_CFG(0, MASTER);
+         * - Slave: set CPU_DAI_CFG(0, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
          */
-        system-clock-frequency = <1536000>;
-        system-clock-direction-out;
+        CPU_DAI_CFG(0, MASTER);
     };
     codec_dai_0: simple-audio-card,codec {
         sound-dai = <&codec_tlv320aic3104>;
-        /* @note : If using I2S slave mode, update properties with as follow:
-         * - system-clock-frequency = <12288000>;
+        /* Possible CODEC DAI configuration to override into you specific board DTS.
+         * If using I2S Controller mode as:
+         * - Master: set CODEC_DAI_CFG(0, MASTER);
+         * - Slave: set: CODEC_DAI_CFG(0, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
          */
-        system-clock-frequency = <1536000>;
-
+        CODEC_DAI_CFG(0, MASTER);
     };
 };
 
@@ -385,42 +389,42 @@
     pinctrl_eth_tx_clk: eth_tx_clk {
         function = "eth_tx_clk_out";
         groups = "eth_tx_clk_out_grp";
-        drive-strength = <4>;
+        drive-strength = <12>;
     };
 
     /* IO_PAD_17 */
     pinctrl_eth_tx_ctl_en: eth_tx_ctl_en {
         function = "eth_tx_ctl_en_out";
         groups = "eth_tx_ctl_en_out_grp";
-        drive-strength = <4>;
+        drive-strength = <13>;
     };
 
     /* IO_PAD_18 */
     pinctrl_eth_txd_0: eth_txd_0 {
         function = "eth_txd_0_out";
         groups = "eth_txd_0_out_grp";
-        drive-strength = <4>;
+        drive-strength = <13>;
     };
 
     /* IO_PAD_19 */
     pinctrl_eth_txd_1: eth_txd_1 {
         function = "eth_txd_1_out";
         groups = "eth_txd_1_out_grp";
-        drive-strength = <4>;
+        drive-strength = <13>;
     };
 
     /* IO_PAD_20 */
     pinctrl_eth_txd_2: eth_txd_2 {
         function = "eth_txd_2_out";
         groups = "eth_txd_2_out_grp";
-        drive-strength = <4>;
+        drive-strength = <13>;
     };
 
     /* IO_PAD_21 */
     pinctrl_eth_txd_3: eth_txd_3 {
         function = "eth_txd_3_out";
         groups = "eth_txd_3_out_grp";
-        drive-strength = <4>;
+        drive-strength = <13>;
     };
 
     /* IO_PAD_22 */
@@ -873,7 +877,7 @@
     
     sensor_0: camera-sensor@1a {
         status = "ok";
-        compatible = "sony,imx334", "sony,imx675", "sony,imx678";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
@@ -884,7 +888,7 @@
             sensor_out_csi2rx: endpoint {
                 data-lanes = <1 2 3 4>;
                 remote-endpoint = <&csi2rx_in_sensor>;
-		        link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
+		        link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
             };
         };
      };
@@ -927,4 +931,12 @@
         #clock-cells = <0>;
         clock-frequency = <24000000>;
     };
+};
+
+&hailo_vc8000e {
+    status = "ok";
+};
+
+&vc8000e_reserved {
+    status = "ok";
 };

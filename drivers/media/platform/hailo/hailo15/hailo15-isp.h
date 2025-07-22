@@ -138,6 +138,30 @@ struct hailo15_miv2_mis {
 	struct list_head list;
 };
 
+struct hailo15_hw_shifter_config {
+    uint32_t first_shifter_offset;
+    uint32_t shift_value;
+    size_t shifter_regs;
+};
+
+struct hailo15_isp_line_buf_config {
+    int enabled;
+    size_t repeat; // Amount of subsequent repeats for each register (per channel)
+
+    struct {
+        uint32_t line_buf_cfg;
+        uint32_t line_buf_cfg_line_width;
+        uint32_t line_buf_cfg_min_vblank_duration;
+        uint32_t line_buf_cfg_min_hblank_duration;
+    } offsets;
+
+    struct {
+        uint8_t vblank_vc;
+        uint32_t line_buf_cfg_min_vblank_duration;
+        uint32_t line_buf_cfg_min_hblank_duration;
+    } values;
+};
+
 struct isp_wrapper_config {
     uint32_t fatal_asf_int_mask_offset;
     uint32_t fatal_asf_int_mask_value;
@@ -145,6 +169,8 @@ struct isp_wrapper_config {
     uint32_t func_int_mask_value;
     uint32_t err_int_mask_offset;
     uint32_t err_int_mask_value;
+    struct hailo15_hw_shifter_config shifter_cfg;
+    struct hailo15_isp_line_buf_config line_buf_cfg;
 };
 
 struct hailo15_isp_device {
@@ -217,7 +243,7 @@ struct hailo15_isp_device {
 	atomic_t frame_received;
 	atomic_t streaming_started;
 	bool tuning_state;
-	u64 curr_hdr_timestamp; /* Protected by mcm_lock */
+	bool hdr_enabled;
 };
 
 

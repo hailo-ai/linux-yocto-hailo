@@ -119,6 +119,9 @@ struct platform_device;
 int hailo15_extra_probe(struct platform_device *pdev);
 int hailo15_proc_entries_create(struct platform_device *pdev);
 int hailo15_proc_entries_remove(struct platform_device *pdev);
+bool using_hailo_scu_dma(struct dw_i2s_dev *dev);
+bool using_hailo_config(struct dw_i2s_dev *dev);
+bool using_hailo_pcm_processing(struct dw_i2s_dev *dev);
 
 #if IS_ENABLED(CONFIG_SND_DESIGNWARE_PCM)
 struct dw_i2s_dev;
@@ -144,18 +147,29 @@ unsigned int dw_pcm_hailo15_tx_16(struct dw_i2s_dev *dev,
                                   struct snd_pcm_runtime *runtime,
                                   unsigned int tx_ptr,
                                   bool *period_elapsed);
-int dw_pcm_hailo15_open(struct snd_soc_component *component,
+
+// Open
+int dw_pcm_open__hailo_processing_only(struct snd_soc_component *component,
                         struct snd_pcm_substream *substream);
-int dw_pcm_hailo15_scu_dma_open(struct snd_soc_component *component,
+int dw_pcm_open__hailo_processing_and_scu_dma(struct snd_soc_component *component,
                                 struct snd_pcm_substream *substream);
-int dw_pcm_hailo15_scu_dma_close(struct snd_soc_component *component,
+int dw_pcm_open__hailo_scu_dma_only(struct snd_soc_component *component,
                                 struct snd_pcm_substream *substream);
-int dw_pcm_hailo15_hw_params(struct snd_soc_component *component,
+// Close
+int dw_pcm_close__hailo_processing_and_scu_dma(struct snd_soc_component *component,
+                                struct snd_pcm_substream *substream);
+int dw_pcm_close__hailo_scu_dma_only(struct snd_soc_component *component,
+                                struct snd_pcm_substream *substream);
+// hw_params
+int dw_pcm_hw_params__hailo_processing_only(struct snd_soc_component *component,
                              struct snd_pcm_substream *substream,
                              struct snd_pcm_hw_params *hw_params);
-int dw_pcm_hailo15_scu_dma_hw_params(struct snd_soc_component *component,
+int dw_pcm_hw_params__hailo_processing_and_scu_dma(struct snd_soc_component *component,
                                      struct snd_pcm_substream *substream,
                                      struct snd_pcm_hw_params *hw_params);
+int dw_pcm_hw_params__hailo_scu_dma_only(struct snd_soc_component *component,
+                                   struct snd_pcm_substream *substream,
+                                   struct snd_pcm_hw_params *hw_params);
 #endif
 
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS

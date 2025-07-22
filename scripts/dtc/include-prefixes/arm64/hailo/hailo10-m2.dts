@@ -5,7 +5,7 @@
 
 /dts-v1/;
 #include "hailo10-m2-base.dtsi"
-#include "hailo10-cma-config.dtsi"
+#include "hailo10-4gb-cma-config.dtsi"
 
 / {
     memory {

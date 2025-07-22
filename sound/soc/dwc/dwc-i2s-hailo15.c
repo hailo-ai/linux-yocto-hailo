@@ -14,8 +14,13 @@
 #include <linux/device.h>
 #include <linux/of_device.h>
 #include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/types.h>
+#include <linux/soc/hailo/scmi_hailo_ops.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
 #include "local.h"
 
+static const struct scmi_hailo_ops *hailo_ops;
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
 
 struct per_cpu_stats {
@@ -126,10 +131,14 @@ int proc_stats(struct seq_file *s, void *v)
 {
 	struct dw_i2s_dev *dev = PDE_DATA(file_inode(s->file));
 	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
+	bool using_scu_dma_flag = false;
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
+	char *irq_desc_str;
 	int cpu;
 #endif
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+
+	using_scu_dma_flag = using_hailo_scu_dma(dev);
+	if (using_scu_dma_flag) {
 	    seq_printf(s, "playback: sw-underrun %15u, hw-overrun %15u\n",
 			data->scu_dw_i2s_dma.shmem->playback.stats.sw_underrun,
 			data->scu_dw_i2s_dma.shmem->playback.stats.hw_overrun);
@@ -141,32 +150,29 @@ int proc_stats(struct seq_file *s, void *v)
 	}
 
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
-    seq_printf(s, "IRQ %s rx execution time (nsec):\n",
-		(dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) ? "blk" : "");
+	irq_desc_str = (using_scu_dma_flag) ? "SCU-BLK" : "I2S-PCM";
+    seq_printf(s, "IRQ %s rx execution time (nsec):\n", irq_desc_str);
 	for_each_possible_cpu(cpu) {
 		struct per_cpu_stats *stats = per_cpu_ptr(&per_cpu_ktime_irq_rx_execution, cpu);
 		proc_cpu_irq_stats(s, cpu, stats);
 	}
-    seq_printf(s, "IRQ %s tx execution time (nsec):\n",
-		(dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) ? "blk" : "");
+    seq_printf(s, "IRQ %s tx execution time (nsec):\n", irq_desc_str);
 	for_each_possible_cpu(cpu) {
 		struct per_cpu_stats *stats = per_cpu_ptr(&per_cpu_ktime_irq_tx_execution, cpu);
 		proc_cpu_irq_stats(s, cpu, stats);
 	}
-    seq_printf(s, "IRQ %s rx interval time (nsec):\n",
-	(dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) ? "blk" : "");
+    seq_printf(s, "IRQ %s rx interval time (nsec):\n", irq_desc_str);
 	for_each_possible_cpu(cpu) {
 		struct per_cpu_stats *stats = per_cpu_ptr(&per_cpu_ktime_irq_interval_rx, cpu);
 		proc_cpu_irq_stats(s, cpu, stats);
 	}
-    seq_printf(s, "IRQ %s tx interval time (nsec):\n",
-		(dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) ? "blk" : "");
+    seq_printf(s, "IRQ %s tx interval time (nsec):\n", irq_desc_str);
 	for_each_possible_cpu(cpu) {
 		struct per_cpu_stats *stats = per_cpu_ptr(&per_cpu_ktime_irq_interval_tx, cpu);
 		proc_cpu_irq_stats(s, cpu, stats);
 	}
 
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (using_scu_dma_flag) {
 		seq_printf(s, "SCU IRQ rx execution time (nsec):\n");
 		proc_scu_irq_stats(s, &data->scu_dw_i2s_dma.shmem->irq_rx_stats.execution);
 
@@ -217,7 +223,7 @@ static ssize_t proc_write_cache_clear(struct file *filp, const char __user *buf,
         return ret;
     } else if (clear) {
         dev_info(dev->dev, "Clearing stats\n");
-		if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+		if (using_hailo_scu_dma(dev)) {
 			/* Reset playback/record stats */
 			shmem->record.stats = (struct dwc_i2s_dma_record_stats){ 0 };
 			shmem->playback.stats = (struct dwc_i2s_dma_playback_stats){ 0 };
@@ -399,6 +405,40 @@ static int __hailo15_extra_common_probe(struct platform_device *pdev, u32 stream
 	return 0;
 }
 
+bool using_hailo_scu_dma(struct dw_i2s_dev *dev)
+{
+	switch (dev->cfg_id) {
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_AND_SCU_DMA:
+	case CONFIG_ID_DW_I2S__HAILO_SCU_DMA_ONLY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool using_hailo_config(struct dw_i2s_dev *dev)
+{
+	switch (dev->cfg_id) {
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_AND_SCU_DMA:
+	case CONFIG_ID_DW_I2S__HAILO_SCU_DMA_ONLY:
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool using_hailo_pcm_processing(struct dw_i2s_dev *dev)
+{
+	switch (dev->cfg_id) {
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_AND_SCU_DMA:
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY:
+		return true;
+	default:
+		return false;
+	}
+}
+
 int hailo15_extra_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -408,43 +448,49 @@ int hailo15_extra_probe(struct platform_device *pdev)
 	struct hailo15_priv_data *data;
 	struct dw_i2s_dev *dev = dev_get_drvdata(&pdev->dev);
 	u32 ring_size;
+	struct of_phandle_args irq_data;
+
 
     /* Allocate Hailo15 specific private data */
     data = devm_kzalloc(&pdev->dev, sizeof(struct hailo15_priv_data), GFP_KERNEL);
     if (!data) {
         return -ENOMEM;
 	}
-	ret = __hailo15_extra_common_probe(pdev, SNDRV_PCM_STREAM_CAPTURE, data);
-	if (ret) {
-		return ret;
-	}
-	ret = __hailo15_extra_common_probe(pdev, SNDRV_PCM_STREAM_PLAYBACK, data);
-	if (ret) {
-		return ret;
-	}
+	if (using_hailo_pcm_processing(dev)) {
+		ret = __hailo15_extra_common_probe(pdev, SNDRV_PCM_STREAM_CAPTURE, data);
+		if (ret) {
+			return ret;
+		}
+		ret = __hailo15_extra_common_probe(pdev, SNDRV_PCM_STREAM_PLAYBACK, data);
+		if (ret) {
+			return ret;
+		}
 
-	if (data->rx_pace_pattern_info.pace_sum * data->rx_pace_pattern_info.pattern_repetitions == 0) {
-		dev_err(&pdev->dev, "Invalid value of pace sum or pace pattern sync times, both must be != 0\n");
-		return EINVAL;
-	}
+		if (data->rx_pace_pattern_info.pace_sum * data->rx_pace_pattern_info.pattern_repetitions == 0) {
+			dev_err(&pdev->dev, "Invalid value of pace sum or pace pattern sync times, both must be != 0\n");
+			return EINVAL;
+		}
 
-	ring_size = roundup_pow_of_two(data->rx_pace_pattern_info.pace_sum * data->rx_pace_pattern_info.pattern_repetitions);
-	data->l_rx_sync_ring.size = ring_size;
-	data->r_rx_sync_ring.size = ring_size;
+		ring_size = roundup_pow_of_two(data->rx_pace_pattern_info.pace_sum * data->rx_pace_pattern_info.pattern_repetitions);
+		data->l_rx_sync_ring.size = ring_size;
+		data->r_rx_sync_ring.size = ring_size;
 
-	data->l_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
-	if (!data->l_rx_sync_ring.buf) {
-		return -ENOMEM;
-	}
+		data->l_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
+		if (!data->l_rx_sync_ring.buf) {
+			return -ENOMEM;
+		}
 
-	data->r_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
-	if (!data->r_rx_sync_ring.buf) {
-		return -ENOMEM;
+		data->r_rx_sync_ring.buf = devm_kzalloc(&pdev->dev, ring_size * sizeof(u16), GFP_KERNEL);
+		if (!data->r_rx_sync_ring.buf) {
+			return -ENOMEM;
+		}
 	}
 
 	data->dev = dev;
 
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (using_hailo_scu_dma(dev)) {
+		struct scmi_hailo_set_spi_interrupt_forwarding_a2p msg;
+
 		np = of_parse_phandle(pdev->dev.of_node, "shmem", 0);
 		if (!of_device_is_compatible(np, "hailo,hailo15-i2s-shmem")) {
 			dev_err(&pdev->dev, "invalid shmem compatability of_node\n");
@@ -475,6 +521,28 @@ int hailo15_extra_probe(struct platform_device *pdev)
 
 		/* Setup shmem area */
 		shmem_reset(data->scu_dw_i2s_dma.shmem);
+
+		of_irq_parse_one(pdev->dev.of_node, 0, &irq_data);
+
+		if (irq_data.args_count != 3) {
+			dev_err(&pdev->dev, "Invalid number of irq args: %d\n", irq_data.args_count);
+			return -EINVAL;
+		}
+		if (irq_data.args[0] != GIC_SPI) {
+			dev_err(&pdev->dev, "Invalid GIC interrupt type %d, valid type GIC_SPI=%d\n", irq_data.args[0], GIC_SPI);
+			return -EINVAL;
+		}
+
+		hailo_ops = scmi_hailo_get_ops();
+		if (IS_ERR(hailo_ops)) {
+			return PTR_ERR(hailo_ops);
+		}
+
+		// Mask SPI interrupt forwarding
+		dev_dbg(&pdev->dev, "Mask SPI interrupt #%d forwarding\n", irq_data.args[1]);
+		msg.forward = 0;
+		msg.interrupt_id = irq_data.args[1];
+		hailo_ops->set_spi_interrupt_forwarding(&msg);
 	}
 
 	/* Store Hailo15 specific private data and store it inside driver data (struct dw_i2s_dev). */

@@ -82,6 +82,8 @@
 
 #define hailo15_video_node_buffer_process(ctx, grp_id, buf)                            \
 	(HAILO15_DMA_CTX_CB(ctx, buffer_process, grp_id, buf))
+#define hailo15_video_node_buffer_queue(ctx, grp_id, buf)                            \
+	(HAILO15_DMA_CTX_CB(ctx, buffer_queue, grp_id, buf))
 #define hailo15_video_node_get_frame_count(ctx, grp_id, fc)                            \
 	(HAILO15_DMA_CTX_CB(ctx, get_frame_count, grp_id, grp_id, fc))
 #define hailo15_video_node_get_rmem(ctx, grp_id, rmem)                                 \
@@ -95,6 +97,9 @@
 
 #define hailo15_dma_buffer_done(ctx, grp_id, buf)                              \
 	(HAILO15_DMA_CTX_CB(ctx, buffer_done, grp_id, buf, grp_id))
+
+#define hailo15_dma_buffer_dequeue(ctx, grp_id, buf)                              \
+	(HAILO15_DMA_CTX_CB(ctx, buffer_dequeue, grp_id, buf, grp_id))
 
 #define hailo15_video_node_get_vsm(ctx, grp_id, index, vsm)                    \
 	(HAILO15_DMA_CTX_CB(ctx, get_vsm, grp_id, grp_id, index, vsm))
@@ -620,6 +625,8 @@ struct hailo15_mux_interrupt_cfg {
 };
 
 struct hailo15_buf_ops {
+	int (*buffer_queue) (struct hailo15_dma_ctx *ctx, struct hailo15_buffer *buf); /* VIDEO -> DMA */
+	int (*buffer_dequeue) (struct hailo15_dma_ctx *ctx, struct hailo15_buffer *buf, int grp_id); /* DMA -> VIDEO */
 	int (*buffer_process)(struct hailo15_dma_ctx *ctx,
 				  struct hailo15_buffer *buf); /* VIDEO -> DMA */
 	int (*buffer_done)(struct hailo15_dma_ctx *ctx,

@@ -75,5 +75,6 @@ int isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args);
 int isp_fe_get_status(struct vvcam_fe_dev *dev, void __user *args);
 int isp_fe_reset(struct vvcam_fe_dev *dev);
+void isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 
 #endif

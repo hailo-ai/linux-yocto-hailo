@@ -14,6 +14,7 @@ static const struct scmi_hailo_ops *hailo_ops;
 
 static const struct of_device_id hailo_soc_of_match[] = {
 	{ .compatible = "hailo,hailo15" },
+	{ .compatible = "hailo,hailo10h" },
 	{ .compatible = "hailo,hailo15l" },
 	{ .compatible = "hailo,hailo10h2" },
 	{}
@@ -24,12 +25,18 @@ struct __attribute__((packed)) hailo_fuse_file {
 	u32 active_clusters;
 };
 
+/* BIST mask at linux file is a failure indication: 0 for success and 1 for failure */
+struct __attribute__((packed)) hailo_mbist_status_file {
+	u32 mbist_status;
+};
+
 struct hailo_soc {
 	struct hailo_fuse_file fuse_file;
 	struct scmi_hailo_get_boot_info_p2a boot_info;
 	struct kernfs_node *fuse_kn;
 	struct soc_device *soc_dev;
 	struct scmi_hailo_send_components_version_p2a components_version;
+	struct hailo_mbist_status_file mbist_status_file;
 };
 
 #define H15__SCU_BOOT_BIT_MASK (3)
@@ -169,6 +176,14 @@ static ssize_t bootstrap_image_storage_show(struct device *dev, struct device_at
 		       hailo_soc->boot_info.bootstrap_image_storage);
 }
 
+static ssize_t scu_to_ap_timer_offset_ns_show(struct device *dev, struct device_attribute *attr,
+	char *buf)
+{
+struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+return sprintf(buf, "%llu\n",
+	  hailo_soc->boot_info.scu_to_ap_timer_offset_ns);
+}
 static DEVICE_ATTR_RO(boot_success_scu_bl);
 static DEVICE_ATTR_RO(boot_success_scu_fw);
 static DEVICE_ATTR_RO(boot_success_ap_bootloader);
@@ -178,6 +193,7 @@ static DEVICE_ATTR_RO(active_image_desc_index);
 static DEVICE_ATTR_RO(active_boot_image_storage);
 static DEVICE_ATTR_RO(active_boot_image_offset);
 static DEVICE_ATTR_RO(bootstrap_image_storage);
+static DEVICE_ATTR_RO(scu_to_ap_timer_offset_ns);
 
 static struct attribute *hailo_boot_info_attrs[] = {
 	&dev_attr_boot_success_scu_bl.attr,
@@ -189,6 +205,7 @@ static struct attribute *hailo_boot_info_attrs[] = {
 	&dev_attr_active_boot_image_storage.attr,
 	&dev_attr_active_boot_image_offset.attr,
 	&dev_attr_bootstrap_image_storage.attr,
+	&dev_attr_scu_to_ap_timer_offset_ns.attr,
 	NULL,
 };
 
@@ -204,6 +221,17 @@ static ssize_t fuse_show(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR_RO(fuse);
+
+static ssize_t mbist_status_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+	memcpy(buf, &hailo_soc->mbist_status_file, sizeof(hailo_soc->mbist_status_file));
+	return sizeof(hailo_soc->mbist_status_file);
+}
+
+static DEVICE_ATTR_RO(mbist_status);
 
 static ssize_t hailo_scu_fw_version_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -249,7 +277,7 @@ static struct attribute *hailo_versions_attrs[] = {
 
 static const struct attribute_group hailo_versions_group = { .name = "hailo_versions", .attrs = hailo_versions_attrs, };
 
-static struct attribute *hailo_attrs[] = { &dev_attr_fuse.attr, NULL };
+static struct attribute *hailo_attrs[] = { &dev_attr_fuse.attr, &dev_attr_mbist_status.attr, NULL };
 
 ATTRIBUTE_GROUPS(hailo);
 
@@ -270,12 +298,29 @@ static int hailo_soc_fill_fuse_file(struct hailo_fuse_file *fuse_file)
 	return 0;
 }
 
+static int hailo_soc_fill_mbist_status_file(struct hailo_mbist_status_file *mbist_status_file)
+{
+	struct scmi_hailo_mbist_subservers_status_p2a mbist_status;
+	int ret;
+
+	ret = hailo_ops->get_mbist_subservers_status(&mbist_status);
+	if (ret) {
+		return ret;
+	}
+
+	memcpy(&mbist_status_file->mbist_status, &mbist_status.mbist_status_bitmask, sizeof(struct scmi_hailo_mbist_subservers_status_p2a));
+
+	return 0;
+}
+
 static int hailo_soc_probe(struct platform_device *pdev)
 {
 	struct soc_device *soc_dev;
 	struct device *dev;
 	struct soc_device_attribute *soc_dev_attr;
 	struct hailo_soc *hailo_soc;
+	struct device_node *np = pdev->dev.of_node;
+	const char *compat;
 
 	int ret;
 
@@ -292,12 +337,36 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	if (!soc_dev_attr)
 		return -ENOMEM;
 
-	soc_dev_attr->family = "Hailo15";
+	if (of_property_read_string(np, "compatible", &compat) != 0) {
+		dev_err(&pdev->dev, "Failed to get device compatible\n");
+		return -EINVAL;
+	}
+
+	soc_dev_attr->family = "Hailo-1x";
+	if (strcmp(compat, "hailo,hailo15") == 0)
+		soc_dev_attr->machine = "Hailo-15";
+	else if (strcmp(compat, "hailo,hailo10h") == 0)
+		soc_dev_attr->machine = "Hailo-10h";
+	else if (strcmp(compat, "hailo,hailo15l") == 0)
+		soc_dev_attr->machine = "Hailo-15l";
+	else if (strcmp(compat, "hailo,hailo10h2") == 0)
+		soc_dev_attr->machine = "Hailo-10h2";
+	else {
+		dev_err(&pdev->dev, "Invalid compatible\n");
+		return -EINVAL;
+	}
+
 	soc_dev_attr->custom_attr_group = hailo_groups[0];
 
 	ret = hailo_soc_fill_fuse_file(&hailo_soc->fuse_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to fill fuse info\n");
+		return ret;
+	}
+
+	ret = hailo_soc_fill_mbist_status_file(&hailo_soc->mbist_status_file);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to mbist status\n");
 		return ret;
 	}
 

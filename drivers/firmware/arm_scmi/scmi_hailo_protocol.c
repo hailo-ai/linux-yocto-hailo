@@ -57,6 +57,12 @@ static int scmi_hailo_get_fuse_info(const struct scmi_protocol_handle *ph, struc
 	return ret;
 }
 
+static int scmi_hailo_get_mbist_subservers_status(const struct scmi_protocol_handle *ph, struct scmi_hailo_mbist_subservers_status_p2a *mbist_subservers_status)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_MBIST_SUBSERVERS_STATUS_ID, NULL, 0, mbist_subservers_status, sizeof(*mbist_subservers_status));
+	return ret;
+}
+
 static int scmi_hailo_set_eth_rmii(const struct scmi_protocol_handle *ph)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_ETH_RMII_MODE_ID, NULL, 0, NULL, 0);
@@ -92,16 +98,30 @@ static int scmi_hailo_send_send_components_version(const struct scmi_protocol_ha
 	return ret;
 }
 
+static int scmi_hailo_set_i2s_source_clk(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_i2s_source_clock_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_I2S_SOURCE_CLK_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
+
+static int scmi_hailo_set_spi_interrupt_forwarding(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_SPI_INTERRUPT_FORWARDING_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
 
 static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.get_boot_info = scmi_hailo_get_boot_info,
 	.get_fuse_info = scmi_hailo_get_fuse_info,
 	.set_eth_rmii = scmi_hailo_set_eth_rmii,
 	.start_measure = scmi_hailo_start_measure,
+	.get_mbist_subservers_status = scmi_hailo_get_mbist_subservers_status,
 	.stop_measure = scmi_hailo_stop_measure,
 	.send_boot_success_ind = scmi_hailo_send_boot_success_ind,
 	.send_swupdate_ind = scmi_hailo_send_swupdate_ind,
 	.send_components_version = scmi_hailo_send_send_components_version,
+	.set_i2s_source_clk = scmi_hailo_set_i2s_source_clk,
+	.set_spi_interrupt_forwarding = scmi_hailo_set_spi_interrupt_forwarding,
 };
 
 static int scmi_hailo_protocol_init(const struct scmi_protocol_handle *ph)

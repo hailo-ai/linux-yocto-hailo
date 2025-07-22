@@ -55,6 +55,7 @@
 #define RXWRAPPER_CSI_OUT_LINE_BUF_CFG 0x13
 
 #define RAW12_DT 0x2c
+#define RAW10_DT 0x2b
 #define YUV422_8b_DT 0x1e
 #define RES_4K_FRAME_LINE_NUM 0x870
 #define RXWRAPPER_MAX_NUM_EXPOSURES 3
@@ -160,7 +161,6 @@
 #define RXWRAPPER_RX_FRAME_DROP_INT_MASK_DEFAULT 0x0
 
 struct rxwrapper_config {
-    uint64_t rxwrapper_vision_ss_null_addr;
     uint32_t rxwrapper_cfg_reg_value;
 
     uint8_t rxwrapper_pipes_data_cfg_dtype_shift;
@@ -193,7 +193,6 @@ struct rxwrapper_config {
 };
 
 static const struct rxwrapper_config hailo15_rxwrapper_config = {
-    .rxwrapper_vision_ss_null_addr = 0x60700000,
     .rxwrapper_cfg_reg_value = 0xf101,
     .rxwrapper_pipes_data_cfg_dtype_shift = 3,
     .rxwrapper_pipes_data_cfg_wc_vc_shift = 9,
@@ -225,7 +224,6 @@ static const struct rxwrapper_config hailo15_rxwrapper_config = {
 };
 
 static const struct rxwrapper_config hailo15l_rxwrapper_config = {
-    .rxwrapper_vision_ss_null_addr = 0x60C00000,
     .rxwrapper_cfg_reg_value = 0x7e180,
     .rxwrapper_pipes_data_cfg_dtype_shift = 5,
     .rxwrapper_pipes_data_cfg_wc_vc_shift = 11,
@@ -309,9 +307,15 @@ struct hailo15_rxwrapper_priv {
 	struct clk *rxwrapper_xtal_clk;
 	struct hailo15_p2a_buffer_regs_addr p2a_buf_regs;
 	struct hailo15_buf_ctx *buf_ctx;
+	
+	spinlock_t buf_lock; /* Protects the following variables: */
 	struct hailo15_buffer *cur_buf[HAILO15_VID_GRP_MAX];
 	struct hailo15_buffer *next_buf[HAILO15_VID_GRP_MAX];
+	struct list_head buf_queue[HAILO15_VID_GRP_MAX];
+	atomic_t num_works_processing;
+	
 	const struct rxwrapper_config *rxwrapper_cfg;
+	uint64_t vision_ss_null_addr;
 	void *private_data[HAILO15_VID_GRP_MAX];
 	int id; /* rxwrapper id: 0/1/... */
 	int irq;
@@ -327,8 +331,8 @@ struct hailo15_rxwrapper_priv {
 
 /* Defer Interrupt info element */
 struct hailo15_irq_work {
-	uint32_t int_status;
-	bool first_hdr_frame;
+	int grp_id;
+	struct hailo15_buffer *dequeued_buf;
 	struct list_head list;
 };
 
@@ -656,9 +660,10 @@ static int __maybe_unused hailo15_rxwrapper_pipe_enable_credits(
 		return ret;
 	}
 
+	/* Disable frame drop mechanism */
 	ret = hailo15_rxwrapper_pipe_write(
 		hailo15_rxwrapper, pipe,
-		rxwrapper_cfg->rxwrapper_cfg_credit_handler_frame_drop_en_offset, 0, 1, 0x1);
+		rxwrapper_cfg->rxwrapper_cfg_credit_handler_frame_drop_en_offset, 0, 1, 0x0);
 	if (ret) {
 		pr_err("%s - RXWRAPPER_CFG_CREDIT_HANDLER_FRAME_DROP_EN_OFFSET failed\n",
 			   __func__);
@@ -701,6 +706,7 @@ static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address(
 						base_data);
 }
 
+/* Should be called with hailo15_rxwrapper->buf_lock locked */
 static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address_or_null(
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 pipe, u32 grp_id)
 {
@@ -714,7 +720,7 @@ static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address_or_null(
 	buf = hailo15_rxwrapper->next_buf[grp_id];
 	config_address = buf ? 
 		buf->dma[plane_idx] : 
-		hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr;
+		hailo15_rxwrapper->vision_ss_null_addr;
 	return hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe, config_address);
 }
 
@@ -971,7 +977,7 @@ int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
 			pipe = real_pipe + i;
 			hailo15_rxwrapper_pipe_apply_cfg(hailo15_rxwrapper, pipe, sd->grp_id);
 			hailo15_rxwrapper_pipe_enable_credits(hailo15_rxwrapper, pipe, &rxwrapper_chosen_credits_cfg);
-			hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe, hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr);
+			hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe, hailo15_rxwrapper->vision_ss_null_addr);
 			hailo15_rxwrapper_pipe_init(hailo15_rxwrapper, pipe);
 		}
 		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
@@ -1009,6 +1015,7 @@ disable:
 		}
 		hailo15_rxwrapper->cur_buf[sd->grp_id] = NULL;
 		hailo15_rxwrapper->next_buf[sd->grp_id] = NULL;
+		atomic_set(&hailo15_rxwrapper->num_works_processing, 0);
 
 		// Soft reset per channel, clear all internal credits/counter/status
 		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
@@ -1206,94 +1213,248 @@ static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
 	return ret;
 }
 
+/* When stopping stream, we want to be very sure that all deferred work have given all buffers back to user, so sleep if needed */
+static void wait_for_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
+{
+	int i = 0;
+	const int MAX_WAIT_ITERS = 40;
+	const int MSECS_SLEEP = 20;
+	bool ready = false;
+	
+	unsigned long flags;
+	struct hailo15_irq_work *work, *tmp;
+	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+
+	for (i = 0; i < MAX_WAIT_ITERS; i++) {
+		/* Check no works are waiting to be handled, and that all dispatched works have finished executing */
+		spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
+		ready = list_empty(&hailo15_rxwrapper->irq_work_list) && atomic_read(&hailo15_rxwrapper->num_works_processing) == 0;
+		spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
+
+		if (ready)
+			return;
+		msleep(MSECS_SLEEP);
+	}
+
+	/* The work haven't been called this long? Pro-actively clean the queue */
+	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
+	if (!list_empty(&hailo15_rxwrapper->irq_work_list)) {
+		list_for_each_entry_safe(work, tmp, &hailo15_rxwrapper->irq_work_list, list) {
+			hailo15_dma_buffer_dequeue(ctx, work->grp_id, work->dequeued_buf);
+			list_del(&work->list); // Remove the work from the list
+			kfree(work);           // Free the allocated memory
+		}
+	}
+	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
+
+	/* Note we must use memory barrier to make sure this is the last operation in this function. */
+	mb();
+	if (atomic_read(&hailo15_rxwrapper->num_works_processing) != 0) {
+		pr_err("Deferred work not finished after %d iterations of %d ms - should not happen\n", MAX_WAIT_ITERS, MSECS_SLEEP);
+	}
+}
+
 static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
 					 int grp_id)
 {
-	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
-		(struct hailo15_rxwrapper_priv *)ctx->dev;
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = (struct hailo15_rxwrapper_priv *)ctx->dev;
 	int i, pipe, real_pipe;
+	unsigned long flags;
+	struct hailo15_buffer *buf, *nbuf;
 
 	if (!hailo15_is_p2a_grp_id(grp_id))
 		return -EINVAL;
 
 	real_pipe = hailo15_grp_id_to_pipe_id(grp_id);
 
-	hailo15_rxwrapper->cur_buf[grp_id] = hailo15_rxwrapper->next_buf[grp_id];
+	spin_lock_irqsave(&hailo15_rxwrapper->buf_lock, flags);
+
+	/* clean cur_buf, next_buf and shadow registers (cur_buf can be null - we don't need to track what it was, since we are about to dequeue all buffers here anyway) */
+	hailo15_rxwrapper->cur_buf[grp_id] = NULL;
 	hailo15_rxwrapper->next_buf[grp_id] = NULL;
 	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
 		pipe = real_pipe + i;
 		hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe,
-			hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr);
+			hailo15_rxwrapper->vision_ss_null_addr);
 	}
+
+	/* Delete all list elements - and dequeue them back to the userspace */
+	list_for_each_entry_safe (buf, nbuf, &hailo15_rxwrapper->buf_queue[grp_id], irqlist) {
+		if (buf) {
+			list_del(&buf->irqlist);
+			hailo15_dma_buffer_dequeue(ctx, grp_id, buf);
+		}
+	}
+
+	spin_unlock_irqrestore(&hailo15_rxwrapper->buf_lock, flags);
+
+	/* Deferred works might still delay returning buffers to user - wait for all of them to complete */
+	wait_for_deferred_work(hailo15_rxwrapper);
+
 	return 0;
 }
 
-inline void
-hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, bool is_first_frame_hdr, u32 real_pipe, u32 grp_id)
+/* Reads the number of unprocessed frames for each exposure to out parameter.
+ * Make sure all exposures have the same number of unprocessed frames.
+ * If not - print error message (if ignore_err is false) and return false.
+ */
+bool check_unprocessed_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe, 
+		uint32_t o_unprocessed_frames[RXWRAPPER_NUM_PIPES], bool ignore_err)
 {
 	int i, pipe;
-	uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES];
-	uint32_t overflow_frames[RXWRAPPER_NUM_PIPES];
-	uint32_t dropped_frames[RXWRAPPER_NUM_PIPES];
-	bool unprocessed_ready = true;
-	bool at_least_one_pipe_dropping = false;
-	struct hailo15_buffer *buf;
-	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+	bool ret = true;
 	const struct rxwrapper_config *rxwrapper_cfg = hailo15_rxwrapper->rxwrapper_cfg;
 
-	pr_debug("%s - buffer done, real_pipe: %d, grp_id: %d, rxwrapper->grp_id: %d\n",
-		 __func__, real_pipe, grp_id, hailo15_rxwrapper->sd.grp_id);
-
+	/* Read number of unprocessed frames into given array, if 1 unrprocessed for each exposure we're ready */
 	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
 		pipe = real_pipe + i;
-		unprocessed_frames[pipe] = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, pipe,
+		o_unprocessed_frames[pipe] = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, pipe,
 			rxwrapper_cfg->rxwrapper_pipes_cfg_credit_handler_ext_unprocessed_cnt_offset,
 			RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_SHIFT,
 			RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_WIDTH);
-		at_least_one_pipe_dropping = (unprocessed_frames[pipe] <= RXWRAPPER_DEFAULT_CREDITS_FRAME_DROP_TH) ? at_least_one_pipe_dropping : true;
-		if (is_first_frame_hdr && pipe == 0) {
-			/* MSW-4889: Skip first pipe because we don't expect 1st HDR Frame (LEF) in VC #0, to be ready */
-			continue;
-		}
-		unprocessed_ready = (unprocessed_frames[pipe]) ? unprocessed_ready : false;
+
+		ret |= (o_unprocessed_frames[pipe] > 0) && (o_unprocessed_frames[pipe] == o_unprocessed_frames[real_pipe]);
 	}
 
-	if (unprocessed_ready) {
-		buf = hailo15_rxwrapper->cur_buf[grp_id];
-		hailo15_rxwrapper->cur_buf[grp_id] = NULL;
-		hailo15_dma_buffer_done(ctx, grp_id, buf);
-		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
-			pipe = real_pipe + i;
-			/* return credits */
-			if (is_first_frame_hdr && pipe == 0) {
-				/* MSW-4889: Skip first pipe because we don't expect 1st HDR Frame (LEF) in VC #0, to be ready */
-				continue;
-			}
-			hailo15_rxwrapper_pipe_write(hailo15_rxwrapper, pipe,
+	/* If we're not ready - print that - this should never happen (print all values of unprocessed frames) */
+	if (!ret && !ignore_err) {
+		pr_err_ratelimited("Unprocessed frames mismatch. pipe: %u, values: %u %u %u %u\n", real_pipe, o_unprocessed_frames[0],
+			o_unprocessed_frames[1], o_unprocessed_frames[2], o_unprocessed_frames[3]);
+	}
+
+	return ret;
+}
+
+/* Checks HW registers, and prints if there was a frame that was overwritten by HW (warn, as this is not valid) */
+void warn_overwritten_frames(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
+		uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES])
+{
+	int i, pipe;
+	int dropped;
+	const struct rxwrapper_config *rxwrapper_cfg = hailo15_rxwrapper->rxwrapper_cfg;
+
+	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
+		pipe = real_pipe + i;
+		dropped = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, pipe,
+			rxwrapper_cfg->rxwrapper_pipes_status_credit_handler_dropped_frame_cnt_offset,
+			RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_SHIFT,
+			RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_WIDTH);
+		if (dropped > 0 && unprocessed_frames[pipe] > RXWRAPPER_DEFAULT_CREDITS_FRAME_DROP_TH) {
+			pr_warn_ratelimited("%s pipe %d overwrite! unprocessed frames = %u,dropped_frames = %u\n",
+				__func__, pipe, unprocessed_frames[pipe], dropped);
+		}
+	}
+}
+
+void return_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
+	uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES])
+{
+	int i, pipe;
+	u32 creds_to_return;
+	const struct rxwrapper_config *rxwrapper_cfg = hailo15_rxwrapper->rxwrapper_cfg;
+
+	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
+		pipe = real_pipe + i;
+		creds_to_return = (unprocessed_frames[pipe] > 0) ? 1 : 0;
+		hailo15_rxwrapper_pipe_write(hailo15_rxwrapper, pipe,
 			rxwrapper_cfg->rxwrapper_pipes_cfg_credit_handler_ext_unprocessed_cnt_offset,
 			RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_SHIFT,
-			RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_WIDTH, 1);
-		}
-		hailo15_rxwrapper->frame_count++;
+			RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_EXT_UNPROCESSED_CNT_WIDTH, creds_to_return);
+	}
+}
+
+/* Should be called with hailo15_rxwrapper->buf_lock locked */
+void write_next_bufs_to_shadow_regs(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe, u32 grp_id)
+{
+	int i, pipe;
+
+	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
+		pipe = real_pipe + i;
+		hailo15_rxwrapper_pipe_set_data_address_or_null(hailo15_rxwrapper, pipe, grp_id);
+	}
+}
+
+static int hailo15_irq_work_enqueue(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_irq_work *work)
+{
+	unsigned long flags;
+
+	if (unlikely(!hailo15_rxwrapper->irq_work_wq)) {
+		pr_err("%s[%d]: irq_work_wq is NULL\n", __func__, __LINE__);
+		return -EINVAL;
 	}
 
-	if (at_least_one_pipe_dropping) {
-		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
-			pipe = real_pipe + i;
-			overflow_frames[pipe] = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, pipe,
-				rxwrapper_cfg->rxwrapper_pipes_cfg_credit_handler_count_overflow_frames_offset,
-				RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_COUNT_OVERFLOW_FRAMES_SHIFT,
-				RXWRAPPER_PIPES_CFG_CREDIT_HANDLER_COUNT_OVERFLOW_FRAMES_WIDTH);
-			dropped_frames[pipe] = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, pipe,
-				rxwrapper_cfg->rxwrapper_pipes_status_credit_handler_dropped_frame_cnt_offset,
-				RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_SHIFT,
-				RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_DROPPED_FRAME_CNT_WIDTH);
-			if (overflow_frames[pipe] > 0 || dropped_frames[pipe] > 0)
-				pr_warn("%s pipe %d - unprocessed frames = %u, overflow_frames = %u, dropped_frames = %u\n",
-				__func__, pipe, unprocessed_frames[pipe], overflow_frames[pipe],
-				dropped_frames[pipe]);
+	/* Add work to work queue, increase atomic counter of works that are under process
+	 * Place memory barrier to make sure that the increment is done before the work is added to the queue
+	 */
+	atomic_inc(&hailo15_rxwrapper->num_works_processing);
+	mb();
+	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
+	list_add_tail(&work->list, &hailo15_rxwrapper->irq_work_list);
+	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
+	queue_work(hailo15_rxwrapper->irq_work_wq, &hailo15_rxwrapper->irq_work);
+
+	return 0;
+}
+
+void dequeue_buffer_with_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_dma_ctx *ctx, int grp_id, struct hailo15_buffer *dequeued_buf)
+{
+	/* Allocate a deferred work */
+	struct hailo15_irq_work *work = kzalloc(sizeof(struct hailo15_irq_work), GFP_ATOMIC);
+	if (!work) {
+		pr_err_ratelimited("%s[%d]: failed to allocate irq work\n", __func__, __LINE__);
+		return;
+	}
+	/* Update interrupted pipes to be handled by defer IRQ work. */
+	work->dequeued_buf = dequeued_buf;
+	work->grp_id = grp_id;
+
+	hailo15_irq_work_enqueue(hailo15_rxwrapper, work);
+}
+
+void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, bool is_first_frame_hdr, u32 real_pipe, u32 grp_id)
+{
+	uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES];
+	bool unprocessed_ready = true;
+	struct hailo15_buffer *dequeued_buf;
+	unsigned long flags;
+	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+
+	unprocessed_ready = check_unprocessed_credits(hailo15_rxwrapper, real_pipe, unprocessed_frames, is_first_frame_hdr);
+
+	if (unprocessed_ready) {
+		spin_lock_irqsave(&hailo15_rxwrapper->buf_lock, flags);
+
+		/* cur_buf should be removed from list of rxwrapper bufs and then dequeued back to user (without catching spinlock) */
+		dequeued_buf = hailo15_rxwrapper->cur_buf[grp_id];
+		if (dequeued_buf)
+			list_del(&dequeued_buf->irqlist);
+
+		/* Update cur and next bufs */
+		/* If new cur_buf is not null - it's the first entry in the list, so next_buf should be the second list entry */
+		hailo15_rxwrapper->cur_buf[grp_id] = hailo15_rxwrapper->next_buf[grp_id];
+		hailo15_rxwrapper->next_buf[grp_id] = list_first_entry_or_null(&hailo15_rxwrapper->buf_queue[grp_id], struct hailo15_buffer, irqlist);
+		if (hailo15_rxwrapper->cur_buf[grp_id]) {
+			if (!list_empty(&hailo15_rxwrapper->buf_queue[grp_id]) && !list_is_singular(&hailo15_rxwrapper->buf_queue[grp_id]))
+				hailo15_rxwrapper->next_buf[grp_id] = list_next_entry(hailo15_rxwrapper->next_buf[grp_id], irqlist);
+			else
+				hailo15_rxwrapper->next_buf[grp_id] = NULL;
+		}
+		
+		write_next_bufs_to_shadow_regs(hailo15_rxwrapper, real_pipe, grp_id);
+
+		/* Pass buffer back to userspace (deferred work - outside of critical section) */
+		spin_unlock_irqrestore(&hailo15_rxwrapper->buf_lock, flags);
+		if (dequeued_buf) {
+			dequeued_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+			dequeue_buffer_with_deferred_work(hailo15_rxwrapper, ctx, grp_id, dequeued_buf);
 		}
 	}
+	else if (!is_first_frame_hdr) {
+		// Don't print warning if first HDR frame is incomplete. The first frame might be problematic due to HW.
+		warn_overwritten_frames(hailo15_rxwrapper, real_pipe, unprocessed_frames);
+	}
+
+	return_credits(hailo15_rxwrapper, real_pipe, unprocessed_frames);
 }
 
 static struct v4l2_subdev_video_ops hailo15_rxwrapper_v4l2_subdev_video_ops = {
@@ -1386,28 +1547,17 @@ struct v4l2_subdev_ops hailo15_rxwrapper_v4l2_subdev_ops = {
 	.pad = &hailo15_rxwrapper_v4l2_subdev_pad_ops,
 };
 
-static int hailo15_rxwrapper_buffer_process(struct hailo15_dma_ctx *ctx,
-						struct hailo15_buffer *buf)
-{
-	int i, pipe, real_pipe;
+static int hailo15_rxwrapper_buffer_queue(struct hailo15_dma_ctx *ctx, struct hailo15_buffer *buf) {
+	struct hailo15_rxwrapper_priv *rxw_priv;
 	struct v4l2_subdev *sd;
-	struct hailo15_rxwrapper_priv *hailo15_rxwrapper;
-
+	unsigned long flags;
+	
 	sd = buf->sd;
-	hailo15_rxwrapper = container_of(sd, struct hailo15_rxwrapper_priv, sd);
-
-	real_pipe = hailo15_grp_id_to_pipe_id(buf->grp_id);
-
-	hailo15_rxwrapper->cur_buf[buf->grp_id] = hailo15_rxwrapper->next_buf[buf->grp_id];
-	hailo15_rxwrapper->next_buf[buf->grp_id] = buf;
-
-	pr_debug("%s , grp_id: %d, real_pipe: %d, buf->dma[0]=0x%llx, buf->dma[1]=0x%llx, buf->dma[2]=0x%llx\n",
-		__func__, buf->grp_id, real_pipe, buf->dma[0], buf->dma[1], buf->dma[2]);
-
-	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
-		pipe = real_pipe + i;
-		hailo15_rxwrapper_pipe_set_data_address_or_null(hailo15_rxwrapper, pipe, buf->grp_id);
-	}
+	rxw_priv = container_of(sd, struct hailo15_rxwrapper_priv, sd);
+	
+	spin_lock_irqsave(&rxw_priv->buf_lock, flags);
+	list_add_tail(&buf->irqlist, &rxw_priv->buf_queue[buf->grp_id]);
+	spin_unlock_irqrestore(&rxw_priv->buf_lock, flags);
 	return 0;
 }
 
@@ -1454,31 +1604,16 @@ static struct hailo15_irq_work * hailo15_irq_work_dequeue(struct hailo15_rxwrapp
 
 	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
 	work = list_first_entry_or_null(&hailo15_rxwrapper->irq_work_list, struct hailo15_irq_work, list);
-	list_del(&work->list);
+	if (work)
+		list_del(&work->list);
 	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
 
 	return work;
 }
 
-static int hailo15_irq_work_enqueue(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_irq_work *work)
-{
-	unsigned long flags;
-
-	if (unlikely(!hailo15_rxwrapper->irq_work_wq)) {
-		pr_err("%s[%d]: irq_work_wq is NULL\n", __func__, __LINE__);
-		return -EINVAL;
-	}
-
-	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	list_add_tail(&work->list, &hailo15_rxwrapper->irq_work_list);
-	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	queue_work(hailo15_rxwrapper->irq_work_wq, &hailo15_rxwrapper->irq_work);
-
-	return 0;
-}
-
 static int hailo15_irq_work_queue_release(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
+	unsigned long flags;
 	struct hailo15_irq_work *work, *tmp;
 	if (unlikely(!hailo15_rxwrapper)) {
 		pr_err("%s[%d]: hailo15_rxwrapper is NULL\n", __func__, __LINE__);
@@ -1486,12 +1621,14 @@ static int hailo15_irq_work_queue_release(struct hailo15_rxwrapper_priv *hailo15
 	}
 
 	pr_debug("%s[%d]: rxwrapper_work_wq flush and destroy...\n", __FUNCTION__, __LINE__);
+	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
 	flush_workqueue(hailo15_rxwrapper->irq_work_wq);
 	destroy_workqueue(hailo15_rxwrapper->irq_work_wq);
 	list_for_each_entry_safe(work, tmp, &hailo15_rxwrapper->irq_work_list, list) {
 		list_del(&work->list); // Remove the work from the list
 		kfree(work);           // Free the allocated memory
 	}
+	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
 
 	return 0;
 }
@@ -1523,12 +1660,12 @@ static uint32_t calc_hdr_expected_int_status(uint32_t csi, uint32_t num_exposure
     return mask << (csi * RXWRAPPER_NUM_PIPES);
 }
 
-static void hailo15_rxwrapper_check_all_hdr_exposures_rdy(
+static bool hailo15_rxwrapper_check_all_hdr_exposures_rdy(
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper,
 	uint32_t csi,
 	uint32_t csi_int_status,
-	bool *hdr_exposures_rdy,
-	uint32_t *expected_int_status)
+	uint32_t *expected_int_status,
+	bool *first_hdr_frame)
 {
 	/* Fix for MSW-4889:
 	 * - Due to a BUG, the 1'st HDR frame includes only SEF1, SEF2 exposures.
@@ -1543,28 +1680,29 @@ static void hailo15_rxwrapper_check_all_hdr_exposures_rdy(
 	 *   - Pipe #1 -> Frame #2 (VC #1): SEF1 (Small Exposure Frame #1).
 	 *   - Pipe #2 -> Frame #3 (VC #2): SEF2 (Small Exposure Frame #2).
 	 */
-	bool first_hdr_frame = false;
 	/* Read pipe-0 ready frames counter to determine if it's the first HDR frame. */
 	uint32_t frame_cnt_pipe_0 = hailo15_rxwrapper_pipe_read(hailo15_rxwrapper, RXWRAPPER_PIPE_0,
 		hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_pipes_status_credit_handler_frame_cnt_offset,
 		RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_FRAME_CNT_SHIFT,
 		RXWRAPPER_PIPES_STATUS_CREDIT_HANDLER_FRAME_CNT_WIDTH);
 
-	*hdr_exposures_rdy = false;
-
-	*expected_int_status = calc_hdr_expected_int_status(csi, hailo15_rxwrapper->num_exposures, true);
 	/* Check if first HDR frame exposures are ready */
+	*expected_int_status = calc_hdr_expected_int_status(csi, hailo15_rxwrapper->num_exposures, true);
 	if(frame_cnt_pipe_0 == 0 && (*expected_int_status & csi_int_status) == *expected_int_status) {
 		/* Expected exposures are ready: SEF1, SEF2 */
-		*hdr_exposures_rdy = true;
-		first_hdr_frame = true;
-	} else {
-		/* Check if all exposures are ready */
-		*expected_int_status = calc_hdr_expected_int_status(csi, hailo15_rxwrapper->num_exposures, false);
-		if ((*expected_int_status & csi_int_status) == *expected_int_status) {
-			*hdr_exposures_rdy = true; /* LEF, SEF1, SEF2 */
-		}
+		*first_hdr_frame = true;
+		return true;
 	}
+
+	*first_hdr_frame = false;
+	
+	/* Check if all exposures are ready */
+	*expected_int_status = calc_hdr_expected_int_status(csi, hailo15_rxwrapper->num_exposures, false);
+	if ((*expected_int_status & csi_int_status) == *expected_int_status) {
+		return true;
+	}
+
+	return false;
 }
 
 #define PIXEL_2_AXI_BUF_RDY_MASK(_csi, _pipe) BIT(((_csi) * RXWRAPPER_NUM_PIPES + (_pipe)))
@@ -1574,80 +1712,86 @@ void hailo15_rxwrapper_irq_work_handle(struct work_struct *work)
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		(struct hailo15_rxwrapper_priv *)container_of(work, struct hailo15_rxwrapper_priv, irq_work);
-	struct hailo15_irq_work *h15_irq_work;
-	bool hdr_mode = (hailo15_rxwrapper->num_exposures > 1) ? true : false;
-	int csi = hailo15_rxwrapper->id, pipe, grp_id;
+	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+	struct hailo15_irq_work *h15_irq_work = hailo15_irq_work_dequeue(hailo15_rxwrapper);
 
-	h15_irq_work = hailo15_irq_work_dequeue(hailo15_rxwrapper);
 	if (!h15_irq_work) {
-		pr_err("%s[%d]: irq_work is NULL\n", __func__, __LINE__);
-		return;
+		pr_warn("%s[%d]: irq_work is NULL - possible if it's the end of stream\n", __func__, __LINE__);
+		goto work_done;
 	}
 
-	pr_debug("%s[%d]: int mask %X\n", __func__, __LINE__, h15_irq_work->int_status);
+	hailo15_rxwrapper->frame_count++;
+	hailo15_dma_buffer_dequeue(ctx, h15_irq_work->grp_id, h15_irq_work->dequeued_buf);
+	kfree(h15_irq_work);
+
+
+work_done:
+	/* Decrease counter of works under processing.
+	 * Note we must use memory barrier to make sure this is the last operation in this function.
+	 */
+	mb();
+	atomic_dec(&hailo15_rxwrapper->num_works_processing);
+}
+
+void call_vcs_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, int csi, uint32_t vc_status, bool first_hdr_frame)
+{
+	int pipe, grp_id, mask;
+	bool hdr_mode = (hailo15_rxwrapper->num_exposures > 1) ? true : false;
 
 	if (hdr_mode) {
 		/* HDR mode */
 		grp_id = (csi == HAILO15_CSI_0) ? HAILO15_VID_GRP_SX_CSI0_P2A : HAILO15_VID_GRP_SX_CSI1_P2A;
-		hailo15_rxwrapper_buffer_done(hailo15_rxwrapper, h15_irq_work->first_hdr_frame, RXWRAPPER_PIPE_0, grp_id);
-	} else {
-		/* SDR mode */
-		for (pipe = 0; pipe < RXWRAPPER_NUM_PIPES; pipe++) {
-			int mask = PIXEL_2_AXI_BUF_RDY_MASK(csi, pipe);
-			if (h15_irq_work->int_status & mask) {
-				if (hailo15_rxwrapper->pipe_cfg[pipe].used_by_grp_id != HAILO15_VID_GRP_INVALID) {
-					grp_id = hailo15_rxwrapper->pipe_cfg[pipe].used_by_grp_id;
-					pr_debug("%s[%d] buf_rdy: csi %d, pipe %d\n", __func__, __LINE__, csi, pipe);
-					hailo15_rxwrapper_buffer_done(hailo15_rxwrapper, false, pipe, grp_id);
-					pr_debug("%s[%d] call buff_done: csi %d, pipe %d, w1c %d\n", __func__, __LINE__, csi, pipe, mask);
-				}
+		hailo15_rxwrapper_buffer_done(hailo15_rxwrapper, first_hdr_frame, RXWRAPPER_PIPE_0, grp_id);
+
+		return;
+	}
+	
+	/* SDR mode - call buffer_done of each VC */
+	for (pipe = 0; pipe < RXWRAPPER_NUM_PIPES; pipe++) {
+		mask = PIXEL_2_AXI_BUF_RDY_MASK(csi, pipe);
+		if (vc_status & mask) {
+			if (hailo15_rxwrapper->pipe_cfg[pipe].used_by_grp_id != HAILO15_VID_GRP_INVALID) {
+				grp_id = hailo15_rxwrapper->pipe_cfg[pipe].used_by_grp_id;
+				hailo15_rxwrapper_buffer_done(hailo15_rxwrapper, false, pipe, grp_id);
 			}
 		}
 	}
-	kfree(h15_irq_work);
 }
 
 static irqreturn_t hailo15_rxwrapper_irq_handler(int irq, void *arg)
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = (struct hailo15_rxwrapper_priv *)arg;
-	struct hailo15_irq_work *work;
-	uint32_t int_status, int_status_per_csi, int_status_for_work;
+	uint32_t int_status, int_status_per_csi, int_status_for_vc;
 	bool hdr_mode = (hailo15_rxwrapper->num_exposures > 1) ? true : false;
-	bool hdr_exposures_rdy;
+	bool first_hdr_frame;
+
 	/* NOTE: each rxwrapper handles its own CSI */
 	int csi = hailo15_rxwrapper->id;
 
+	/* The interrupt status for current CSI channel */
 	int_status = hailo15_buffer_ready_int_status(hailo15_rxwrapper);
 	pr_debug("%s[%d]: int mask %X\n", __func__, __LINE__, int_status);
-
 	int_status_per_csi = (PIXEL_2_AXI_BUF_RDY_MASK__CSI(csi) & int_status);
 	if (int_status_per_csi == 0) {
-		/* interrupts are not from this Rx wrapper instance, return. */
+		/* If interrupts are not from this Rx wrapper instance, return (this is a shared IRQ handler!) */
 		return IRQ_NONE;
 	}
 
+	/* In order to support multi VC (Virtual Channels) of a CSI channel, we extract the interrupt status of VCs */
 	if (hdr_mode) {
-		/* HDR mode */
-		hailo15_rxwrapper_check_all_hdr_exposures_rdy(hailo15_rxwrapper, csi, int_status_per_csi, &hdr_exposures_rdy, &int_status_for_work);
-		if(!hdr_exposures_rdy) {
+		/* For first HDR frame, LEF is not expected, we allow int_status to be without it */
+		if (!hailo15_rxwrapper_check_all_hdr_exposures_rdy(hailo15_rxwrapper, csi, int_status_per_csi, &int_status_for_vc, &first_hdr_frame)) {
+			pr_warn_ratelimited("RXWRAPPER: %s: HDR frame not ready, int_status_per_csi: 0x%x\n", __func__, int_status_per_csi);
 			return IRQ_NONE;
 		}
 	} else {
-		/* SDR mode */
-		int_status_for_work = int_status_per_csi;
+		int_status_for_vc = int_status_per_csi;
 	}
-	/* Clear the interrupts which will be handle by new IRQ work. */
-	writel(int_status_for_work, hailo15_rxwrapper->p2a_buf_regs.buffer_ready_ap_int_w1c_addr);
-	/* Allocate a defer work */
-	work = kzalloc(sizeof(struct hailo15_irq_work),	GFP_ATOMIC);
-	if(!work) {
-		pr_err("%s[%d]: failed to allocate irq work\n", __func__, __LINE__);
-		return IRQ_NONE;
-	}
-	/* Update interrupted pipes to be handled by defer IRQ work. */
-	work->int_status = int_status_for_work;
 
-	hailo15_irq_work_enqueue(hailo15_rxwrapper, work);
+	call_vcs_buffer_done(hailo15_rxwrapper, csi, int_status_for_vc, first_hdr_frame);
+
+	/* Clear the interrupts - required by HW */
+	writel(int_status_for_vc, hailo15_rxwrapper->p2a_buf_regs.buffer_ready_ap_int_w1c_addr);
 
 	return IRQ_HANDLED;
 }
@@ -1665,7 +1809,7 @@ static int hailo15_rxwrapper_get_frame_count(struct hailo15_dma_ctx *dma_ctx, in
 }
 
 static struct hailo15_buf_ops hailo15_rxwrapper_buf_ops = {
-	.buffer_process = hailo15_rxwrapper_buffer_process,
+	.buffer_queue = hailo15_rxwrapper_buffer_queue,
 	.set_private_data = hailo15_rxwrapper_set_private_data,
 	.get_private_data = hailo15_rxwrapper_get_private_data,
 	.queue_empty = hailo15_rxwrapper_queue_empty,
@@ -1740,6 +1884,42 @@ hailo15_rxwrapper_dma_ctx_clean_all(struct hailo15_dma_ctx *ctx)
 	return 0;
 }
 
+static int hailo15_rxwrapper_parse_null_addr(struct hailo15_rxwrapper_priv* hailo15_rxwrapper) {
+	struct fwnode_handle *rxwrapper_node = NULL, *parent_node = NULL;
+	uint32_t null_addr = 0;
+	int ret = -EINVAL;
+
+	if (!hailo15_rxwrapper || !hailo15_rxwrapper->dev) {
+		pr_err("%s: Invalid hailo15_rxwrapper or hailo15_rxwrapper->dev pointer\n", __func__);
+		return -EINVAL;
+	}
+
+	rxwrapper_node = dev_fwnode(hailo15_rxwrapper->dev);
+	if (!rxwrapper_node) {
+		dev_err(hailo15_rxwrapper->dev, "Failed to get fwnode for rxwrapper device\n");
+		return -ENODEV;
+	}
+
+	parent_node = fwnode_get_parent(rxwrapper_node);
+	if (!parent_node) {
+		dev_err(hailo15_rxwrapper->dev, "Failed to get parent fwnode (vision_subsys)\n");
+		return -ENODEV;
+	}
+
+	// Read the property from the *parent* node
+	ret = fwnode_property_read_u32(parent_node, "null-addr", &null_addr);
+	if (ret) {
+		dev_err(hailo15_rxwrapper->dev, "Failed to read 'null-addr' from parent node. ret: %d\n", ret);
+	} else {
+		dev_dbg(hailo15_rxwrapper->dev, "Successfully read null_addr=0x%x from parent node\n", null_addr);
+	hailo15_rxwrapper->vision_ss_null_addr = null_addr;
+	}
+
+	fwnode_handle_put(parent_node);
+
+	return ret;
+}
+
 int hailo15_rxwrapper_probe(struct platform_device *pdev)
 {
 	int ret, pipe;
@@ -1769,7 +1949,7 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	hailo15_rxwrapper->rxwrapper_cfg  = of_device_get_match_data(&pdev->dev);
+	hailo15_rxwrapper->rxwrapper_cfg = of_device_get_match_data(&pdev->dev);
 	if (!hailo15_rxwrapper->rxwrapper_cfg ) {
 		dev_err(&pdev->dev, "No rxwrapper_cfg match found\n");
 		return -EINVAL;
@@ -1856,6 +2036,12 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	/*hailo15_rxwrapper->sd.flags |= V4L2_SUBDEV_FL_HAS_EVENTS;*/
 	hailo15_rxwrapper->sd.entity.function = MEDIA_ENT_F_VID_MUX;
 
+    ret = hailo15_rxwrapper_parse_null_addr(hailo15_rxwrapper);
+    if (ret) {
+        dev_err(&pdev->dev, "Failed to parse null address\n");
+        return ret;
+    }
+
 	hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0].flags = MEDIA_PAD_FL_SINK;
 	for (i = RXWRAPPER_SOURCE_PAD_1; i < RXWRAPPER_PAD_MAX; i++) {
 		hailo15_rxwrapper->pad_fmts[i] = fmt_default;
@@ -1908,6 +2094,12 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 		dev_err(hailo15_rxwrapper->dev, "can't create media links!\n");
 		goto error_init_irq;
 	}
+
+	/* Init buffers FIFOs and their auxiliary variables */
+	for (i = 0; i < HAILO15_VID_GRP_MAX; i++) {
+		INIT_LIST_HEAD(&hailo15_rxwrapper->buf_queue[i]);
+	}
+	spin_lock_init(&hailo15_rxwrapper->buf_lock);
 
 	dev_info(hailo15_rxwrapper->dev, "probe finished successfully");
 	return 0;

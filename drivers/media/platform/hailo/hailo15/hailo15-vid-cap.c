@@ -276,6 +276,19 @@ static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
 					   enum vb2_buffer_state state)
 {
 	struct hailo15_buffer *buf, *nbuf;
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - failed to get vid_node\n",__func__);
+		return;
+	}
+		
+	/* On P2A flow - rxwrapper manages FIFO of buffers - so it should clean them */
+	if (hailo15_is_p2a_grp_id(vid_node->path)) {
+		ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+		hailo15_video_node_queue_empty(ctx, vid_node->path);
+		return;
+	}
 
 	mutex_lock(&vid_node->qlock);
 	list_for_each_entry_safe (buf, nbuf, &vid_node->buf_queue, irqlist) {
@@ -812,8 +825,8 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 			ret = -EINVAL;
 			break;
 		}
-		if(timestamp_mode != TRUE &&
-		   timestamp_mode != FALSE) {
+		if(timestamp_mode != HDR_TIMESTAMP_MODE_ON &&
+		   timestamp_mode != HDR_TIMESTAMP_MODE_OFF) {
 			pr_err("%s - invalid timestamp_mode %d\n", __func__, timestamp_mode);
 			ret = -EINVAL;
 			break;
@@ -1078,6 +1091,27 @@ static int hailo15_video_node_buffer_init(struct vb2_buffer *vb)
 	return 0;
 }
 
+static int hailo15_video_device_queue_vb2_buffer(struct vb2_buffer *vb)
+{
+	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf =
+		container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *buf =
+		container_of(vbuf, struct hailo15_buffer, vb);
+	struct hailo15_dma_ctx *ctx;
+
+	if (WARN_ON(!vid_node) || WARN_ON(!vid_node->direct_sd)) {
+		pr_err("%s - returning -EINVAL\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_debug("%s - buf->dma[%d]: %llx\n", __func__, 0, buf->dma[0]);
+
+	buf->grp_id = vid_node->path;
+	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+	return hailo15_video_node_buffer_queue(ctx, vid_node->path, buf);
+}
+
 static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb)
 {
 	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
@@ -1117,6 +1151,15 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 		return;
 	}
 
+	/* On P2A flow - let rxwrapper manage FIFO of buffers */
+	if (hailo15_is_p2a_grp_id(vid_node->path)) {
+		if (hailo15_video_device_queue_vb2_buffer(vb)) {
+			pr_err("%s - failed hailo15_video_device_queue_vb2_buffer, returning\n", __func__);
+		}
+		return;
+	}
+
+	/* Add given buffer to list of used buffers, and if it's empty - process immediately */
 	mutex_lock(&vid_node->qlock);
 	if (list_empty(&vid_node->buf_queue)) {
 		if (hailo15_is_p2a_grp_id(vid_node->path)) {
@@ -1132,6 +1175,32 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	list_add_tail(&buf->irqlist, &vid_node->buf_queue);
 	mutex_unlock(&vid_node->qlock);
 }
+
+static int hailo15_video_device_buffer_dequeue(struct hailo15_dma_ctx *ctx,
+	struct hailo15_buffer *buf,
+	int grp_id)
+{
+	int ret;
+	struct hailo15_video_node *vid_node = NULL;
+
+	if (grp_id < 0 || grp_id >= HAILO15_VID_GRP_MAX)
+		return -EINVAL;
+
+	ret = hailo15_video_node_get_private_data(ctx, grp_id,
+						  (void **)&vid_node);
+	if (ret)
+		return ret;
+
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - WARN_ON(!vid_node), returning\n", __func__);
+		return -EINVAL;
+	}
+
+	if (buf != NULL)
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	return 0;
+}
+
 static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 						struct hailo15_buffer *buf,
 						int grp_id)
@@ -1161,12 +1230,8 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	if (vid_node->prev_buf) {
 		vid_node->prev_buf->vb.sequence = vid_node->sequence++;
 
-		/* Write timestamp only if you should not forward it:
-		 * The first capture device (output to /dev/video2) will take the original timestamp.
-		 * The second capture device (output to /dev/video0) will optionally forward it.
-		 */
 		if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF || hailo15_is_p2a_grp_id(vid_node->path))
-			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_raw_ns();
+			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
 		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf,
 					VB2_BUF_STATE_DONE);
 
@@ -1179,6 +1244,10 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		mutex_unlock(&vid_node->qlock);
 	}
 
+	/* In P2A flow, the first time this function is called, `buf` will be null, and the next value (stored in the shadow register)
+	 * is already the first element in the list. So the next buffer must be different than the first one (already there).
+	 * This means that first buffer in the list will remain a buffer to be skipped (as it represents buffer that is already being processed).
+	 */
 	mutex_lock(&vid_node->qlock);
 	next_buffer = list_first_entry_or_null(
 		&vid_node->buf_queue, struct hailo15_buffer, irqlist);
@@ -1683,6 +1752,7 @@ static int hailo15_video_init_vid_nodes(struct hailo15_vid_cap_device *vid_dev)
 		vid_node->id = fwnode_ep.port;
 
 		vid_node->prev_buf = NULL;
+		vid_node->hdr_timestamp_mode = HDR_TIMESTAMP_MODE_OFF;
 
 		// read path property so s_stream knows from where it was called
 		ret = fwnode_property_read_u32(ep, "path", &path);
@@ -1719,6 +1789,10 @@ static int hailo15_video_init_vid_nodes(struct hailo15_vid_cap_device *vid_dev)
 		ctx->buf_ctx[vid_node->path].ops->buffer_done = hailo15_video_device_buffer_done;
 		hailo15_video_node_set_private_data(ctx, vid_node->path,
 		                                           (void *)vid_node);
+
+		if (hailo15_is_p2a_grp_id(vid_node->path)) {
+			ctx->buf_ctx[vid_node->path].ops->buffer_dequeue = hailo15_video_device_buffer_dequeue;
+		}
 
 		pr_info("vid_node %d initialized successfully\n", vid_node->id);
 	}

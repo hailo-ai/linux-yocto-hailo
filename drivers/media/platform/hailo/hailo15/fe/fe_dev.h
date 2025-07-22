@@ -354,6 +354,9 @@ struct isp_fe_context {
 
 	u64 last_t_ns;
 	bool is_isp_processing;
+	int post_fe_modify_reg_offset;
+	int post_fe_modify_reg_value;
+
 };
 
 struct vvcam_fe_dev {
@@ -373,6 +376,7 @@ struct vvcam_fe_dev {
 	int (*fe_read_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
 	int (*fe_write_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 	int (*fe_switch)(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch);
+	void (*fe_register_post_fe_write) (struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 };
 
 #endif //_FE_DEV_H_   

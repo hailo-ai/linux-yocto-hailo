@@ -4,7 +4,7 @@
  */
 
 #define HAILO_SOC_TYPE HAILO_SOC_HAILO10H2
-#include "hailo15-family-base.dtsi"
+#include "hailo1x-base.dtsi"
 
 / {
     soc {
@@ -29,6 +29,8 @@
 
 &integrated_nnc {
     compatible = "hailo,integrated-nnc,hailo10h2";
+    reg = <0 0x5c000 0 0x14000>, <0 0x80000 0 0x240>, <0 0x80240 0 0x0edc0>, <0 0x0008f000 0 0x1000>;
+    reg-names = "core-fw-code", "core-fw-isr-vector", "core-fw-data", "core-fw-log";
     vdma0: vdma@0 {
         reg = <0x7c080000 0x800>, <0x7c082000 0x2000>;
         reg-names = "channel-regs", "engine-regs";
@@ -63,7 +65,8 @@
 };
 
 &nocpmu {
-    reg = <0 0x000a5000 0 0x2000>;
+    compatible = "hailo,hailo10h2-noc-pmu";
+    reg = <0 0x000a5000 0 0x2100>;
 };
 
 &scu_log {

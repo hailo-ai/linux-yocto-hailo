@@ -188,7 +188,7 @@ static const struct hailo15_mux_cfg p2a_cfg_3dol = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xf44
+	.vision_buffer_ready_ap_int_mask = 0x004 /* Receive interrupt when very-short is done */
 };
 
 static const struct hailo15_mux_cfg p2a_cfg_2dol = {
@@ -200,7 +200,7 @@ static const struct hailo15_mux_cfg p2a_cfg_2dol = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xf22
+	.vision_buffer_ready_ap_int_mask = 0x002 /* Receive interrupt when short is done */
 };
 
 static const struct hailo15_mux_cfg p2a_cfg_sdr = {
@@ -212,7 +212,7 @@ static const struct hailo15_mux_cfg p2a_cfg_sdr = {
 	.isp1_stream0 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream1 = DISABLE_VC_4_DT_DISABLE,
 	.isp1_stream2 = DISABLE_VC_4_DT_DISABLE,
-	.vision_buffer_ready_ap_int_mask = 0xf00	// bit CSI-RX-1[7:4], CSI-RX-0[3:0] are enabled/disabled by rxwrapper.
+	.vision_buffer_ready_ap_int_mask = 0x001 /* Receive interrupt when long is done */
 };
 
 static const struct hailo15_mux_interrupt_cfg int_cfg = {

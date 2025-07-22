@@ -361,24 +361,29 @@ static void handle_critical_trips(struct thermal_zone_device *tz,
 static void handle_thermal_trip(struct thermal_zone_device *tz, int trip)
 {
 	enum thermal_trip_type type;
-	int trip_temp, hyst = 0;
+	int hyst = 0, trip_high, trip_low;
 
 	/* Ignore disabled trip points */
 	if (test_bit(trip, &tz->trips_disabled))
 		return;
 
-	tz->ops->get_trip_temp(tz, trip, &trip_temp);
+	tz->ops->get_trip_temp(tz, trip, &trip_high);
 	tz->ops->get_trip_type(tz, trip, &type);
 	if (tz->ops->get_trip_hyst)
 		tz->ops->get_trip_hyst(tz, trip, &hyst);
+	trip_low = trip_high - hyst;
 
 	if (tz->last_temperature != THERMAL_TEMP_INVALID) {
-		if (tz->last_temperature < trip_temp &&
-		    tz->temperature >= trip_temp)
-			thermal_notify_tz_trip_up(tz->id, trip);
-		if (tz->last_temperature >= trip_temp &&
-		    tz->temperature < (trip_temp - hyst))
-			thermal_notify_tz_trip_down(tz->id, trip);
+		if (!tz->trip_crossed_up_arr[trip] &&
+			tz->last_temperature < trip_high && trip_high <= tz->temperature) {
+			tz->trip_crossed_up_arr[trip] = true;
+			thermal_notify_tz_trip_up(tz->id, trip, tz->temperature);
+		}
+		if (tz->trip_crossed_up_arr[trip] &&
+			tz->last_temperature >= trip_low && trip_low > tz->temperature) {
+			tz->trip_crossed_up_arr[trip] = false;
+			thermal_notify_tz_trip_down(tz->id, trip, tz->temperature);
+		}
 	}
 
 	if (type == THERMAL_TRIP_CRITICAL || type == THERMAL_TRIP_HOT)
@@ -417,10 +422,13 @@ static void update_temperature(struct thermal_zone_device *tz)
 
 static void thermal_zone_device_init(struct thermal_zone_device *tz)
 {
+	int i;
 	struct thermal_instance *pos;
 	tz->temperature = THERMAL_TEMP_INVALID;
 	tz->prev_low_trip = -INT_MAX;
 	tz->prev_high_trip = INT_MAX;
+	for (i = 0; i < tz->trips; i++)
+		tz->trip_crossed_up_arr[i] = false;
 	list_for_each_entry(pos, &tz->thermal_instances, tz_node)
 		pos->initialized = false;
 }
@@ -1292,6 +1300,11 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 			goto unregister;
 	}
 
+	tz->trip_crossed_up_arr = kcalloc(tz->trips, sizeof(bool), GFP_KERNEL);
+	if (!tz->trip_crossed_up_arr) {
+		goto unregister;
+	}
+
 	mutex_lock(&thermal_list_lock);
 	list_add_tail(&tz->node, &thermal_tz_list);
 	mutex_unlock(&thermal_list_lock);
@@ -1350,6 +1363,10 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 		return;
 	}
 	list_del(&tz->node);
+	if (tz->trip_crossed_up_arr) {
+		kfree(tz->trip_crossed_up_arr);
+	}
+
 
 	/* Unbind all cdevs associated with 'this' thermal zone */
 	list_for_each_entry(cdev, &thermal_cdev_list, node) {

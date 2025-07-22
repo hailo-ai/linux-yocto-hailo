@@ -4,7 +4,8 @@
  */
 
 #define HAILO_SOC_TYPE HAILO_SOC_HAILO15L
-#include "hailo15-family-base.dtsi"
+#include "hailo15l-audio.h"
+#include "hailo1x-base.dtsi"
 
 / {
     memory {
@@ -16,9 +17,17 @@
         compatible = "hailo,hailo15l";
     };
 
+    sram@60000000 {
+        cpu_scp_i2s_dma_shmem: scp-shmem@10a0 {
+            compatible = "hailo,hailo15-i2s-shmem";
+            reg = <0 0x10a0 0 0xf60>;
+        };
+    };
+
     #include "hailo-ethernet.dtsi"
     #include "hailo15-vision.dtsi"
     #include "hailo15-dsp.dtsi"
+    #include "hailo15l-audio.dtsi"
 
     pl320_mailbox: mailbox {
         reg = <0 0x78003000 0 0x1000>;
@@ -33,6 +42,8 @@
     };
 
     vision_subsys: vision_subsys {
+        null-addr = <0x60C00000>;
+
         csi2rx0: csi-bridge@7c011000 {
             phys = <&dphy_rx>;
             phy-names = "dphy";
@@ -130,44 +141,6 @@
         };
     };
 
-    /* @todo : Need to replace with fractional devider (temporary used. ) */
-    hailo_i2s_fractional_divider_clock: hailo_i2s_fractional_divider_clock {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <1536000>;
-    };
-
-    i2s_0_cpu: audio-controller-0@10d000 {
-        compatible = "snps,designware-i2s";
-        reg = <0x0 0x10d000 0x0 0x400>;
-        #sound-dai-cells = <0>;
-        interrupts = <GIC_SPI HW_INTERRUPTS__I2S0_IRQ IRQ_TYPE_LEVEL_HIGH>;
-        interrupt-names = "i2s_0_irq";
-        status = "disabled";
-    };
-
-    i2s_1_cpu: audio-controller-1@10d400 {
-        compatible = "snps,designware-i2s";
-        reg = <0x0 0x10d400 0x0 0x400>;
-        #sound-dai-cells = <0>;
-        interrupts = <GIC_SPI HW_INTERRUPTS__I2S1_IRQ IRQ_TYPE_LEVEL_HIGH>;
-        interrupt-names = "i2s_1_irq";
-        status = "disabled";
-    };
-
-    audio_card_0: audio-card-0{
-        compatible = "simple-audio-card";
-        simple-audio-card,name = "Hailo15l-Audio-master-0";
-        simple-audio-card,format = "i2s";
-        status = "disabled";
-    };
-
-    audio_card_1: audio-card-1{
-        compatible = "simple-audio-card";
-        simple-audio-card,name = "Hailo15l-Audio-master-1";
-        simple-audio-card,format = "i2s";
-        status = "disabled";
-    };
 
     i2c_0: i2c@104000 {
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_0>;
@@ -184,10 +157,6 @@
     i2c_3: i2c@107000 {
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_3>;
     };
-};
-
-&gp_vdma {
-    status = "disabled";
 };
 
 &integrated_nnc {
@@ -247,9 +216,62 @@
 };
 
 &nocpmu {
-    reg = <0 0x000dc000 0 0x2000>;
+    compatible = "hailo,hailo15l-noc-pmu";
+    reg = <0 0x000dc000 0 0x2100>;
 };
 
 &scu_log {
     reg = <0 0x000df000 0 0x1000>;
+};
+
+&gp_vdma {
+    reg = <0 0x7c05A000 0 0x200>;
+    dma-channel@0 {
+        reg = <0x7c058000 0x20>;
+    };
+    dma-channel@1 {
+        reg = <0x7c058020 0x20>;
+    };
+    dma-channel@2 {
+        reg = <0x7c058040 0x20>;
+    };
+    dma-channel@3 {
+        reg = <0x7c058060 0x20>;
+    };
+    dma-channel@4 {
+        reg = <0x7c058080 0x20>;
+    };
+    dma-channel@5 {
+        reg = <0x7c0580A0 0x20>;
+    };
+    dma-channel@6 {
+        reg = <0x7c0580C0 0x20>;
+    };
+    dma-channel@7 {
+        reg = <0x7c0580E0 0x20>;
+    };
+    dma-channel@8 {
+        reg = <0x7c058100 0x20>;
+    };
+    dma-channel@9 {
+        reg = <0x7c058120 0x20>;
+    };
+    dma-channel@A {
+        reg = <0x7c058140 0x20>;
+    };
+    dma-channel@B {
+        reg = <0x7c058160 0x20>;
+    };
+    dma-channel@C {
+        reg = <0x7c058180 0x20>;
+    };
+    dma-channel@D {
+        reg = <0x7c0581A0 0x20>;
+    };
+    dma-channel@E {
+        reg = <0x7c0581C0 0x20>;
+    };
+    dma-channel@F {
+        reg = <0x7c0581E0 0x20>;
+    };
 };

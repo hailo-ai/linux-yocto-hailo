@@ -129,14 +129,15 @@ static void dw_pcm_transfer(struct dw_i2s_dev *dev, bool push)
 void dw_pcm_push_tx(struct dw_i2s_dev *dev)
 {
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	bool hailo_cfg_flag = using_hailo_config(dev);
+	if (hailo_cfg_flag) {
 		per_cpu_do_irq_interval_stats__add(SNDRV_PCM_STREAM_PLAYBACK);
 		per_cpu_do_irq_execution_stats__start(SNDRV_PCM_STREAM_PLAYBACK);
 	}
 #endif
 	dw_pcm_transfer(dev, true);
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (hailo_cfg_flag) {
 		per_cpu_do_irq_execution_stats__end(SNDRV_PCM_STREAM_PLAYBACK);
 	}
 #endif
@@ -145,14 +146,15 @@ void dw_pcm_push_tx(struct dw_i2s_dev *dev)
 void dw_pcm_pop_rx(struct dw_i2s_dev *dev)
 {
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	bool hailo_cfg_flag = using_hailo_config(dev);
+	if (hailo_cfg_flag) {
 		per_cpu_do_irq_interval_stats__add(SNDRV_PCM_STREAM_CAPTURE);
 		per_cpu_do_irq_execution_stats__start(SNDRV_PCM_STREAM_CAPTURE);
 	}
 #endif
 	dw_pcm_transfer(dev, false);
 #ifdef CONFIG_SND_DESIGNWARE_HAILO15_STATS
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (hailo_cfg_flag) {
 		per_cpu_do_irq_execution_stats__end(SNDRV_PCM_STREAM_CAPTURE);
 	}
 #endif
@@ -283,19 +285,28 @@ static const struct snd_soc_component_driver dw_pcm_component = {
 	.pcm_construct	= dw_pcm_new,
 };
 
-static const struct snd_soc_component_driver dw_pcm_hailo15_component = {
-	.open		= dw_pcm_hailo15_open,
+static const struct snd_soc_component_driver dw_pcm_component__hailo_processing_only = {
+	.open		= dw_pcm_open__hailo_processing_only,
 	.close		= dw_pcm_close,
-	.hw_params	= dw_pcm_hailo15_hw_params,
+	.hw_params	= dw_pcm_hw_params__hailo_processing_only,
 	.trigger	= dw_pcm_trigger,
 	.pointer	= dw_pcm_pointer,
 	.pcm_construct	= dw_pcm_new,
 };
 
-static const struct snd_soc_component_driver dw_pcm_hailo15_scu_dma_component = {
-	.open		= dw_pcm_hailo15_scu_dma_open,
-	.close		= dw_pcm_hailo15_scu_dma_close,
-	.hw_params	= dw_pcm_hailo15_scu_dma_hw_params,
+static const struct snd_soc_component_driver dw_pcm_component__hailo_processing_and_scu_dma = {
+	.open		= dw_pcm_open__hailo_processing_and_scu_dma,
+	.close		= dw_pcm_close__hailo_processing_and_scu_dma,
+	.hw_params	= dw_pcm_hw_params__hailo_processing_and_scu_dma,
+	.trigger	= dw_pcm_trigger,
+	.pointer	= dw_pcm_pointer,
+	.pcm_construct	= dw_pcm_new,
+};
+
+static const struct snd_soc_component_driver dw_pcm_component__hailo_scu_dma_only = {
+	.open		= dw_pcm_open__hailo_scu_dma_only,
+	.close		= dw_pcm_close__hailo_scu_dma_only,
+	.hw_params	= dw_pcm_hw_params__hailo_scu_dma_only,
 	.trigger	= dw_pcm_trigger,
 	.pointer	= dw_pcm_pointer,
 	.pcm_construct	= dw_pcm_new,
@@ -305,11 +316,13 @@ int dw_pcm_register(struct platform_device *pdev)
 {
 	struct dw_i2s_dev *dev = dev_get_drvdata(&pdev->dev);
 	switch (dev->cfg_id) {
-	case CONFIG_ID_DW_I2S_HAILO15:
-		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_hailo15_component, NULL, 0);
-	case CONFIG_ID_DW_I2S_HAILO15_SCU_DMA:
-		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_hailo15_scu_dma_component, NULL, 0);
-	case CONFIG_ID_DW_I2S_SNPS:
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY:
+		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_component__hailo_processing_only, NULL, 0);
+	case CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_AND_SCU_DMA:
+		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_component__hailo_processing_and_scu_dma, NULL, 0);
+	case CONFIG_ID_DW_I2S__HAILO_SCU_DMA_ONLY:
+		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_component__hailo_scu_dma_only, NULL, 0);
+	case CONFIG_ID_DW_I2S__SNPS:
 	/* Fallthrough */
 	default:
 		return devm_snd_soc_register_component(&pdev->dev, &dw_pcm_component, NULL, 0);

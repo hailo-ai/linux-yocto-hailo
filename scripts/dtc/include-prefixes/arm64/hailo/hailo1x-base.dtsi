@@ -1,6 +1,6 @@
 // SPDX-License-Identifier:     GPL-2.0
 /*
- * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include <dt-bindings/soc/hailo15_scmi_api.h>
@@ -169,7 +169,7 @@
         #pwm-cells = <2>;
     };
 
-    sram@d0000 {
+    sram@60000000 {
         compatible = "mmio-sram";
         reg = <0 0x60000000 0 0x4000>;
 
@@ -436,7 +436,6 @@
         };
 
         nocpmu: nocpmu {
-            compatible = "hailo,noc-pmu";
             reg-names = "noc_pmu_samples";
         };
     };
@@ -458,26 +457,36 @@
             polling-delay = <0>;
             thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_0>;
             trips {
-                pvt_ts_0_alert_light: trip-point-ts-0-light {
-                        temperature = <105000>;
-                        hysteresis = <3000>;
+                pvt_ts_0_trip_point_0: pvt-ts-0-trip-point-0 {
+                         temperature = <105000>;
+                         hysteresis = <14999>;
+                         type = "passive";
+                };
+                pvt_ts_0_trip_point_1: pvt-ts-0-trip-point-1 {
+                        temperature = <109000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_0_alert_medium: trip-point-ts-0-medium {
-                        temperature = <110000>;
-                        hysteresis = <3000>;
+                pvt_ts_0_trip_point_2: pvt-ts-0-trip-point-2 {
+                        temperature = <113000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_0_alert_heavy: trip-point-ts-0-heavy {
-                        temperature = <115000>;
-                        hysteresis = <3000>;
+                pvt_ts_0_trip_point_3: pvt-ts-0-trip-point-3 {
+                        temperature = <117000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_0_alert_critical: trip-point-ts-0-critical {
-                         temperature = <120000>;
+                pvt_ts_0_trip_point_4: pvt-ts-0-trip-point-4 {
+                        temperature = <119000>;
+                        hysteresis = <2999>;
+                        type = "passive";
+                };
+                pvt_ts_0_trip_point_crit: pvt-ts-0-trip-point-critical {
+                         temperature = <122000>;
                          hysteresis = <4000>;
                          type = "critical";
-                 };
+                };
             };
         };
         pvt_ts_1: pvt-ts-1 {
@@ -485,26 +494,36 @@
             polling-delay = <0>;
             thermal-sensors = <&scmi_temp_sensor HAILO15_SCMI_SENSOR_IDX_PVT_TEMPERATURE_SENSOR_1>;
             trips {
-                pvt_ts_1_alert_light: trip-point-ts-1-light {
-                        temperature = <105000>;
-                        hysteresis = <3000>;
+                pvt_ts_1_trip_point_0: pvt-ts-1-trip-point-0 {
+                         temperature = <105000>;
+                         hysteresis = <14999>;
+                         type = "passive";
+                };
+                pvt_ts_1_trip_point_1: pvt-ts-1-trip-point-1 {
+                        temperature = <109000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_1_alert_medium: trip-point-ts-1-medium {
-                        temperature = <110000>;
-                        hysteresis = <3000>;
+                pvt_ts_1_trip_point_2: pvt-ts-1-trip-point-2 {
+                        temperature = <113000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_1_alert_heavy: trip-point-ts-1-heavy {
-                        temperature = <115000>;
-                        hysteresis = <3000>;
+                pvt_ts_1_trip_point_3: pvt-ts-1-trip-point-3 {
+                        temperature = <117000>;
+                        hysteresis = <1999>;
                         type = "passive";
                 };
-                pvt_ts_1_alert_critical: trip-point-ts-1-critical {
-                         temperature = <120000>;
+                pvt_ts_1_trip_point_4: pvt-ts-1-trip-point-4 {
+                        temperature = <119000>;
+                        hysteresis = <2999>;
+                        type = "passive";
+                };
+                pvt_ts_1_trip_point_crit: pvt-ts-1-trip-point-critical {
+                         temperature = <122000>;
                          hysteresis = <4000>;
                          type = "critical";
-                 };
+                };
             };
         };
     };
@@ -581,66 +600,16 @@
         power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_PCIE>;
     };
 
-    gp_vdma: dma@7c05E000 {
+    gp_vdma: gp_vdma {
     #address-cells = <1>;
     #size-cells = <1>;
     compatible = "hailo,hailo15-gp_vdma";
-    reg = <0 0x7c05E000 0 0x200>;
     ranges;
         interrupts = <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_0_IRQ IRQ_TYPE_LEVEL_HIGH>,
                     <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_1_IRQ IRQ_TYPE_LEVEL_HIGH>,
                     <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_2_IRQ IRQ_TYPE_LEVEL_HIGH>,
                     <GIC_SPI HW_INTERRUPTS__SW_DMA_AP_INT_3_IRQ IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "gp_dma_irq_0", "gp_dma_irq_1", "gp_dma_irq_2", "gp_dma_irq_3";
-    dma-channel@0 {
-        reg = <0x7c05C000 0x20>;
-    };
-    dma-channel@1 {
-        reg = <0x7c05C020 0x20>;
-    };
-    dma-channel@2 {
-        reg = <0x7c05C040 0x20>;
-    };
-    dma-channel@3 {
-        reg = <0x7c05C060 0x20>;
-    };
-    dma-channel@4 {
-        reg = <0x7c05C080 0x20>;
-    };
-    dma-channel@5 {
-        reg = <0x7c05C0A0 0x20>;
-    };
-    dma-channel@6 {
-        reg = <0x7c05C0C0 0x20>;
-    };
-    dma-channel@7 {
-        reg = <0x7c05C0E0 0x20>;
-    };
-    dma-channel@8 {
-        reg = <0x7c05C100 0x20>;
-    };
-    dma-channel@9 {
-        reg = <0x7c05C120 0x20>;
-    };
-    dma-channel@A {
-        reg = <0x7c05C140 0x20>;
-    };
-    dma-channel@B {
-        reg = <0x7c05C160 0x20>;
-    };
-    dma-channel@C {
-        reg = <0x7c05C180 0x20>;
-    };
-    dma-channel@D {
-        reg = <0x7c05C1A0 0x20>;
-    };
-    dma-channel@E {
-        reg = <0x7c05C1C0 0x20>;
-    };
-    dma-channel@F {
-        reg = <0x7c05C1E0 0x20>;
-    };
-
     };
 
     regulator_3p3v: regulator-3p3v {

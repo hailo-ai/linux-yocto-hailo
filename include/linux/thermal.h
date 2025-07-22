@@ -157,6 +157,7 @@ struct thermal_zone_device {
 	unsigned long trips_disabled;	/* bitmap for disabled trips */
 	unsigned long passive_delay_jiffies;
 	unsigned long polling_delay_jiffies;
+	bool *trip_crossed_up_arr; /* trip crossed up indication array */
 	int temperature;
 	int last_temperature;
 	int emul_temperature;

@@ -9,7 +9,7 @@
 &i2c_1 {
     status = "ok";
     ina231_3v3_pci: 3v3_pci@40 {
-        status = "disabled";
+        status = "okay";
         compatible = "ti,ina231_precise";
         reg = <0x40>;
         shunt-resistor = <10000>;

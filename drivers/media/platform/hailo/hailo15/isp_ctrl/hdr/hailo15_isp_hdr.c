@@ -68,6 +68,7 @@ static int hailo15_isp_hdr_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_HDR_RATIO:
 	case HAILO15_ISP_CID_HDR_EXT_BIT:
 	case HAILO15_ISP_CID_HDR_TRANS_RANGE:
+	case HAILO15_ISP_CID_HDR_COLOR_WEIGHTS:
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -93,6 +94,7 @@ static int hailo15_isp_hdr_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_HDR_EXT_BIT:
 	case HAILO15_ISP_CID_HDR_TRANS_RANGE:
 	case HAILO15_ISP_CID_HDR_REQUESTED_RATIO:
+	case HAILO15_ISP_CID_HDR_COLOR_WEIGHTS:
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -157,6 +159,17 @@ const struct v4l2_ctrl_config hailo15_isp_hdr_ctrls[] = {
 		.min = 0,
 		.max = 0xFFFFFFFF,
 		.dims = { 2 },
+	},
+	{
+		.ops = &hailo15_isp_hdr_ctrl_ops,
+		.id = HAILO15_ISP_CID_HDR_COLOR_WEIGHTS,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_hdr_color_weights",
+		.step = 1,
+		.min = 0,
+		.max = 0xFF,
+		.dims = { 3 },
 	}
 };
 

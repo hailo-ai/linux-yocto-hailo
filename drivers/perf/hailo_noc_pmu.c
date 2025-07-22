@@ -6,6 +6,7 @@
 #include <linux/notifier.h>
 #include <linux/minmax.h>
 #include <linux/sched.h>
+#include <linux/of.h>
 #include <linux/mm.h>
 #include <linux/kthread.h>
 #include <linux/kstrtox.h>
@@ -35,7 +36,7 @@
 		.urgency = 0, \
 	}
 
-#define DEFAULT_PARAMS ((struct scmi_hailo_noc_start_measure_a2p) { \
+#define DEFAULT_START_PARAMS ((struct scmi_hailo_noc_start_measure_a2p) { \
 		.sample_time_us = DEFAULT_SAMPLE_TIME_US, \
 		.after_trigger_percentage = 50, \
 		.is_freerunning = false, \
@@ -81,7 +82,7 @@ struct indexed_device_attribute {
 #define INDEXED_DEVICE_ATTR_ADMIN_RW(_name, _category, _index) \
 	struct indexed_device_attribute dev_attr_##_name##_##_category##_index = __INDEXED_ATTR_RW_MODE(_name, _category, 0600, _index)
 
-struct noc_sample {
+struct noc_sample_h15 {
 	uint32_t noc_counters[4];
 	uint32_t dsm_rx_counter;
 	uint32_t dsm_tx_counter;
@@ -90,284 +91,270 @@ struct noc_sample {
 	bool triggered;
 } __packed;
 
-enum action_id {
-	ACTION_NONE,
-	ACTION_START,
-	ACTION_STOP
+struct noc_sample_h15l {
+	uint32_t noc_counters[5];
+	uint32_t dsm_rx_counter;
+	uint32_t dsm_tx_counter;
+	uint32_t csm_counter;
+	uint64_t timestamp;
+	bool triggered;
+} __packed;
+
+struct measurement_params {
+	struct scmi_hailo_noc_start_measure_a2p start_params;
+	bool active_counters[4];
+	bool limit_samples;
+	unsigned int sample_count_limit; // if limit_samples is true, this is the limit
 };
 
-struct action {
-	enum action_id action_id;
-	struct scmi_hailo_noc_start_measure_a2p action_param;
+struct hailo_pmu_aux_buffer {
+	char *data;
+	unsigned long size;
 };
 
 struct hailo_pmu {
 	struct pmu pmu;
-	struct perf_event *event;
 	struct platform_device *pdev;
-	struct perf_output_handle handle;
-	struct noc_sample *scu_buf;
-	void *aux_buf;
-	size_t aux_buf_remaining_size;
-	size_t remaining_samples;
-	size_t total_bytes_written;
-	spinlock_t lock;
-	const struct scmi_hailo_ops *scmi_ops;
-	bool active;
-
-	struct action action;
-	struct scmi_hailo_noc_start_measure_a2p params;
-	bool active_counters[4];
+	void *scu_buf;
 
 	/*
-	 * busy is true as long as both of the following three conditions are met:
-	 * 1. started was called by the user.
-	 * 2. the last ended notification has not been completely handled.
-	 * 3. stop was not called by the user.
+		The NOC measurements are recorded by the SCU processor, and we treat it as a HW PMU, and thus we use the aux buffer interface of the perf framework.
+		We communicate with the SCU Processor via the Hailo-SCMI intefrace to start and stop the measurements, and get a notification when measurements end.
+		We use a new aux buffer for each measurement of the SCU processor, which is at most 200 samples, and we copy the data from the SCU processor to the aux buffer.
+
+		The PMU interface calls our start and stop callbacks from atomic context, and the aux buffers are expected to always be allocated either there
+		or in 'interrupt context', and it is expected for the driver to finish with the aux buffer before the stop callback returns.
+
+		The SCMI interface (API calls and notifications) cannot be called from atomic context.
+
+		To deal with these constraints, we implement two synchronization mechanisms:
+		1. For the atomic PMU context, we implement a spinlock called 'pmu_lock' to protect from concurrent access to the PMU side from different cores.
+		2. For the SCMI interface, we use a workqueue to handle queueing the start and stop requests from the PMU atomic context, and to queue
+		   'measurement-ended' notifications. When we handle the measurement-ended notification, we want to copy the counters data to the aux buffer
+		   and allocate a new aux buffer, but we have to be in an atomic PMU context, so we disable IRQs and lock the pmu_lock, just for the time we copy the data.
+
+
+		We only allow 1 measurement to run at a time (from a single core), and we set the 'pmu_busy' when we have accepted a start request, and until
+		the stop request.
+		We also don't allow a new measurement to start until the SCMI interface has finished handling the 'measurement-ended' notifications from the last measurement,
+		and sending the last 'stop measurement' request to the SCU processor.
+		We set the 'scmi_busy' flag when we have accepted a start request in the atomic context, and we clear it from the SCMI context when the last measurement has ended.
 	 */
-	bool busy;
+
+	/* this lock protects access to the pmu atomic side */
+	spinlock_t pmu_lock;
+
+	/* these variables are used by the PMU atomic context */
+	bool pmu_busy;
+	struct perf_event *event;
+
+	/* these variables are used by the SCMI/preemptive context */
+	bool scmi_busy; // set by PMU context, cleared by SCMI context
+	struct measurement_params params; // changable by userspace
+	struct measurement_params active_params; // used by current running measurement
 	unsigned int started_initiated_count;
 	unsigned int ended_handled_count;
-	/*
-	 * stop_requested is true as long as the following two conditions are met:
-	 * 1. stop was called by the user.
-	 * 2. busy is true.
-	 */
 	bool stop_requested;
+	const struct scmi_hailo_ops *scmi_ops;
+	unsigned int remaining_samples; // used if limit_samples is true
+
+	/* SCMI work-queue */
+	struct workqueue_struct* scmi_wq;
+	struct work_struct scmi_stop_work;
+	struct work_struct scmi_start_work;
+
+	uint32_t sample_size;
 };
 
-static void hailo_pmu_lock(struct hailo_pmu *hailo_pmu)
+struct hailo_pmu_scmi_measurement_ended_work
 {
-	spin_lock(&hailo_pmu->lock);
-}
+	struct work_struct work;
+	struct hailo_pmu *hailo_pmu;
+	struct scmi_hailo_noc_measurement_ended_notification report;
+};
 
-static void hailo_pmu_unlock(struct hailo_pmu *hailo_pmu)
+void hailo_pmu_scmi_halt(struct hailo_pmu *hailo_pmu)
 {
-	spin_unlock(&hailo_pmu->lock);
-}
-
-static inline bool hailo_pmu_started_enter(struct hailo_pmu *hailo_pmu, struct perf_event *event)
-{
-	bool allowed;
-
-	hailo_pmu_lock(hailo_pmu);
-	allowed = !hailo_pmu->busy;
-	if (allowed) {
-		hailo_pmu->started_initiated_count++;
-		hailo_pmu->busy = true;
-		event->hw.state &= ~PERF_HES_STOPPED;
-	}
-	hailo_pmu_unlock(hailo_pmu);
-
-	return allowed;
-}
-
-static inline void hailo_pmu_started_failed(struct hailo_pmu *hailo_pmu, struct perf_event *event)
-{
-	hailo_pmu_lock(hailo_pmu);
-	BUG_ON(!hailo_pmu->busy);
-	hailo_pmu->busy = false;
-	event->hw.state |= PERF_HES_STOPPED;
-	hailo_pmu->started_initiated_count--;
-	hailo_pmu_unlock(hailo_pmu);
-}
-
-/* hailo_pmu_started_leave is not needed */
-
-static inline bool hailo_pmu_stop_enter(struct hailo_pmu *hailo_pmu)
-{
-	bool allowed = false;
-
-	hailo_pmu_lock(hailo_pmu);
-	if (hailo_pmu->busy && !hailo_pmu->stop_requested) {
-		hailo_pmu->stop_requested = true;
-		allowed = true;
-	}
-
-	return allowed;
-}
-
-static inline void hailo_pmu_stop_leave(struct hailo_pmu *hailo_pmu)
-{
-	if (hailo_pmu->stop_requested &&
-	    hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count) {
-		BUG_ON(!hailo_pmu->busy);
-		hailo_pmu->busy = false;
+	if (hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count) {
+		BUG_ON(!hailo_pmu->scmi_busy);
+		hailo_pmu->scmi_busy = false;
 		hailo_pmu->stop_requested = false;
 	}
-	hailo_pmu_unlock(hailo_pmu);
 }
 
-static inline bool hailo_pmu_ended_enter(struct hailo_pmu *hailo_pmu)
-{
-	hailo_pmu_lock(hailo_pmu);
-	BUG_ON(hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count);
-	BUG_ON(!hailo_pmu->busy);
-
-	return !hailo_pmu->stop_requested;
-}
-
-/* Assumed to be under lock */
-static inline void hailo_pmu_ended_continue(struct hailo_pmu *hailo_pmu)
-{
-	/* Increase started_initiated_count before hailo_pmu_ended_leave so that we won't have:
-	   hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count*/
-	hailo_pmu->started_initiated_count++;
-
-	BUG_ON(hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count);
-}
-
-static inline void hailo_pmu_ended_leave(struct hailo_pmu *hailo_pmu)
-{
-	hailo_pmu->ended_handled_count++;
-	if (hailo_pmu->stop_requested &&
-	    hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count) {
-		BUG_ON(!hailo_pmu->busy);
-		hailo_pmu->busy = false;
-		hailo_pmu->stop_requested = false;
-	}
-	hailo_pmu_unlock(hailo_pmu);
-}
-
-static inline void hailo_pmu_start_measure_failed(struct hailo_pmu *hailo_pmu)
-{
-	hailo_pmu_lock(hailo_pmu);
-	hailo_pmu->started_initiated_count--;
-	if (hailo_pmu->stop_requested &&
-	    hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count) {
-		/* Might happen if hailo_pmu_get_action returned ACTION_START
-		   then user requested stop and then start_measurement failed */
-		BUG_ON(!hailo_pmu->busy);
-		hailo_pmu->busy = false;
-		hailo_pmu->stop_requested = false;
-	}
-	hailo_pmu_unlock(hailo_pmu);
-}
-
-static void hailo_pmu_get_action(struct hailo_pmu *hailo_pmu, enum action_id *action_id, struct scmi_hailo_noc_start_measure_a2p *params)
-{
-	hailo_pmu_lock(hailo_pmu);
-	*action_id = hailo_pmu->action.action_id;
-	if (params != NULL) {
-		*params = hailo_pmu->action.action_param;
-	}
-
-	hailo_pmu->action.action_id = ACTION_NONE;
-	hailo_pmu_unlock(hailo_pmu);
-}
-
-static DECLARE_WAIT_QUEUE_HEAD(hailo_pmu_action_queue);
-
-
-/* Assumed to be under lock */
-static void hailo_pmu_set_action(struct hailo_pmu *hailo_pmu, enum action_id action_id, struct scmi_hailo_noc_start_measure_a2p *params)
-{
-	int i;
-
-	hailo_pmu->action.action_id = action_id;
-	if (params != NULL) {
-		hailo_pmu->action.action_param = *params;
-		for (i = 0; i < NUMBER_OF_COUNTERS; i++) {
-			if (!hailo_pmu->active_counters[i]) {
-				/* This configuration effectively does not let any packet pass */
-				hailo_pmu->action.action_param.filters[i].opcode = 0;
-				hailo_pmu->action.action_param.filters[i].total = 0;
-			}
-		}
-	}
-
-	wake_up_interruptible(&hailo_pmu_action_queue);
-}
-
-
-/* Assumed to be under lock */
-static void hailo_pmu_stop_capturing(struct hailo_pmu *hailo_pmu)
-{
-	perf_aux_output_end(&hailo_pmu->handle, hailo_pmu->total_bytes_written);
-	perf_event_update_userpage(hailo_pmu->event);
-
-	hailo_pmu->remaining_samples = 0;
-	hailo_pmu->aux_buf_remaining_size = 0;
-	hailo_pmu->total_bytes_written = 0;
-	hailo_pmu->aux_buf = NULL;
-	hailo_pmu->event->hw.state |= PERF_HES_STOPPED;
-	hailo_pmu->event = NULL;
-}
-
-static int hailo_pmu_commands_sender(void *data)
+void hailo_pmu_scmi_start_measure(struct hailo_pmu *hailo_pmu)
 {
 	int ret = 0;
-	struct hailo_pmu *hailo_pmu = data;
-	enum action_id action_id;
-	struct scmi_hailo_noc_start_measure_a2p params;
-	bool measurement_was_running;
 
-	hailo_pmu->active = true;
+	BUG_ON(hailo_pmu->ended_handled_count != hailo_pmu->started_initiated_count);
+	ret = hailo_pmu->scmi_ops->start_measure(&hailo_pmu->active_params.start_params);
+	if (ret) {
+		pr_err("Failed to start NoC bandwidth measurement on rc: %d\n", ret);
+		hailo_pmu_scmi_halt(hailo_pmu);
+		return;
+	}
 
-	while (hailo_pmu->active) {
-		wait_event_interruptible(hailo_pmu_action_queue,
-					 (hailo_pmu->action.action_id != ACTION_NONE) || !hailo_pmu->active);
-		hailo_pmu_get_action(hailo_pmu, &action_id, &params);
+	hailo_pmu->started_initiated_count++;
+}
 
-		switch (action_id) {
-			case ACTION_START:
-				ret = hailo_pmu->scmi_ops->start_measure(&params);
-				if (ret) {
-					hailo_pmu_start_measure_failed(hailo_pmu);
-					pr_err("Failed to start NoC bandwidth measurement on rc: %d\n", ret);
-					break;
-				}
-				break;
-			case ACTION_STOP:
-				ret = hailo_pmu->scmi_ops->stop_measure(&measurement_was_running);
-				if (ret) {
-					pr_err("Failed to stop NoC bandwidth measurement on rc: %d\n", ret);
-					break;
-				}
-				/*
-				 * It doesn't matter if we stopped an active measurement,
-				 * no further action is required.
-				 */
-				break;
-			case ACTION_NONE:
-				/* Do nothing */
-				break;
-			default:
-				break;
+void hailo_pmu_scmi_start_work_handle(struct work_struct *work)
+{
+	struct hailo_pmu *hailo_pmu = (struct hailo_pmu *)container_of(work, struct hailo_pmu, scmi_start_work);
+	int i;
+
+	// we have to copy the params to active params,
+	// because the params can be changed by the user while the measurement is running
+	// and we want to keep the active params consistent with the current running measurement
+	hailo_pmu->active_params = hailo_pmu->params;
+	for (i = 0; i < NUMBER_OF_COUNTERS; i++) {
+		if (!hailo_pmu->active_params.active_counters[i]) {
+			/* This configuration effectively does not let any packet pass */
+			hailo_pmu->active_params.start_params.filters[i].opcode = 0;
+			hailo_pmu->active_params.start_params.filters[i].total = 0;
 		}
 	}
 
-	return 0;
+	if (hailo_pmu->active_params.limit_samples) {
+		hailo_pmu->remaining_samples = hailo_pmu->active_params.sample_count_limit;
+	}
+
+	hailo_pmu_scmi_start_measure(hailo_pmu);
+}
+
+void hailo_pmu_scmi_stop_work_handle(struct work_struct *work)
+{
+	struct hailo_pmu *hailo_pmu = (struct hailo_pmu *)container_of(work, struct hailo_pmu, scmi_stop_work);
+	bool measurement_was_running;
+	int ret = 0;
+
+	hailo_pmu->stop_requested = true;
+
+	ret = hailo_pmu->scmi_ops->stop_measure(&measurement_was_running);
+	if (ret) {
+		pr_err("Failed to stop NoC bandwidth measurement on rc: %d\n", ret);
+	}
+
+	hailo_pmu_scmi_halt(hailo_pmu);
+}
+
+// this function is called from SCMI context, so we disable IRQs and lock the pmu_lock to be in PMU atomic context
+void hailo_pmu_fill_aux(struct hailo_pmu *hailo_pmu, const volatile void __iomem *scu_buf, unsigned int number_of_samples, unsigned int *actually_written)
+{
+	unsigned long flags;
+	unsigned long aux_buf_remaining_size;
+	unsigned long write_size;
+	unsigned long head_offset;
+	unsigned long first_part_size;
+	struct perf_output_handle handle;
+	struct hailo_pmu_aux_buffer *aux_buf;
+
+	*actually_written = 0;
+
+	local_irq_save(flags);
+	spin_lock(&hailo_pmu->pmu_lock);
+
+	if (!hailo_pmu->pmu_busy) {
+		goto unlock;
+	}
+
+	aux_buf = perf_aux_output_begin(&handle, hailo_pmu->event);
+	if (aux_buf == NULL) {
+		pr_err("hailo_pmu_fill_aux: failed to allocate aux buffer\n");
+		goto unlock;
+	}
+
+	aux_buf_remaining_size = handle.size / hailo_pmu->sample_size;
+	if (number_of_samples > aux_buf_remaining_size) {
+		number_of_samples = aux_buf_remaining_size;
+	}
+
+	/* Copy the samples to the aux buffer and update current state */
+	write_size = number_of_samples * hailo_pmu->sample_size;
+	head_offset = handle.head % aux_buf->size; /* head pointer in handle is stored without modulo */
+	first_part_size = min(aux_buf->size - head_offset, write_size);
+	memcpy_fromio(aux_buf->data + head_offset, scu_buf, first_part_size);
+	if (first_part_size < write_size) {
+		memcpy_fromio(aux_buf->data, scu_buf + first_part_size, write_size - first_part_size);
+	}
+
+	*actually_written = number_of_samples;
+	perf_aux_output_end(&handle, write_size);
+
+
+unlock:
+	spin_unlock(&hailo_pmu->pmu_lock);
+	local_irq_restore(flags);
+}
+
+void hailo_pmu_scmi_measurement_ended_work_handle(struct work_struct *work) {
+	struct hailo_pmu_scmi_measurement_ended_work *measurement_ended_work = (struct hailo_pmu_scmi_measurement_ended_work *)container_of(work, struct hailo_pmu_scmi_measurement_ended_work, work);
+	struct hailo_pmu *hailo_pmu = measurement_ended_work->hailo_pmu;
+	struct scmi_hailo_noc_measurement_ended_notification *report = &measurement_ended_work->report;
+	unsigned int number_of_samples;
+	unsigned int written_samples;
+	void* scu_buf;
+
+	BUG_ON(hailo_pmu->ended_handled_count + 1 != hailo_pmu->started_initiated_count);
+	BUG_ON(!hailo_pmu->scmi_busy);
+
+	hailo_pmu->ended_handled_count++;
+
+	if (hailo_pmu->stop_requested) {
+		/* Stop has been requested before we finished measuring */
+		hailo_pmu_scmi_halt(hailo_pmu);
+		goto Exit;
+	}
+
+	number_of_samples = (report->sample_end_index - report->sample_start_index + 1);
+	/*
+	 * In case we received more samples than the user requested,
+	 * we need to adjust the number of samples to write to the aux buffer
+	 */
+	if (hailo_pmu->active_params.limit_samples) {
+		if (number_of_samples > hailo_pmu->remaining_samples) {
+			number_of_samples = hailo_pmu->remaining_samples;
+		}
+	}
+
+	scu_buf = (void *)((char *)(hailo_pmu->scu_buf) + (hailo_pmu->sample_size * report->sample_start_index));
+	hailo_pmu_fill_aux(hailo_pmu, scu_buf, number_of_samples, &written_samples);
+
+	if (hailo_pmu->active_params.limit_samples) {
+		BUG_ON(written_samples > hailo_pmu->remaining_samples);
+		hailo_pmu->remaining_samples -= written_samples;
+	}
+
+	/* Continue capturing */
+	hailo_pmu_scmi_start_measure(hailo_pmu);
+
+Exit:
+	kfree(measurement_ended_work);
 }
 
 static int hailo_pmu_add(struct perf_event *event, int flags)
 {
 	struct hailo_pmu *hailo_pmu = container_of(event->pmu, struct hailo_pmu, pmu);
-	bool allowed = hailo_pmu_started_enter(hailo_pmu, event);
+	int ret = 0;
 
-	if (!allowed) {
-		goto Exit;
+	spin_lock(&hailo_pmu->pmu_lock);
+
+	if (hailo_pmu->pmu_busy || hailo_pmu->scmi_busy) {
+		ret = -EBUSY;
+		goto unlock;
 	}
 
 	hailo_pmu->event = event;
 
-	hailo_pmu->total_bytes_written = 0;
-	hailo_pmu->aux_buf = perf_aux_output_begin(&hailo_pmu->handle, hailo_pmu->event);
-	if (hailo_pmu->aux_buf == NULL) {
-		pr_err("Failed to allocate aux buffer\n");
-		hailo_pmu_started_failed(hailo_pmu, event);
-		return -ENOMEM;
-	}
-	hailo_pmu->aux_buf_remaining_size = hailo_pmu->handle.size;
-	if (hailo_pmu->remaining_samples == 0) {
-		/* If user did not limit the number of samples,
-		   use the size of aux_buf as the limit. */
-		hailo_pmu->remaining_samples = hailo_pmu->aux_buf_remaining_size / sizeof(struct noc_sample);
-	}
+	hailo_pmu->event->hw.state &= ~PERF_HES_STOPPED;
+	hailo_pmu->pmu_busy = true;
+	hailo_pmu->scmi_busy = true;
 
-	hailo_pmu_set_action(hailo_pmu, ACTION_START, &hailo_pmu->params);
+	queue_work(hailo_pmu->scmi_wq, &hailo_pmu->scmi_start_work);
+	ret = 0;
 
-Exit:
+unlock:
+	spin_unlock(&hailo_pmu->pmu_lock);
+
 	return 0;
 }
 
@@ -379,19 +366,24 @@ static void hailo_pmu_start(struct perf_event *event, int flags)
 static void hailo_pmu_stop(struct perf_event *event, int flags)
 {
 	struct hailo_pmu *hailo_pmu = container_of(event->pmu, struct hailo_pmu, pmu);
-	bool allowed;
 
-	allowed = hailo_pmu_stop_enter(hailo_pmu);
-	if (!allowed) {
-		goto Exit;
+	spin_lock(&hailo_pmu->pmu_lock);
+
+	if (!hailo_pmu->pmu_busy) {
+		goto unlock;
 	}
 
-	hailo_pmu_set_action(hailo_pmu, ACTION_STOP, NULL);
-	hailo_pmu_stop_capturing(hailo_pmu);
+	hailo_pmu->event->hw.state |= PERF_HES_STOPPED;
+	perf_event_update_userpage(hailo_pmu->event);
 
+	hailo_pmu->event = NULL;
 
-Exit:
-	hailo_pmu_stop_leave(hailo_pmu);
+	queue_work(hailo_pmu->scmi_wq, &hailo_pmu->scmi_stop_work);
+
+	hailo_pmu->pmu_busy = false;
+
+unlock:
+	spin_unlock(&hailo_pmu->pmu_lock);
 }
 
 static void *hailo_pmu_setup_aux(struct perf_event *event, void **pages,
@@ -401,8 +393,11 @@ static void *hailo_pmu_setup_aux(struct perf_event *event, void **pages,
 	struct page **page_list;
 	void *flat_buf;
 
-	/* Map the pages into a flat contiguous buffer */
+	struct hailo_pmu_aux_buffer *aux_buf = kzalloc(sizeof(*aux_buf), GFP_KERNEL);
+	if (!aux_buf)
+		return NULL;
 
+	/* Map the pages into a flat contiguous buffer */
 	page_list = kcalloc(nr_pages, sizeof(*page_list), GFP_KERNEL);
 	if (!page_list)
 		return NULL;
@@ -414,12 +409,19 @@ static void *hailo_pmu_setup_aux(struct perf_event *event, void **pages,
 
 	kfree(page_list);
 
-	return flat_buf;
+
+	aux_buf->data = flat_buf;
+	aux_buf->size = nr_pages * PAGE_SIZE;
+
+	return aux_buf;
 }
 
 static void hailo_pmu_free_aux(void *aux)
 {
-	vunmap(aux);
+	struct hailo_pmu_aux_buffer *aux_buf = aux;
+
+	vunmap(aux_buf->data);
+	kfree(aux_buf);
 }
 
 static ssize_t hailo_pmu_sysfs_show(struct device *dev, struct device_attribute *attr, char *page)
@@ -488,7 +490,7 @@ static int get_attribute_index(struct device_attribute *attr)
 static struct scmi_hailo_noc_start_measure_a2p_filter *get_filter(struct device *dev, struct device_attribute *attr)
 {
 	struct hailo_pmu *pmu = dev_get_drvdata(dev);
-	return &pmu->params.filters[get_attribute_index(attr)];
+	return &pmu->params.start_params.filters[get_attribute_index(attr)];
 }
 
 #define NOC_COUNTERS_INDEXED_DEVICE_ATTR_ADMIN_RW(_name) \
@@ -504,7 +506,7 @@ static ssize_t enabled_noc_show(struct device *dev,
 	struct hailo_pmu *pmu = dev_get_drvdata(dev);
 	int index = get_attribute_index(attr);
 
-	return sprintf(buf, "%d\n", pmu->active_counters[index]);
+	return sprintf(buf, "%d\n", pmu->params.active_counters[index]);
 }
 static ssize_t enabled_noc_store(struct device *dev,
 				 struct device_attribute *attr,
@@ -517,7 +519,7 @@ static ssize_t enabled_noc_store(struct device *dev,
 	if (kstrtobool(buf, &val))
 		return -EINVAL;
 
-	pmu->active_counters[index] = val;
+	pmu->params.active_counters[index] = val;
 
 	return count;
 }
@@ -552,9 +554,10 @@ static int hailo_pmu_event_init(struct perf_event *event)
 	if (sample_time_us < MINIMUM_SAMPLE_TIME_US)
 		return -EINVAL;
 
-	hailo_pmu->remaining_samples = number_of_samples;
-	hailo_pmu->params.sample_time_us = sample_time_us;
-	hailo_pmu->params.is_freerunning = running_mode;
+	hailo_pmu->params.sample_count_limit = number_of_samples;
+	hailo_pmu->params.limit_samples = (number_of_samples > 0); // only limit if number_of_samples > 0
+	hailo_pmu->params.start_params.sample_time_us = sample_time_us;
+	hailo_pmu->params.start_params.is_freerunning = running_mode;
 
 	return 0;
 }
@@ -715,6 +718,7 @@ static ssize_t address_base_noc_store(struct device *dev,
 		return -EINVAL;
 
 	filter->addrbase_low = address_base & 0xFFFFFFFF;
+	filter->addrbase_high = (address_base >> 32) & 0xF;
 
 	return count;
 }
@@ -772,6 +776,33 @@ static ssize_t urgency_noc_store(struct device *dev,
 }
 NOC_COUNTERS_INDEXED_DEVICE_ATTR_ADMIN_RW(urgency);
 
+/* status attribute */
+static ssize_t status_noc_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
+{
+	struct scmi_hailo_noc_start_measure_a2p_filter *filter = get_filter(dev, attr);
+
+	return sprintf(buf, "0x%x\n", filter->status);
+}
+static ssize_t status_noc_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct scmi_hailo_noc_start_measure_a2p_filter *filter = get_filter(dev, attr);
+	u8 val;
+
+	if (kstrtou8(buf, 0, &val))
+		return -EINVAL;
+
+	if (val >= (1 << 2))
+		return -EINVAL;
+
+	filter->status = val;
+
+	return count;
+}
+NOC_COUNTERS_INDEXED_DEVICE_ATTR_ADMIN_RW(status);
+
 #define NOC_COUNTER_ATTR_GROUP(_index) \
 	struct attribute *hailo_pmu_noc_counter##_index##_attrs[] = { \
 		&dev_attr_enabled_noc##_index.device_attribute.attr, \
@@ -783,6 +814,7 @@ NOC_COUNTERS_INDEXED_DEVICE_ATTR_ADMIN_RW(urgency);
 		&dev_attr_address_base_noc##_index.device_attribute.attr, \
 		&dev_attr_window_size_noc##_index.device_attribute.attr, \
 		&dev_attr_urgency_noc##_index.device_attribute.attr, \
+		&dev_attr_status_noc##_index.device_attribute.attr, \
 		NULL, \
 	}; \
 	static const struct attribute_group hailo_pmu_noc_counter##_index##_attr_group = { \
@@ -801,7 +833,7 @@ static ssize_t csm_enabled_show(struct device *dev,
 				    char *buf)
 {
 	struct hailo_pmu *pmu = dev_get_drvdata(dev);
-	int value = pmu->params.csm_enabled;
+	int value = pmu->params.start_params.csm_enabled;
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -815,7 +847,7 @@ static ssize_t csm_enabled_store(struct device *dev,
 	if (kstrtobool(buf, &val))
 		return -EINVAL;
 
-	pmu->params.csm_enabled = val;
+	pmu->params.start_params.csm_enabled = val;
 
 	return count;
 }
@@ -837,7 +869,7 @@ static ssize_t dsm_rx_enabled_show(struct device *dev,
 				    char *buf)
 {
 	struct hailo_pmu *pmu = dev_get_drvdata(dev);
-	int value = pmu->params.dsm_rx_enabled;
+	int value = pmu->params.start_params.dsm_rx_enabled;
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -851,7 +883,7 @@ static ssize_t dsm_rx_enabled_store(struct device *dev,
 	if (kstrtobool(buf, &val))
 		return -EINVAL;
 
-	pmu->params.dsm_rx_enabled = val;
+	pmu->params.start_params.dsm_rx_enabled = val;
 
 	return count;
 }
@@ -873,7 +905,7 @@ static ssize_t dsm_tx_enabled_show(struct device *dev,
 				    char *buf)
 {
 	struct hailo_pmu *pmu = dev_get_drvdata(dev);
-	int value = pmu->params.dsm_tx_enabled;
+	int value = pmu->params.start_params.dsm_tx_enabled;
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -887,7 +919,7 @@ static ssize_t dsm_tx_enabled_store(struct device *dev,
 	if (kstrtobool(buf, &val))
 		return -EINVAL;
 
-	pmu->params.dsm_tx_enabled = val;
+	pmu->params.start_params.dsm_tx_enabled = val;
 
 	return count;
 }
@@ -945,81 +977,34 @@ struct contexted_notifier_block {
 	void *context;
 };
 
-static int hailo_pmu_trigger_notifier(struct notifier_block *nb, unsigned long event, void *report)
+static int hailo_pmu_scmi_trigger_notifier(struct notifier_block *nb, unsigned long event, void *report)
 {
 	return NOTIFY_OK;
 }
 
 struct contexted_notifier_block trigger_nb = {
 	.notifier_block = {
-		.notifier_call = hailo_pmu_trigger_notifier,
+		.notifier_call = hailo_pmu_scmi_trigger_notifier,
 	},
 };
 
-static int hailo_pmu_ended_notifier(struct notifier_block *nb, unsigned long event, void *data)
+static int hailo_pmu_scmi_ended_notifier(struct notifier_block *nb, unsigned long event, void *data)
 {
-	struct scmi_hailo_noc_measurement_ended_notification *report;
-	struct hailo_pmu *hailo_pmu;
-	bool allowed;
+	struct hailo_pmu *hailo_pmu = ((struct contexted_notifier_block *)nb)->context;
+	struct hailo_pmu_scmi_measurement_ended_work *measure_ended_work = kzalloc(sizeof(struct hailo_pmu_scmi_measurement_ended_work), GFP_KERNEL);
 
-	size_t number_of_samples;
-	size_t number_of_samples_fit_in_aux_buf;
-	size_t samples_size;
+	INIT_WORK(&measure_ended_work->work, hailo_pmu_scmi_measurement_ended_work_handle);
+	measure_ended_work->hailo_pmu = hailo_pmu;
+	measure_ended_work->report = *((struct scmi_hailo_noc_measurement_ended_notification *)data);
 
-	report = data;
-	hailo_pmu = ((struct contexted_notifier_block *)nb)->context;
+	queue_work(hailo_pmu->scmi_wq, &measure_ended_work->work);
 
-	allowed = hailo_pmu_ended_enter(hailo_pmu);
-	if (!allowed) {
-		/* Stop has been requested before we finished measuring */
-		goto Exit;
-	}
-
-	number_of_samples = (report->sample_end_index - report->sample_start_index + 1);
-	number_of_samples_fit_in_aux_buf = hailo_pmu->aux_buf_remaining_size / sizeof(struct noc_sample);
-
-	/*
-	 * In case we received more samples than the user requested,
-	 * we need to adjust the number of samples to write to the aux buffer
-	 */
-	if (number_of_samples > hailo_pmu->remaining_samples)
-		number_of_samples = hailo_pmu->remaining_samples;
-
-	/*
-	 * In case we received more samples than the aux buffer can hold,
-	 * we need to adjust the number of samples to write to the aux buffer
-	 */
-	if (number_of_samples > number_of_samples_fit_in_aux_buf) {
-		number_of_samples = number_of_samples_fit_in_aux_buf;
-	}
-
-	samples_size = number_of_samples * sizeof(struct noc_sample);
-
-	/* Copy the samples to the aux buffer and update current state */
-	memcpy_fromio(hailo_pmu->aux_buf, &hailo_pmu->scu_buf[report->sample_start_index], samples_size);
-
-	hailo_pmu->remaining_samples -= number_of_samples;
-	hailo_pmu->total_bytes_written += samples_size;
-	hailo_pmu->aux_buf_remaining_size -= samples_size;
-	hailo_pmu->aux_buf = ((uint8_t *)hailo_pmu->aux_buf) + samples_size;
-
-	/* Check if we should stop capturing */
-	if (hailo_pmu->remaining_samples == 0 || hailo_pmu->aux_buf_remaining_size < sizeof(struct noc_sample))  {
-		goto Exit;
-	}
-
-	/* Continue capturing */
-	hailo_pmu_ended_continue(hailo_pmu);
-	hailo_pmu_set_action(hailo_pmu, ACTION_START, &hailo_pmu->params);
-
-Exit:
-	hailo_pmu_ended_leave(hailo_pmu);
 	return NOTIFY_OK;
 }
 
 struct contexted_notifier_block ended_nb = {
 	.notifier_block = {
-		.notifier_call = hailo_pmu_ended_notifier,
+		.notifier_call = hailo_pmu_scmi_ended_notifier,
 	},
 };
 
@@ -1044,7 +1029,7 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct hailo_pmu *hailo_pmu = NULL;
-	struct task_struct *thread;
+	const char *compat;
 
 	/* Create driver */
 	hailo_pmu = devm_kzalloc(&pdev->dev, sizeof(*hailo_pmu), GFP_KERNEL);
@@ -1054,11 +1039,11 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, hailo_pmu);
 
 	/* Set default config */
-	hailo_pmu->params = DEFAULT_PARAMS;
-	hailo_pmu->active_counters[0] = true;
+	hailo_pmu->params.start_params = DEFAULT_START_PARAMS;
+	hailo_pmu->params.active_counters[0] = true;
 
 	/* Initialize spinlock */
-	spin_lock_init(&hailo_pmu->lock);
+	spin_lock_init(&hailo_pmu->pmu_lock);
 
 	/* Get the SCMI Hailo protocol ops */
 	hailo_pmu->scmi_ops = scmi_hailo_get_ops();
@@ -1079,6 +1064,26 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	if (of_property_read_string(pdev->dev.of_node, "compatible", &compat) != 0) {
+		dev_err(&pdev->dev, "Failed to get device compatible\n");
+		return -EINVAL;
+	}
+
+	if (strcmp(compat, "hailo,hailo15-noc-pmu") == 0) {
+		hailo_pmu->sample_size = sizeof(struct noc_sample_h15);
+	}
+	else if (strcmp(compat, "hailo,hailo15l-noc-pmu") == 0) {
+		hailo_pmu->sample_size = sizeof(struct noc_sample_h15l);
+	}
+	else if (strcmp(compat, "hailo,hailo10h2") == 0) {
+		dev_err(&pdev->dev, "noc tools doesn't work for hailo10h2\n");
+		return -EINVAL;
+	}
+	else {
+		dev_err(&pdev->dev, "Invalid compatible\n");
+		return -EINVAL;
+	}
+
 	/* Remap SCU shared buffer */
 	hailo_pmu->scu_buf = devm_platform_ioremap_resource_byname(pdev, "noc_pmu_samples");
 	if (IS_ERR(hailo_pmu->scu_buf)) {
@@ -1086,13 +1091,9 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 		return PTR_ERR(hailo_pmu->scu_buf);
 	}
 
-	hailo_pmu->active = true;
-	thread = kthread_run(hailo_pmu_commands_sender, hailo_pmu, "hailo_pmu_commands_sender");
-	if (IS_ERR(thread)) {
-		pr_err("Failed to create kthread: %ld\n", PTR_ERR(thread));
-		hailo_pmu->active = false;
-		return PTR_ERR(thread);
-	}
+	hailo_pmu->scmi_wq = alloc_ordered_workqueue("hailo_noc_scmi_wq", WQ_HIGHPRI);
+	INIT_WORK(&hailo_pmu->scmi_start_work, hailo_pmu_scmi_start_work_handle);
+	INIT_WORK(&hailo_pmu->scmi_stop_work, hailo_pmu_scmi_stop_work_handle);
 
 	return ret;
 }
@@ -1101,7 +1102,8 @@ static int hailo_pmu_remove(struct platform_device *pdev)
 {
 	struct hailo_pmu *hailo_pmu = platform_get_drvdata(pdev);
 
-	hailo_pmu->active = false;
+	flush_workqueue(hailo_pmu->scmi_wq);
+	destroy_workqueue(hailo_pmu->scmi_wq);
 
 	/* Unregister the Hailo PMU */
 	perf_pmu_unregister(&hailo_pmu->pmu);
@@ -1110,7 +1112,9 @@ static int hailo_pmu_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id hailo_noc_pmu_dt_ids[] = {
-	{ .compatible = "hailo,noc-pmu"},
+	{ .compatible = "hailo,hailo15-noc-pmu"},
+	{ .compatible = "hailo,hailo15l-noc-pmu"},
+	{ .compatible = "hailo,hailo10h2-noc-pmu"},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, hailo_noc_pmu_dt_ids);

@@ -136,7 +136,7 @@ static irqreturn_t i2s_irq_handler(int irq, void *dev_id)
 
 		/* Error Handling: TX */
 		if (isr[i] & ISR_TXFO) {
-			if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15) {
+			if (dev->cfg_id == CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY) {
 				data->hw_tx_overrun++;
 			}
 			dev_err(dev->dev, "TX overrun (ch_id=%d)\n", i);
@@ -145,7 +145,7 @@ static irqreturn_t i2s_irq_handler(int irq, void *dev_id)
 
 		/* Error Handling: TX */
 		if (isr[i] & ISR_RXFO) {
-			if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15) {
+			if (dev->cfg_id == CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY) {
 				data->hw_rx_overrun++;
 			}
 			dev_err(dev->dev, "RX overrun (ch_id=%d)\n", i);
@@ -313,8 +313,8 @@ static int dw_i2s_hw_params(struct snd_pcm_substream *substream,
 
 			ret = clk_set_rate(dev->clk, bitclk);
 			if (ret) {
-				dev_err(dev->dev, "Can't set I2S clock rate: %d\n",
-					ret);
+				dev_err(dev->dev, "Can't set I2S clock rate: %u, ret = %d\n",
+					bitclk, ret);
 				return ret;
 			}
 		}
@@ -683,7 +683,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 
 	dev->i2s_reg_comp1 = I2S_COMP_PARAM_1;
 	dev->i2s_reg_comp2 = I2S_COMP_PARAM_2;
-	if (pdata) {
+	if (pdata && !(pdata->quirks & DW_I2S_QUIRK_CLK_CFG_OVERRIDE_ONLY)) {
 		dev->capability = pdata->cap;
 		clk_id = NULL;
 		dev->quirks = pdata->quirks;
@@ -742,7 +742,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 		goto err_clk_disable;
 	}
 
-	if (!pdata) {
+	if (!pdata || pdata->quirks & DW_I2S_QUIRK_CLK_CFG_OVERRIDE_ONLY) {
 		if (irq >= 0) {
 			ret = dw_pcm_register(pdev);
 			dev->use_pio = true;
@@ -761,7 +761,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (using_hailo_config(dev)) {
 		hailo15_proc_entries_create(pdev);
 	}
 
@@ -777,7 +777,7 @@ static int dw_i2s_remove(struct platform_device *pdev)
 {
 	struct dw_i2s_dev *dev = dev_get_drvdata(&pdev->dev);
 
-	if (dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15 || dev->cfg_id == CONFIG_ID_DW_I2S_HAILO15_SCU_DMA) {
+	if (using_hailo_config(dev)) {
 		hailo15_proc_entries_remove(pdev);
 	}
 
@@ -789,24 +789,28 @@ static int dw_i2s_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_OF
-static const struct i2s_config_data  hailo15_i2s_scu_dma_config_data = {
-	.cfg_id = CONFIG_ID_DW_I2S_HAILO15_SCU_DMA,
+static const struct i2s_config_data  i2s_cfg_data__hailo_scu_dma_only = {
+	.cfg_id = CONFIG_ID_DW_I2S__HAILO_SCU_DMA_ONLY,
 	.extra_probe = hailo15_extra_probe,
 };
-static const struct i2s_config_data  hailo15_i2s_config_data = {
-	.cfg_id = CONFIG_ID_DW_I2S_HAILO15,
+static const struct i2s_config_data  i2s_cfg_data__hailo_pcm_processing_and_scu_dma = {
+	.cfg_id = CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_AND_SCU_DMA,
 	.extra_probe = hailo15_extra_probe,
 };
-
-static const struct i2s_config_data  snps_i2s_config_data = {
-	.cfg_id = CONFIG_ID_DW_I2S_SNPS,
+static const struct i2s_config_data  i2s_cfg_data__hailo_pcm_processing_only = {
+	.cfg_id = CONFIG_ID_DW_I2S__HAILO_PCM_PROCESSING_ONLY,
+	.extra_probe = hailo15_extra_probe,
+};
+static const struct i2s_config_data  i2s_cfg_data__snps = {
+	.cfg_id = CONFIG_ID_DW_I2S__SNPS,
 	.extra_probe = NULL,
 };
 
 static const struct of_device_id dw_i2s_of_match[] = {
-	{ .compatible = "snps,designware-i2s",	 .data = (void*)&snps_i2s_config_data},
-	{ .compatible = "hailo,hailo15-designware-i2s",	.data = (void*)&hailo15_i2s_config_data},
-	{ .compatible = "hailo,hailo15-designware-i2s-scu-dma",	.data = (void*)&hailo15_i2s_scu_dma_config_data},
+	{ .compatible = "snps,designware-i2s", .data = (void*)&i2s_cfg_data__snps},
+	{ .compatible = "hailo,hailo15-designware-i2s",	.data = (void*)&i2s_cfg_data__hailo_pcm_processing_only},
+	{ .compatible = "hailo,hailo15-designware-i2s-scu-dma",	.data = (void*)&i2s_cfg_data__hailo_pcm_processing_and_scu_dma},
+	{ .compatible = "hailo,hailo-designware-i2s-scu-dma", .data = (void*)&i2s_cfg_data__hailo_scu_dma_only},
 	{},
 };
 

@@ -52,6 +52,12 @@ enum st_lsm6dsx_hw_id {
 	ST_LSM6DSX_MAX_ID,
 };
 
+enum st_lsm6dsx_selftest_mode {
+	ST_LSM6DSX_SELFTEST_NORMAL_MODE,
+	ST_LSM6DSX_SELFTEST_POSITIVE_SIGN,
+	ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN,
+};
+
 #define ST_LSM6DSX_BUFF_SIZE		512
 #define ST_LSM6DSX_CHAN_SIZE		2
 #define ST_LSM6DSX_SAMPLE_SIZE		6
@@ -135,6 +141,13 @@ struct st_lsm6dsx_fs_table_entry {
 
 	struct st_lsm6dsx_fs fs_avl[ST_LSM6DSX_FS_LIST_SIZE];
 	int fs_len;
+};
+
+struct st_lsm6dsx_selftest_settings {
+	struct st_lsm6dsx_reg reg;
+	u8 normal_mode;
+	u8 positive_sign;
+	u8 negative_sign;
 };
 
 /**
@@ -283,6 +296,7 @@ struct st_lsm6dsx_ext_dev_settings {
  * @fifo_ops: Sensor hw FIFO parameters.
  * @ts_settings: Hw timer related settings.
  * @shub_settings: i2c controller related settings.
+ * @selftest_settings: sensor selftest settings (addr + mask + selftest normal/positive/negative values)
  */
 struct st_lsm6dsx_settings {
 	struct st_lsm6dsx_reg reset;
@@ -318,6 +332,7 @@ struct st_lsm6dsx_settings {
 	struct st_lsm6dsx_hw_ts_settings ts_settings;
 	struct st_lsm6dsx_shub_settings shub_settings;
 	struct st_lsm6dsx_event_settings event_settings;
+	struct st_lsm6dsx_selftest_settings selftest_settings[2];
 };
 
 enum st_lsm6dsx_sensor_id {
@@ -352,6 +367,9 @@ enum st_lsm6sdx_trig_mode {
  * @decimator: Sensor decimation factor.
  * @sip: Number of samples in a given pattern.
  * @ts_ref: Sensor timestamp reference for hw one.
+ * @ts_prev_selftest_toggle: Sensor previouse toggle timestamp if selftest enabled and toggling duration > 0.
+ * @selftest_mode: Sensor selftest mode normal-mode/positive-sign/negative-sign.
+ * @selftest_toggle_duration_msec: Sensor selftest toggle duration in msec.
  * @ext_info: Sensor settings if it is connected to i2c controller
  */
 struct st_lsm6dsx_sensor {
@@ -366,6 +384,11 @@ struct st_lsm6dsx_sensor {
 	u8 decimator;
 	u8 sip;
 	s64 ts_ref;
+	s64 ts_prev_selftest_toggle;
+	u64 actual_odr;
+
+	enum st_lsm6dsx_selftest_mode selftest_mode;
+	u32 selftest_toggle_duration_msec;
 
 	struct {
 		const struct st_lsm6dsx_ext_dev_settings *settings;
@@ -412,7 +435,6 @@ struct st_lsm6dsx_hw {
 	u8 enable_mask;
 	u8 fifo_mask;
 	s64 ts_gain;
-	s64 actual_odr;
 	u8 ts_sip;
 	u8 sip;
 
@@ -466,6 +488,9 @@ int st_lsm6dsx_shub_set_enable(struct st_lsm6dsx_sensor *sensor, bool enable);
 int st_lsm6dsx_set_page(struct st_lsm6dsx_hw *hw, bool enable);
 int st_lsm6dsx_set_fifo_mode(struct st_lsm6dsx_hw *hw,
 				    enum st_lsm6dsx_fifo_mode fifo_mode);
+int st_lsm6dsx_set_selftest_mode(struct st_lsm6dsx_sensor *sensor, 
+					enum st_lsm6dsx_selftest_mode mode);
+
 
 static inline int
 st_lsm6dsx_update_bits_locked(struct st_lsm6dsx_hw *hw, unsigned int addr,

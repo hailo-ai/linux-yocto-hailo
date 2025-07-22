@@ -16,10 +16,11 @@
 
 &i2c_0 {
     status = "ok";
+    i2c-sda-falling-time-ns = <1000>;
 
     sensor_0: camera-sensor@1a {
         status = "ok";
-        compatible = "sony,imx334", "sony,imx675", "sony,imx678", "sony,imx715";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
@@ -31,7 +32,7 @@
             sensor_out_csi2rx: endpoint {
                 data-lanes = <1 2 3 4>;
                 remote-endpoint = <&csi2rx_in_sensor>;
-                link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
+                link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
             };
         };
      };
@@ -39,6 +40,8 @@
 
 &i2c_1 {
     status = "ok";
+    i2c-sda-falling-time-ns = <1000>;
+
     ina231_1v8: 1v8@48 {
         compatible = "ti,ina231_precise";
         reg = <0x48>;
@@ -95,10 +98,11 @@
 
  &i2c_2 {
     status = "okay";
+    i2c-sda-falling-time-ns = <190>;
     clock-frequency = <400000>;
     pinctrl-names = "default";
     pinctrl-0 = <&pinctrl_i2c2>;
-    gyro_lsm6dsr_2: lsm6dsr_2@68 {
+    gyro_lsm6dsr_2: lsm6dsr_2@6a {
         status = "okay";
         compatible = "st,lsm6dsr";
         reg = <0x6a>;
@@ -124,10 +128,6 @@
 
 &vision_subsys {
     status = "okay";
-};
-
-&csi2rx1 {
-    status = "ok";
 };
 
 &hailo_vid_cap {
@@ -174,8 +174,8 @@
             dat-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             rst-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             clk-pad-values = <0x1 0x3 0x0 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-            sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
-            drive-strength = <0xC 0xC>; //pad_sp, pad_sn	
+            sdclkdl-cnfg = <0x1 0x13>; //extdly_en, cckdl_dc
+            drive-strength = <0x8 0x4>; //pad_sp, pad_sn
     };
 };
 &sdio1 {
@@ -188,8 +188,8 @@
             dat-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             rst-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
             clk-pad-values = <0x2 0x2 0x0 0x0>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
-            sdclkdl-cnfg = <0x0 0x32>; //extdly_en, cckdl_dc
-            drive-strength = <0xC 0xC>; //pad_sp, pad_sn
+            sdclkdl-cnfg = <0x0 0x2C>; //extdly_en, cckdl_dc
+            drive-strength = <0x9 0x7>; //pad_sp, pad_sn
         };
 };
 

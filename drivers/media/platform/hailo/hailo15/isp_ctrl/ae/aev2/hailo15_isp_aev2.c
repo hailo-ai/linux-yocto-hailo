@@ -85,11 +85,13 @@ static int hailo15_isp_aev2_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_HIST_MODE:
 	case HAILO15_ISP_CID_AE_HIST_WINDOW:
 	case HAILO15_ISP_CID_AE_HIST_WEIGHT:
+	case HAILO15_ISP_CID_AE_HIST64_CHANNEL:
+	case HAILO15_ISP_CID_AE_HIST64_MODE:
 	case HAILO15_ISP_CID_AE_EXP_WINDOW:
 	case HAILO15_ISP_CID_AE_HCG:
-    case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
-    case HAILO15_ISP_CID_AE_SP_RATIO:
-    case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
+	case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
+	case HAILO15_ISP_CID_AE_SP_RATIO:
+	case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
 		pr_debug("%s - got s_ctrl with id: 0x%x\n", __func__, ctrl->id);
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
@@ -135,14 +137,21 @@ static int hailo15_isp_aev2_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_HIST_MODE:
 	case HAILO15_ISP_CID_AE_HIST_WINDOW:
 	case HAILO15_ISP_CID_AE_HIST_WEIGHT:
+	case HAILO15_ISP_CID_AE_HIST64_CHANNEL:
+	case HAILO15_ISP_CID_AE_HIST64_MODE:
 	case HAILO15_ISP_CID_AE_HDR_GAINS:
 	case HAILO15_ISP_CID_AE_HDR_INTEGRATION_TIMES:
 	case HAILO15_ISP_CID_AE_EXP_INPUT:
 	case HAILO15_ISP_CID_AE_EXP_WINDOW:
 	case HAILO15_ISP_CID_AE_HCG:
-    case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
-    case HAILO15_ISP_CID_AE_SP_RATIO:
-    case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
+	case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
+	case HAILO15_ISP_CID_AE_SP_RATIO:
+	case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
+	case HAILO15_ISP_CID_AE_SEM_SETPOINT:
+	case HAILO15_ISP_CID_AE_DYNAMIC_RANGE:
+	case HAILO15_ISP_CID_AE_HIST64:
+	case HAILO15_ISP_CID_AE_GAIN_LIMITS:
+	case HAILO15_ISP_CID_AE_INTEGRATION_TIME_LIMITS:
 		pr_debug("%s - got g_ctrl with id: 0x%x\n", __func__, ctrl->id);
 		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
@@ -317,6 +326,19 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.dims = { 256 },
 	},
 	{
+		/* uint32_t array 32*32bit */
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_HIST64,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_hist64",
+		.step = 1,
+		.min = 0,
+		.max = 0xFFFFFFFF,
+		.dims = { 32 },
+	},
+	{
 		/* uint8_t array 25*8bit */
 		.ops = &hailo15_isp_aev2_ctrl_ops,
 		.id = HAILO15_ISP_CID_AE_LUMA,
@@ -426,6 +448,28 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
         .max  = 5,
         .def  = 1,
     },
+	{
+        .ops  = &hailo15_isp_aev2_ctrl_ops,
+        .id   = HAILO15_ISP_CID_AE_HIST64_MODE,
+        .type = V4L2_CTRL_TYPE_INTEGER,
+        .flags= V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+        .name = "isp_ae_hist64_mode",
+        .step = 1,
+        .min  = 0,
+        .max  = 5,
+        .def  = 1,
+    },
+    {
+        .ops  = &hailo15_isp_aev2_ctrl_ops,
+        .id   = HAILO15_ISP_CID_AE_HIST64_CHANNEL,
+        .type = V4L2_CTRL_TYPE_INTEGER,
+        .flags= V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+        .name = "isp_ae_hist64_channel",
+        .step = 1,
+        .min  = 0,
+        .max  = 7,
+        .def  = 1,
+    },
     {
         /* uint16_t array 4*16bit*/
         .ops  = &hailo15_isp_aev2_ctrl_ops,
@@ -499,6 +543,30 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
         .def = 1024,
     },
 	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_GAIN_LIMITS,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_gain_limits",
+		.step = 1,
+		.min = 0,
+		.max = 0xffffffff,
+		.dims = { 2 },
+	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_INTEGRATION_TIME_LIMITS,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_integration_time_limits",
+		.step = 1,
+		.min = 0,
+		.max = 0xffffffff,
+		.dims = { 2 },
+	},
+	{
         /* float array 0.000001 ~ 0.999999, with 3 elements (long, short, very short) */
         .ops  = &hailo15_isp_aev2_ctrl_ops,
         .id   = HAILO15_ISP_CID_AE_HDR_INTEGRATION_TIMES,
@@ -556,7 +624,29 @@ const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
         .min  = 0,
         .max  = 255,
 		.def  = 20,
-    }
+    },
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_SEM_SETPOINT,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_sem_setpoint",
+		.step = 1,
+		.min = 0,
+		.max = 255,
+	},
+	{
+        .ops  = &hailo15_isp_aev2_ctrl_ops,
+        .id   = HAILO15_ISP_CID_AE_DYNAMIC_RANGE,
+        .type = V4L2_CTRL_TYPE_INTEGER,
+        .flags= V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+        .name = "isp_ae_dynamic_range",
+        .step = 1,
+        .min  = 0,
+        .max  = 2,
+        .def  = 0,
+    },
 };
 
 int hailo15_isp_aev2_ctrl_count(void)

@@ -50,7 +50,7 @@ static int hailo15_dphy_rx_band_control_select(u64 data_rate)
 	return 0;
 }
 
-static u32 hailo15_dphy_calc_phy_band_control(u64 data_rate)
+static u32 hailo15_dphy_calc_phy_band_control(s64 data_rate)
 {
 	u32 clock_selection = hailo15_dphy_rx_band_control_select(data_rate);
 	u32 phy_band_control =
@@ -59,7 +59,7 @@ static u32 hailo15_dphy_calc_phy_band_control(u64 data_rate)
 	return phy_band_control;
 }
 
-int hailo15_dphy_rx_init(struct phy *phy, u64 data_rate)
+int hailo15_dphy_rx_init(struct phy *phy, s64 data_rate)
 {
 	struct dphy_priv *dphy = phy_get_drvdata(phy);
 	u32 phy_band_control = 0;

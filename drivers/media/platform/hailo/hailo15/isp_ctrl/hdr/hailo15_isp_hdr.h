@@ -62,6 +62,7 @@
 #define HAILO15_ISP_CID_HDR_EXT_BIT (HAILO15_ISP_CID_HDR_BASE + 0x0002)
 #define HAILO15_ISP_CID_HDR_TRANS_RANGE (HAILO15_ISP_CID_HDR_BASE + 0x0003)
 #define HAILO15_ISP_CID_HDR_REQUESTED_RATIO (HAILO15_ISP_CID_HDR_BASE + 0x0004)
+#define HAILO15_ISP_CID_HDR_COLOR_WEIGHTS (HAILO15_ISP_CID_HDR_BASE + 0x0005)
 
 int hailo15_isp_hdr_ctrl_count(void);
 int hailo15_isp_hdr_ctrl_create(struct hailo15_isp_device *isp_dev);

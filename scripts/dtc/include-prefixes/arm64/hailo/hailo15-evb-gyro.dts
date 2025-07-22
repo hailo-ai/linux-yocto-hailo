@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * hailo15_gyro.dtbo
+ *
+ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ */
+/dts-v1/;
+/plugin/;
+
+
+&{/i2c@105000/lsm6dsr_1@6b} {
+    status = "okay";
+};

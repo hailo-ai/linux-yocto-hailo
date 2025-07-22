@@ -785,7 +785,7 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 		dev_err(dev, "hailo15 pin controller failed to start\n");
 		return ret;
 	}
-	dev_info(dev, "%s registered\n", pinctrl->pctl_desc.name);
+	dev_info(dev, "%s registered \n", pinctrl->pctl_desc.name);
 	return 0;
 }
 

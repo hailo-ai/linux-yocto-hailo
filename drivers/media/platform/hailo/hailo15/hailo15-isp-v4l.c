@@ -23,6 +23,7 @@
 #include "hailo15-isp-events.h"
 #include "hailo15-media.h"
 #include "common.h"
+#include <linux/property.h>
 
 
 #define HAILO15_ISP_NAME_SIZE 10
@@ -40,6 +41,16 @@ static const struct isp_wrapper_config hailo15_isp_wrapper_config = {
     .func_int_mask_value = 0x7,
     .err_int_mask_offset = 0x40,
     .err_int_mask_value = 0x3ffff,
+
+    .shifter_cfg = {
+        .first_shifter_offset = 0,
+        .shift_value = 0,
+        .shifter_regs = 0,
+    },
+
+    .line_buf_cfg = {
+        .enabled = 0
+    },
 };
 
 static const struct isp_wrapper_config hailo15l_isp_wrapper_config = {
@@ -49,6 +60,31 @@ static const struct isp_wrapper_config hailo15l_isp_wrapper_config = {
     .func_int_mask_value = 0x7,
     .err_int_mask_offset = 0x54,
     .err_int_mask_value = 0xFFFFFFFF,
+
+    .shifter_cfg = {
+        .first_shifter_offset = 0x24C,
+        .shift_value = 0x4,
+        .shifter_regs = 3,
+    },
+
+    .line_buf_cfg = {
+        .enabled = 1,
+        .repeat = 1,
+
+        .offsets = {
+            .line_buf_cfg = 0x224,
+            .line_buf_cfg_line_width = 0x22C,
+            .line_buf_cfg_min_vblank_duration = 0x234,
+            .line_buf_cfg_min_hblank_duration = 0x23C,
+        },
+
+        .values = {
+            .vblank_vc = 1,
+            // These values come from a VSI recommendation at HM-18 ticket
+            .line_buf_cfg_min_vblank_duration = 110, // VSI recommended 100, and we added 10 for safety
+            .line_buf_cfg_min_hblank_duration = 100,
+        },
+    }
 };
 
 static const struct of_device_id hailo15_isp_of_match[] = {
@@ -780,6 +816,25 @@ static struct v4l2_subdev_video_ops hailo15_isp_video_ops = {
 	.s_stream = hailo15_isp_s_stream,
 };
 
+bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format)
+{
+    if (format->format.width == 0 || format->format.height == 0)
+        return false;
+
+    if (format->format.width > INPUT_WIDTH ||
+        format->format.height > INPUT_HEIGHT) {
+        pr_debug("Unsupported resolution %dx%d\n", format->format.width,
+             format->format.height);
+        return false;
+    }
+
+    if (format->format.code == MEDIA_BUS_FMT_SRGGB12_2X12 || format->format.code == MEDIA_BUS_FMT_SRGGB12_3X12) {
+        return true;
+    }
+
+    return false;
+}
+
 /**************************/
 /* v4l2 subdevice pad ops */
 /**************************/
@@ -805,12 +860,19 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 		max_height = isp_dev->input_fmt.format.height;
 	}
 
-	/* We support only downscaling */
-	if (format->format.width > max_width ||
-		format->format.height > max_height) {
-		pr_debug("Unsupported resolution %dx%d\n", format->format.width,
-			 format->format.height);
+	/* We don't support width upscaling */
+	if (format->format.width > max_width) {
+		pr_debug("Unsupported width %d\n", format->format.width);
 		return -EINVAL;
+	}
+
+	/* if larger height than the input is requested
+	   set the format to the input height, output buffer
+	   will be allocated according to requested resolution */
+	if (format->format.height > max_height) {
+		pr_debug("Requested resolution %dx%d requires line padding\n", format->format.width,
+			 format->format.height);
+		format->format.height = max_height;
 	}
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
@@ -882,6 +944,8 @@ static int hailo15_isp_set_fmt(struct v4l2_subdev *sd,
 		pr_err("%s - set_fmt to subdev %s failed, err = (%pe)\n", __func__, sensor_sd->name, ERR_PTR(ret));
 		return ret;
 	}
+
+    isp_dev->hdr_enabled = hailo15_isp_is_format_hdr(&isp_dev->input_fmt);
 
 	return ret;
 }
@@ -973,7 +1037,6 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 			list_del(&isp_dev->cur_buf[path]->irqlist);
 			next_buf = isp_dev->cur_buf[path];
 		}
-		isp_dev->curr_hdr_timestamp = buf->vb.vb2_buf.timestamp;
 		mutex_unlock(&isp_dev->mcm_lock);
 		if(next_buf){
 			hailo15_isp_configure_frame_base(isp_dev, next_buf->dma, path);
@@ -996,7 +1059,11 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 
 			/* Read the timestamp of the MCM buffer (sent from hdr_manager via DMA). */
 			mutex_lock(&isp_dev->mcm_lock);
-			buf->vb.vb2_buf.timestamp = isp_dev->curr_hdr_timestamp;
+			if (isp_dev->cur_buf[ISP_MCM_IN]) {
+				buf->vb.vb2_buf.timestamp = isp_dev->cur_buf[ISP_MCM_IN]->vb.vb2_buf.timestamp;
+			} else {
+				buf->vb.vb2_buf.timestamp = 0;
+			}
 			mutex_unlock(&isp_dev->mcm_lock);
 		} else {
 			isp_dev->current_vsm_index[path] = -1;
@@ -1304,21 +1371,39 @@ hailo15_isp_destroy_media_pads(struct hailo15_isp_device *isp_dev)
 	hailo15_media_entity_clean(&isp_dev->sd.entity);
 }
 
-static int hailo15_isp_parse_null_addr(struct hailo15_isp_device* isp_dev){
-	struct fwnode_handle *ep = NULL;
+static int hailo15_isp_parse_null_addr(struct hailo15_isp_device* isp_dev) {
+	struct fwnode_handle *isp_node = NULL, *parent_node = NULL;
 	int ret = -EINVAL;
 
-	ep = dev_fwnode(isp_dev->dev);;
-
-	if(!ep){
+	if (!isp_dev || !isp_dev->dev) {
+		pr_err("%s: Invalid isp_dev or isp_dev->dev pointer\n", __func__);
 		return -EINVAL;
 	}
 
-	ret = fwnode_property_read_u32(ep, "null-addr", &isp_dev->null_addr);
+	isp_node = dev_fwnode(isp_dev->dev);
+	if (!isp_node) {
+		dev_err(isp_dev->dev, "Failed to get fwnode for ISP device\n");
+		return -ENODEV;
+	}
+
+	parent_node = fwnode_get_parent(isp_node);
+	if (!parent_node) {
+		dev_err(isp_dev->dev, "Failed to get parent fwnode (vision_subsys)\n");
+		return -ENODEV;
+	}
+
+	// Read the property from the *parent* node
+	ret = fwnode_property_read_u32(parent_node, "null-addr", &isp_dev->null_addr);
+	if (ret) {
+		dev_err(isp_dev->dev, "Failed to read 'null-addr' from parent node. ret: %d\n", ret);
+	} else {
+		dev_dbg(isp_dev->dev, "Successfully read null_addr=0x%x from parent node\n", isp_dev->null_addr);
+	}
+
+	fwnode_handle_put(parent_node);
 
 	return ret;
 }
-
 
 /* Init the isp device.                               */
 /* These include any previous initialization function */
@@ -1345,6 +1430,7 @@ static int hailo15_init_isp_device(struct hailo15_isp_device *isp_dev)
 		goto err_init_platdev;
 	}
 
+    isp_dev->hdr_enabled = false;
 	hailo15_isp_init_v4l2_subdev(&isp_dev->sd);
 
 	ret = hailo15_isp_init_pads(isp_dev);

@@ -4024,7 +4024,7 @@ alloc_flags_nofragment(struct zone *zone, gfp_t gfp_mask)
 static inline unsigned int gfp_to_alloc_flags_cma(gfp_t gfp_mask,
 						  unsigned int alloc_flags)
 {
-#ifdef CONFIG_CMA
+#if defined(CONFIG_CMA) && !defined(CONFIG_CMA_NON_REUSABLE)
 	if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
 		alloc_flags |= ALLOC_CMA;
 #endif

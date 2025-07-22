@@ -39,13 +39,16 @@
 #define INA2XX_POWER 0x03 /* readonly */
 #define INA2XX_CURRENT 0x04 /* readonly */
 #define INA2XX_CALIBRATION 0x05
+#define INA2XX_MANUFACTURER_ID_REGISTER 0xfe
+
+#define INA2XX_MANUFACTURER_ID_REGISTER_VALUE 0x5449 // (ASCII "TI")
 
 /* INA226 register definitions */
 #define INA226_MASK_ENABLE 0x06
 #define INA226_ALERT_LIMIT 0x07
 
 /* register count */
-#define INA226_REGISTERS 8
+#define INA226_REGISTERS 0xfe
 
 #define INA2XX_MAX_DELAY 69 /* worst case delay in ms */
 
@@ -697,6 +700,28 @@ static ssize_t ina2xx_total_average_factor_store(struct device *dev,
 	return count;
 }
 
+/**
+ * ina2xx_detect() - Detect ina2xx sensor
+ * @data: pointer to ina2xx device
+ *
+ * Return: 0 if successful, -EIO if sensor id does not match
+ */
+static int ina2xx_detect(struct ina2xx_precise_data *data)
+{
+	int ret;
+	unsigned int regval;
+
+	ret = regmap_read(data->regmap, INA2XX_MANUFACTURER_ID_REGISTER, &regval);
+	if (ret)
+		return ret;
+
+	if (regval != INA2XX_MANUFACTURER_ID_REGISTER_VALUE) {
+		return -EIO;
+	}
+
+	return 0;
+}
+
 /* shunt voltage */
 static SENSOR_DEVICE_ATTR_RO(in0_input, ina2xx_precise_value,
 			     INA2XX_SHUNT_VOLTAGE);
@@ -813,6 +838,15 @@ static int ina2xx_precise_probe(struct i2c_client *client)
 		dev_err(dev, "failed to allocate register map\n");
 		return PTR_ERR(data->regmap);
 	}
+
+	/* Check module identity */
+	ret = ina2xx_detect(data);
+	if (ret) {
+		dev_err(dev, "INA2xx detection failed (manufacturer ID mismatch or read error): %d\n", ret);
+		return ret;
+	}
+
+	dev_info(dev, "INA2xx sensor detected successfully \n");
 
 	ret = ina2xx_precise_init(data);
 	if (ret < 0) {

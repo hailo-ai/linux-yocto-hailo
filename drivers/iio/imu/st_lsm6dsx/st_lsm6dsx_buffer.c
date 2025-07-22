@@ -298,6 +298,7 @@ static int st_lsm6dsx_reset_hw_ts(struct st_lsm6dsx_hw *hw)
 		 * hw timestamp
 		 */
 		sensor->ts_ref = iio_get_time_ns(hw->iio_devs[i]);
+		sensor->ts_prev_selftest_toggle = sensor->ts_ref;
 	}
 	return 0;
 }
@@ -450,8 +451,7 @@ int st_lsm6dsx_read_fifo(struct st_lsm6dsx_hw *hw)
 				 */
 				if (!reset_ts && ts >= 0xff0000)
 					reset_ts = true;
-				//ts *= hw->ts_gain;
-				ts = (ts * hw->ts_gain) / 1000000;
+				ts *= hw->ts_gain;
 
 				offset += ST_LSM6DSX_SAMPLE_SIZE;
 			}
@@ -547,6 +547,73 @@ st_lsm6dsx_push_tagged_data(struct st_lsm6dsx_hw *hw, u8 tag,
 	return 0;
 }
 
+static int sensor_selftest_toggle(struct st_lsm6dsx_sensor* sensor, s64 hw_ts)
+{
+	int err;
+	enum st_lsm6dsx_selftest_mode next_selftest_mode;
+	static s64 ts_curr, ts_diff, ts_duration;
+
+	switch (sensor->selftest_mode) {
+	case ST_LSM6DSX_SELFTEST_POSITIVE_SIGN:
+		next_selftest_mode = ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN;
+		break;
+	case ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN:
+		next_selftest_mode = ST_LSM6DSX_SELFTEST_POSITIVE_SIGN;
+		break;
+	case ST_LSM6DSX_SELFTEST_NORMAL_MODE:
+	default:
+		return 0;
+	}
+
+	ts_curr = sensor->ts_ref + hw_ts;
+	ts_diff = ts_curr - sensor->ts_prev_selftest_toggle;
+	ts_duration = sensor->selftest_toggle_duration_msec * 1000000;
+	if (ts_diff >= ts_duration) {
+		err = st_lsm6dsx_set_selftest_mode(sensor, next_selftest_mode);
+		if (err < 0) {
+			pr_err("failed to toggle selftest to %s (err=%d)\n", 
+				next_selftest_mode == ST_LSM6DSX_SELFTEST_POSITIVE_SIGN ? "positive-sign" : "negative-sign",
+				err);
+			return err;
+		}
+		sensor->ts_prev_selftest_toggle = ts_curr;
+	}
+
+	return 0;
+}
+
+static int selftest_toggle(struct st_lsm6dsx_hw *hw, s64 hw_ts)
+{
+	int s, err;
+	struct st_lsm6dsx_sensor* sensor;
+
+	for (s = 0; s < ST_LSM6DSX_ID_MAX; s++) {
+		if (s != ST_LSM6DSX_ID_GYRO && s != ST_LSM6DSX_ID_ACC)
+			continue;
+
+		if (!hw->iio_devs[s])
+			continue;
+
+		sensor = iio_priv(hw->iio_devs[s]);
+		/* Skip if selftest set to normal modetoggling requested */
+		if (sensor->selftest_mode == ST_LSM6DSX_SELFTEST_NORMAL_MODE)
+			continue;
+
+		/* Skip if toggling not requested */
+		if (sensor->selftest_toggle_duration_msec == 0)
+			return 0;
+
+		/* Skip if sensor is disabled */
+		if (!(hw->enable_mask & BIT(sensor->id)))
+			continue;
+
+		err = sensor_selftest_toggle(sensor, hw_ts);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
 /**
  * st_lsm6dsx_read_tagged_fifo() - tagged hw FIFO read routine
  * @hw: Pointer to instance of struct st_lsm6dsx_hw.
@@ -571,7 +638,6 @@ int st_lsm6dsx_read_tagged_fifo(struct st_lsm6dsx_hw *hw)
 	int i, err, read_len;
 	__le16 fifo_status;
 	s64 ts = 0;
-	static int samples_cnt = 0;
 
 	err = st_lsm6dsx_read_locked(hw,
 				     hw->settings->fifo_ops.fifo_diff.addr,
@@ -620,13 +686,12 @@ int st_lsm6dsx_read_tagged_fifo(struct st_lsm6dsx_hw *hw)
 				 * to signal the hw timestamp will reset in
 				 * 1.638s)
 				 */
-				samples_cnt++;
 				if (!reset_ts && ts >= 0xffff0000)
 					reset_ts = true;
-				if (!reset_ts && samples_cnt > 0 && (samples_cnt % (hw->actual_odr * 2)) == 0)
-				 	reset_ts = true;
-				//ts *= hw->ts_gain;
-				ts = (ts * hw->ts_gain) / 1000000;
+				ts *= hw->ts_gain;
+				if (!reset_ts && ts >= (2 * 1000000000))				
+					reset_ts = true;
+				selftest_toggle(hw, ts);
 			} else {
 				st_lsm6dsx_push_tagged_data(hw, tag, iio_buff,
 							    ts);

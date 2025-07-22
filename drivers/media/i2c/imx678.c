@@ -89,10 +89,21 @@
 #define IMX678_REG_HOLD 0x3001
 
 /* Input clock rate */
+enum imx678_input_clk_rate_code {
+	INPUT_CLK_74_25_MHZ = 0,
+	INPUT_CLK_37_125_MHZ,
+	INPUT_CLK_72_MHZ,
+	INPUT_CLK_27_MHZ,
+	INPUT_CLK_24_MHZ,
+	INPUT_CLK_36_MHZ,
+	INPUT_CLK_18_MHZ,
+	INPUT_CLK_13_5_MHZ,
+};
+
+#define IMX678_INCLK_CODE INPUT_CLK_24_MHZ
 #define IMX678_INCLK_RATE 24000000
 
 /* CSI2 HW configuration */
-#define IMX678_LINK_FREQ 891000000
 #define IMX678_NUM_DATA_LANES 4
 
 #define IMX678_REG_MIN 0x00
@@ -109,11 +120,11 @@
 static u32 imx678_reg_shutter[3] = {IMX678_REG_SHUTTER, IMX678_REG_SHUTTER_SHORT, IMX678_REG_SHUTTER_VERY_SHORT};
 static u32 imx678_reg_again[3] = {IMX678_REG_AGAIN, IMX678_REG_AGAIN_SHORT, IMX678_REG_AGAIN_VERY_SHORT};
 
-typedef enum {
-  LEF,
-  SEF1,
-  SEF2,
-} ExposureType;
+enum imx678_exposure_type {
+	LEF,
+	SEF1,
+	SEF2,
+};
 
 static int imx678_set_ctrl(struct v4l2_ctrl *ctrl);
 static int imx678_get_ctrl(struct v4l2_ctrl *ctrl);
@@ -312,7 +323,7 @@ struct imx678 {
 };
 
 static const s64 link_freq[] = {
-	IMX678_LINK_FREQ,
+	891000000, 1440000000, 1782000000,
 };
 
 /* Sensor mode registers */
@@ -326,8 +337,8 @@ static const struct imx678_reg mode_3840x2160_regs[] = {
 	//{0x300d, 0x2a}, // CPWAIT_TIME			*no in imx678
 	{0x302c, 0x26}, // HMAX						*imx678
 	{0x302d, 0x02}, // HMAX						*imx678
-	{0x3014, 0x04}, // INCK_SEL					*imx678
-	{0x3040, 0x03}, // DATARATE_SEL=891Mbps		*imx678
+	{0x3014, IMX678_INCLK_CODE}, // INCK_SEL					*imx678
+	{0x3040, 0x03}, // LANEMODE - 4 lanes		*imx678
 	//{0x301a, 0x00}, // WDMODE=Normal			*imx678
 	//{0x3022, 0x01}, // ADBIT=12Bit			*imx678
 	{0x303c, 0x00}, // PIX_HST=00				*imx678
@@ -701,7 +712,7 @@ static const struct imx678_reg mode_3840x2160_regs[] = {
 static const struct imx678_reg mode_1920x1080_sdr_binning_regs[] = {
     { 0x3000, 0x01 }, // STANDBY                    *imx678
     { 0x3002, 0x00 }, // XMSTA                  *imx678
-    { 0x3014, 0x04 }, // INCK_SEL                   *imx678
+    { 0x3014, IMX678_INCLK_CODE }, // INCK_SEL          *imx678
     { 0x3018, 0x04 }, // WINMODE - crop                 *imx678
     { 0x301A, 0x00 }, //WDMODE[7:0] - sdr
     { 0x301B, 0x01 }, //ADDMODE[1:0] - binning
@@ -823,9 +834,9 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, 0x04 }, /* 0x3014: Using default value (INCK_SEL[3:0]) */ // MANUAL (fix for our clock)
+	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
 	{ 0x3015, 0x02 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, /* 0x3018: Using default value (WINMODE[4:0]) */ // MANUAL (crop)
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
 	{ 0x301A, 0x02 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
@@ -834,7 +845,7 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-	{ 0x3023, 0x01 }, /* 0x3023: Using default value (MDBIT) */ // MANUAL (rewrite default)
+    { 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
@@ -845,15 +856,15 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, /* 0x303E: Using default value (PIX_HWIDTH[12:0]) */  // MANUAL (crop 3856 to 3840)
-	{ 0x303F, 0x0F }, /* 0x303F: Using default value */ // MANUAL (crop 3856 to 3840)
+	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, /* 0x3046: Using default value (PIX_VWIDTH[11:0]) */  // MANUAL (crop 2180 to 2160)
-	{ 0x3047, 0x08 }, /* 0x3047: Using default value */  // MANUAL (crop 2180 to 2160)
+	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
 	{ 0x3050, 0x18 }, /* SHR0[19:0] */
 	{ 0x3051, 0x15 },
 	/* 0x3052: Using default value */
@@ -1263,9 +1274,9 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, 0x04 }, /* 0x3014: Using default value (INCK_SEL[3:0]) */ // MANUAL (fix for our clock)
+	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
 	{ 0x3015, 0x02 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, /* 0x3018: Using default value (WINMODE[4:0]) */ // MANUAL (crop)
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
 	{ 0x301A, 0x01 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
@@ -1274,7 +1285,7 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-	{ 0x3023, 0x01 }, /* 0x3023: Using default value (MDBIT) */ // MANUAL (rewrite default)
+	{ 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
@@ -1285,15 +1296,15 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, /* 0x303E: Using default value (PIX_HWIDTH[12:0]) */  // MANUAL (crop 3856 to 3840)
-	{ 0x303F, 0x0F }, /* 0x303F: Using default value */ // MANUAL (crop 3856 to 3840)
+	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, /* 0x3046: Using default value (PIX_VWIDTH[11:0]) */  // MANUAL (crop 2180 to 2160)
-	{ 0x3047, 0x08 }, /* 0x3047: Using default value */  // MANUAL (crop 2180 to 2160)
+	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
 	{ 0x3050, 0xEC }, /* SHR0[19:0] */
 	{ 0x3051, 0x04 },
 	/* 0x3052: Using default value */
@@ -1303,8 +1314,8 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	{ 0x3058, 0x4A }, /* SHR2[19:0] */
 	{ 0x3059, 0x00 },
 	/* 0x305A: Using default value */
-	{ 0x3060, 0x1B }, /* RHS1[19:0] */
-	{ 0x3061, 0x01 },
+	{ 0x3060, 0x1B }, // MANUAL (increase max SEF value)
+	{ 0x3061, 0x01 }, // MANUAL (increase max SEF value)
 	/* 0x3062: Using default value */
 	{ 0x3064, 0x53 }, /* RHS2[19:0] */
 	{ 0x3065, 0x00 },
@@ -1704,9 +1715,9 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, 0x04 }, /* 0x3014: Using default value (INCK_SEL[3:0]) */ // MANUAL (fix for our clock)
+	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
 	{ 0x3015, 0x05 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, /* 0x3018: Using default value (WINMODE[4:0]) */ // MANUAL (crop)
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
 	{ 0x301A, 0x02 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
@@ -1715,7 +1726,7 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-	{ 0x3023, 0x01 }, /* 0x3023: Using default value (MDBIT) */ // MANUAL (rewrite default)
+	{ 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
@@ -1726,15 +1737,15 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, /* 0x303E: Using default value (PIX_HWIDTH[12:0]) */  // MANUAL (crop 3856 to 3840)
-	{ 0x303F, 0x0F }, /* 0x303F: Using default value */ // MANUAL (crop 3856 to 3840)
+	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, /* 0x3046: Using default value (PIX_VWIDTH[11:0]) */  // MANUAL (crop 2180 to 2160)
-	{ 0x3047, 0x08 }, /* 0x3047: Using default value */  // MANUAL (crop 2180 to 2160)
+	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
 	{ 0x3050, 0x18 }, /* SHR0[19:0] */
 	{ 0x3051, 0x15 },
 	/* 0x3052: Using default value */
@@ -2151,7 +2162,7 @@ static const struct imx678_reg imx678_tpg_en_regs[] = {
 
 static const struct imx678_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 	{ 0x3002, 0x01 }, /* XMSTA */
-	{ 0x3014, 0x04 }, /* INCK_SEL[3:0] */
+	{ 0x3014, IMX678_INCLK_CODE }, /* INCK_SEL[3:0] */
 	{ 0x3015, 0x03 },
 	{ 0x3018, 0x04 }, /* WINMODE[4:0] */  // MANUAL (crop 3856x2180 to 3840x2160)
 	{ 0x301A, 0x02 },
@@ -2547,8 +2558,8 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.vblank_max = IMX678_MAX_VBLANK_4K,
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 2,
+	.pclk = link_freq[2],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2569,8 +2580,8 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.vblank_max = IMX678_MAX_VBLANK_4K,
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 2,
+	.pclk = link_freq[2],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2591,8 +2602,8 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.vblank_max = 132840,
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 2,
+	.pclk = link_freq[2],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2601,6 +2612,28 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	},
 	.frame_interval = {
 		.denominator = 30,
+		.numerator = 1,
+	},
+	},
+	{
+	.width = 3840,
+	.height = 2160,
+	.hblank = 550,
+	.vblank = 1636,
+	.vblank_min = 90,
+	.vblank_max = IMX678_MAX_VBLANK_4K,
+	.rhs1 = 0x0,
+	.rhs2 = 0x0,
+	.link_freq_idx = 2,
+	.pclk = link_freq[2],
+	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+	.dol = 1,
+	.reg_list = {
+		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
+		.regs = mode_3840x2160_regs,
+	},
+	.frame_interval = {
+		.denominator = 24,
 		.numerator = 1,
 	},
 	},
@@ -2616,8 +2649,8 @@ static const struct imx678_mode supported_hdr_modes[] = {
     .vblank_max = 132840,
     .rhs1 = 0x11b,
     .rhs2 = 0x0,
-    .pclk = 594000000,
-    .link_freq_idx = 0,
+    .link_freq_idx = 2,
+    .pclk = link_freq[2],
     .code = MEDIA_BUS_FMT_SRGGB12_2X12,
     .dol = 2,
     .reg_list = {
@@ -2638,8 +2671,8 @@ static const struct imx678_mode supported_hdr_modes[] = {
     .vblank_max = 132840,
 	.rhs1 = 0x40,
 	.rhs2 = 0x53,
-    .pclk = 594000000,
     .link_freq_idx = 0,
+    .pclk = link_freq[0],
     .code = MEDIA_BUS_FMT_SRGGB12_3X12,
     .dol = 3,
     .reg_list = {
@@ -2660,8 +2693,8 @@ static const struct imx678_mode supported_hdr_modes[] = {
     .vblank_max = 132840,
 	.rhs1 = 0x1F3, /* change in registers */
 	.rhs2 = 0x230, /* change in registers */
-    .pclk = 594000000,
-    .link_freq_idx = 0,
+    .link_freq_idx = 2,
+    .pclk = link_freq[2],
     .code = MEDIA_BUS_FMT_SRGGB12_3X12,
     .dol = 3,
     .reg_list = {
@@ -2683,8 +2716,8 @@ static const struct imx678_mode supported_hdr_modes[] = {
 	.vblank_max = 132840,
 	.rhs1 = 0x91,
 	.rhs2 = 0xAA,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SRGGB12_3X12,
 	.dol = 3,
 	.reg_list = {
@@ -2810,7 +2843,8 @@ static void convert_v4l2_subdev_code_to_sensor_code(struct imx678* imx678, struc
 	if (imx678->hdr_enabled) {
 		/* hdr mode: all fmt->code should be 2xnum_bits or 3xnum_bits, but not 1xnum_bits*/
 		if (fmt->code == MEDIA_BUS_FMT_SRGGB12_1X12) {
-			fmt->code = MEDIA_BUS_FMT_SRGGB12_3X12;
+            // TODO: Make this properly configurable (probably just by configurable mode index)
+			fmt->code = MEDIA_BUS_FMT_SRGGB12_2X12;
 		}
 	} else {
 		/* sdr mode: all fmt->code should be 1xnum_bits */
@@ -2997,6 +3031,7 @@ void calculate_exposure_limits(struct imx678* imx678, ExposureLimits limits) {
 	const int rhs1 = imx678->cur_mode->rhs1 > 0 ? imx678->cur_mode->rhs1 : IMX678_DEFAULT_RHS1;
 	const int rhs2 = imx678->cur_mode->rhs2 > 0 ? imx678->cur_mode->rhs2 : IMX678_DEFAULT_RHS2;
 	u32 shr0, shr1, shr2;
+
 	limits->lpfr = imx678->cur_mode->dol * (imx678->vblank + imx678->cur_mode->height);
 	limits->min_lpfr = imx678->cur_mode->dol * (imx678->cur_mode->vblank_min + imx678->cur_mode->height);
 	limits->max_lpfr = imx678->cur_mode->dol * (imx678->cur_mode->vblank_max + imx678->cur_mode->height);
@@ -3052,6 +3087,29 @@ static int imx678_update_controls(struct imx678* imx678,
 }
 */
 
+static int imx678_set_ctrl_range_and_value(struct imx678 *imx678,
+		struct v4l2_ctrl *ctrl, u32 min, u32 max, u32 step, u32 def)
+{
+	int ret;
+
+	ret = __v4l2_ctrl_modify_range(ctrl, min, max, step, def);
+	if (ret) {
+		dev_err(imx678->dev, "Failed to modify control %s range. "
+			"ret=%d. min=%d, max=%d, default=%d",
+			ctrl->name, ret, min, max, def);
+		return ret;
+	}
+
+	ret = __v4l2_ctrl_s_ctrl(ctrl, def);
+	if (ret) {
+		dev_err(imx678->dev, "Failed to set control %s to default %d. ret=%d",
+			ctrl->name, def, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 /**
  * imx678_update_exp_vblank_controls() - Update control ranges based on streaming mode
  * @imx678: pointer to imx678 device
@@ -3061,50 +3119,47 @@ static int imx678_update_controls(struct imx678* imx678,
 static int imx678_update_exp_vblank_controls(struct imx678* imx678)
 {
 	struct ExposureLimits_t limits;
+	const struct imx678_mode *mode = imx678->cur_mode;
 	int ret;
 
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx678, &limits);
 
-	ret = __v4l2_ctrl_modify_range(imx678->lef.exp_ctrl, limits.exp_lef_min, 
+	ret = imx678_set_ctrl_range_and_value(imx678, imx678->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX678_EXPOSURE_STEP, limits.exp_lef_default);
 	if (ret) {
-		dev_err(imx678->dev, "Failed to modify LEF exposure range. "
-							 "ret=%d. min=%d, max=%d, default=%d",
-							 ret, limits.exp_lef_min, limits.exp_lef_max, limits.exp_lef_default);
+		dev_err(imx678->dev, "Failed to update LEF exposure range and value\n");
 		return ret;
 	}
 
 	if (imx678->cur_mode->dol >= 2) {
-		ret = __v4l2_ctrl_modify_range(imx678->sef1.exp_ctrl, limits.exp_sef1_min, 
+		ret = imx678_set_ctrl_range_and_value(imx678, imx678->sef1.exp_ctrl, limits.exp_sef1_min,
 			limits.exp_sef1_max, IMX678_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
 		if (ret) {
-			dev_err(imx678->dev, "Failed to modify SEF1 exposure range. "
-								"ret=%d. min=%d, max=%d, default=%d",
-								ret, limits.exp_sef1_min, limits.exp_sef1_max, limits.exp_sef1_default);
+			dev_err(imx678->dev, "Failed to update SEF1 exposure range and value\n");
 			return ret;
 		}
 	}
 
 	if (imx678->cur_mode->dol >= 3) {
-		ret = __v4l2_ctrl_modify_range(imx678->sef2.exp_ctrl, limits.exp_sef2_min, 
+		ret = imx678_set_ctrl_range_and_value(imx678, imx678->sef2.exp_ctrl, limits.exp_sef2_min,
 			limits.exp_sef2_max, IMX678_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
 		if (ret) {
-			dev_err(imx678->dev, "Failed to modify SEF2 exposure range. "
-								"ret=%d. min=%d, max=%d, default=%d",
-								ret, limits.exp_sef2_min, limits.exp_sef2_max, limits.exp_sef2_default);
+			dev_err(imx678->dev, "Failed to update SEF2 exposure range and value\n");
 			return ret;
 		}
 	}
 
-	ret = __v4l2_ctrl_s_ctrl(imx678->vblank_ctrl, imx678->vblank);
+	ret = imx678_set_ctrl_range_and_value(imx678, imx678->vblank_ctrl, mode->vblank_min,
+		mode->vblank_max, 1, imx678->vblank);
 	if (ret) {
-		dev_err(imx678->dev, "Failed to set vblank to %d. ret=%d", imx678->vblank, ret);
+		dev_err(imx678->dev, "Failed to update vblank range and value\n");
 		return ret;
 	}
 
 	return 0;
 }
+
 static int imx678_set_hcg_mode(struct imx678 *imx678, u32 hcg)
 {
 	int ret;
@@ -3127,9 +3182,9 @@ static int imx678_set_hcg_mode(struct imx678 *imx678, u32 hcg)
  *
  * Return: 0 if successful, error code otherwise.
  */
-static int imx678_update_exp_gain(struct imx678 *imx678, u32 exposure_time, u32 gain, ExposureType exposure_type)
+static int imx678_update_exp_gain(struct imx678 *imx678, u32 exposure_time, u32 gain, enum imx678_exposure_type exposure_type)
 {
-	u32 lpfr, shutter, desired_fps;
+	u32 lpfr, shutter, desired_fps_numerator, desired_fps_denominator;
 	int ret;
 
 	switch (exposure_type) {
@@ -3138,22 +3193,31 @@ static int imx678_update_exp_gain(struct imx678 *imx678, u32 exposure_time, u32 
 			u32 shr0_min_gap = imx678->hdr_enabled ? imx678->cur_mode->rhs2 + IMX678_SHR0_RHS2_GAP : IMX678_SHR0_FSC_GAP;
 			shr0_min_gap = MAX(shr0_min_gap, imx678->cur_mode->vblank_min);
 			
-			// The desired fps is the maximum we can get, unless this is already bigger than our stream rate.
-			// For example for sdr it's 30/60 fps (depending on mode) is the upper limit. We aim for the max value within that limit.
+			// The desired fps is blocked by cur_mode->frame_interval (for example 30/1 for 30fps)
 			// Note that this calculation does not take into account HDR - so HDR is broken by this v4l control
-			desired_fps = (CLOCK_FREQ_HZ / imx678->cur_mode->hblank) / (exposure_time + shr0_min_gap);
-			desired_fps = MIN(desired_fps, imx678->cur_mode->frame_interval.denominator / imx678->cur_mode->frame_interval.numerator);
+			desired_fps_numerator = CLOCK_FREQ_HZ / imx678->cur_mode->hblank;
+			desired_fps_denominator = exposure_time + shr0_min_gap;
+			
+			// Note that frame_interval is in opposite units from fps, so 30fps will be represented by 1/30
+			// This checks if: desired_fps_numerator / desired_fps_denominator > imx678->cur_mode->frame_interval.denominator / imx678->cur_mode->frame_interval.numerator
+			// But accounts for int rounding
+			if (desired_fps_numerator * imx678->cur_mode->frame_interval.numerator > imx678->cur_mode->frame_interval.denominator * desired_fps_denominator) {
+				desired_fps_numerator = imx678->cur_mode->frame_interval.denominator;
+				desired_fps_denominator = imx678->cur_mode->frame_interval.numerator;
+			}
 
-			// If requested exposure time is too big
-			if (desired_fps == 0)
-				return -EINVAL;
+			if (!imx678->hdr_enabled) {
+				// Calculate number of lines per frame, according to the desired fps
+				// lines-per-frame should allow at least shr0_min_gap gap for vblank.
+				lpfr = ((CLOCK_FREQ_HZ / desired_fps_numerator) * desired_fps_denominator) / imx678->cur_mode->hblank;
+				lpfr = MAX(lpfr, imx678->cur_mode->height + shr0_min_gap);
 
-			// lines-per-frame should allow at least shr0_min_gap gap for vblank.
-			lpfr = (CLOCK_FREQ_HZ / imx678->cur_mode->hblank) / desired_fps;
-			lpfr = MAX(lpfr, imx678->cur_mode->height + shr0_min_gap);
-
-			imx678->vblank = lpfr - exposure_time;
-			__v4l2_ctrl_s_ctrl(imx678->vblank_ctrl, imx678->vblank);
+				imx678->vblank = lpfr - exposure_time;
+				__v4l2_ctrl_s_ctrl(imx678->vblank_ctrl, imx678->vblank);
+			} else {
+				// In HDR mode, we need to set the LPFR register to the maximum value
+				lpfr = imx678->vblank + imx678->cur_mode->height;
+			}
 
 			shutter = NON_NEGATIVE(imx678->cur_mode->dol * (int)lpfr - (int)exposure_time);
 			imx678->lef.exp_ctrl->val = exposure_time;
@@ -3222,10 +3286,38 @@ static int imx678_set_test_pattern(struct imx678 *imx678, int val)
 	return ret;
 }
 
+static int search_mode(const struct imx678_mode *mode, bool *o_hdr)
+{
+	// First search in HDR modes, then SDR modes
+	if (mode >= supported_hdr_modes && mode < supported_hdr_modes + ARRAY_SIZE(supported_hdr_modes)) {
+		if (o_hdr) *o_hdr = true;
+		return mode - supported_hdr_modes;
+	} else if (mode >= supported_sdr_modes && mode < supported_sdr_modes + ARRAY_SIZE(supported_sdr_modes)) {
+		if (o_hdr) *o_hdr = false;
+		return mode - supported_sdr_modes;
+	}
+
+	pr_err("Error. selected mode was not found!\n");
+	return -1;
+}
+
 static void imx678_set_mode(struct imx678 *imx678, const struct imx678_mode *mode)
 {
+	int ret;
 	imx678->cur_mode = mode;
 	imx678->vblank = mode->vblank;
+
+	/* set the link freq index and the pixel rate controls */
+	if (imx678->link_freq_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl(imx678->link_freq_ctrl, mode->link_freq_idx);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set link freq index to %d.", mode->link_freq_idx);
+	}
+	if (imx678->pclk_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl_int64(imx678->pclk_ctrl, mode->pclk);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set pixel rate to %lld.", mode->pclk);
+	}
 
 	if (imx678->hdr_enabled) {
 		if (mode->dol <= 1)
@@ -3454,6 +3546,10 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		ret = imx678_set_hdr_mode(imx678, ctrl->val);
 		break;
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
+		break;
 	default:
 		dev_err(imx678->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -3659,7 +3755,7 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 	
 	ret = imx678_get_fmt_mode(imx678, fmt, &mode);
 	if(ret){
-		pr_err("%s - get_fmt failed with %d (format: %dx%d, code: %d)\n", __func__,
+		pr_err("%s - get_fmt failed with %d (format: %dx%d, code: 0x%x)\n", __func__,
 			ret, fmt->format.width, fmt->format.height, fmt->format.code);
 		goto out;
 	}
@@ -3710,6 +3806,40 @@ static int imx678_init_pad_cfg(struct v4l2_subdev *sd,
 	return imx678_set_pad_format(sd, sd_state, &fmt);
 }
 
+static const char *imx678_get_mode_name(struct imx678 *imx678)
+{
+	static char mode_str[32];
+	int fps;
+	int idx;
+
+	fps = imx678->cur_mode->frame_interval.denominator / 
+		imx678->cur_mode->frame_interval.numerator;
+
+	switch (imx678->cur_mode->dol) {
+    case 1:
+        if (imx678->hdr_enabled) {
+            dev_err(imx678->dev, "Invalid HDR mode with dol=%d\n", imx678->cur_mode->dol);
+            return NULL;
+        }
+        idx = search_mode(imx678->cur_mode, NULL);
+        snprintf(mode_str, sizeof(mode_str), "SDR #%d %dfps", idx, fps);
+        return mode_str;
+	case 2:
+	case 3:
+        if (!imx678->hdr_enabled) {
+            dev_err(imx678->dev, "Invalid SDR mode with dol=%d\n", imx678->cur_mode->dol);
+            return NULL;
+        }
+		idx = search_mode(imx678->cur_mode, NULL);
+		snprintf(mode_str, sizeof(mode_str), "HDR #%d, %dDOL %dfps", 
+			idx, imx678->cur_mode->dol, fps);
+		return mode_str;
+	default:
+		dev_err(imx678->dev, "Invalid mode with dol=%d\n", imx678->cur_mode->dol);
+		return NULL;
+	}
+}
+
 /**
  * imx678_start_streaming() - Start sensor stream
  * @imx678: pointer to imx678 device
@@ -3750,7 +3880,8 @@ static int imx678_start_streaming(struct imx678 *imx678)
 		dev_err(imx678->dev, "fail to start streaming");
 		return ret;
 	}
-	pr_info("imx678: start_streaming successful\n");
+
+	dev_info(imx678->dev, "imx678: start_streaming successful (%s)", imx678_get_mode_name(imx678));
 	return 0;
 }
 
@@ -3958,7 +4089,7 @@ static int imx678_parse_hw_config(struct imx678 *imx678)
 	struct fwnode_handle *ep;
 	unsigned long rate;
 	int ret;
-	int i;
+	int i, j;
 
 	if (!fwnode)
 		return -ENXIO;
@@ -4016,11 +4147,24 @@ static int imx678_parse_hw_config(struct imx678 *imx678)
 		goto done_endpoint_free;
 	}
 
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
-		if (bus_cfg.link_frequencies[i] == IMX678_LINK_FREQ)
+	/* check if all the required frequencies are provided in the device tree */
+	for (i = 0; i < ARRAY_SIZE(link_freq); i++) {
+		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+			if (bus_cfg.link_frequencies[j] ==
+			    link_freq[i]) {
+				break;
+			}
+		}
+		if (j == bus_cfg.nr_of_link_frequencies) {
+			dev_err(imx678->dev,
+				"required link frequency %lld not supported in device tree",
+				link_freq[i]);
+			ret = -EINVAL;
 			goto done_endpoint_free;
+		}
+	}
 
-	ret = -EINVAL;
+	ret = 0;
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -4176,9 +4320,15 @@ static int imx678_init_controls(struct imx678 *imx678)
 				IMX678_WDR_DEFAULT);
 	
 	/* Read only controls */
-	imx678->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx678_ctrl_ops,
-					      V4L2_CID_PIXEL_RATE, mode->pclk,
-					      mode->pclk, 1, mode->pclk);
+	imx678->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx678_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx678->pclk_ctrl)
+		imx678->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx678->link_freq_ctrl = v4l2_ctrl_new_int_menu(
 		ctrl_hdlr, &imx678_ctrl_ops, V4L2_CID_LINK_FREQ,
@@ -4346,5 +4496,4 @@ static struct i2c_driver imx678_driver = {
 module_i2c_driver(imx678_driver);
 
 MODULE_DESCRIPTION("Sony imx678 sensor driver");
-MODULE_AUTHOR("Muhyeon Kang, <muhyeon.kang@truen.co.kr>");
 MODULE_LICENSE("GPL");

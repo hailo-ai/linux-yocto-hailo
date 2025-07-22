@@ -858,6 +858,26 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.fs_len = 4,
 			},
 		},
+		.selftest_settings = {
+			[ST_LSM6DSX_ID_ACC] = {
+				.reg = {
+					.addr = 0x14,
+					.mask = GENMASK(1, 0),
+				},
+				.normal_mode = 0x00,
+				.positive_sign = 0x01,
+				.negative_sign = 0x02,
+			},
+			[ST_LSM6DSX_ID_GYRO] = {
+				.reg = {
+					.addr = 0x14,
+					.mask = GENMASK(3, 2),
+				},
+				.normal_mode = 0x00,
+				.positive_sign = 0x01,
+				.negative_sign = 0x03,
+			},
+		},
 		.irq_config = {
 			.irq1 = {
 				.addr = 0x0d,
@@ -1237,6 +1257,36 @@ static int st_lsm6dsx_set_full_scale(struct st_lsm6dsx_sensor *sensor,
 	return 0;
 }
 
+int st_lsm6dsx_set_selftest_mode(struct st_lsm6dsx_sensor *sensor, enum st_lsm6dsx_selftest_mode mode)
+{
+	const struct st_lsm6dsx_selftest_settings *settings;
+	unsigned int data;
+	int err;
+
+	settings = &sensor->hw->settings->selftest_settings[sensor->id];
+	if (settings->reg.addr == 0)
+		return -EINVAL;
+
+	switch (mode) {
+	case ST_LSM6DSX_SELFTEST_NORMAL_MODE:
+		data = ST_LSM6DSX_SHIFT_VAL(settings->normal_mode, settings->reg.mask);
+		break;
+	case ST_LSM6DSX_SELFTEST_POSITIVE_SIGN:
+		data = ST_LSM6DSX_SHIFT_VAL(settings->positive_sign, settings->reg.mask);
+		break;
+	case ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN:
+		data = ST_LSM6DSX_SHIFT_VAL(settings->negative_sign, settings->reg.mask);
+		break;
+	default:
+		return -EINVAL;
+	}
+	err = st_lsm6dsx_update_bits_locked(sensor->hw, settings->reg.addr, settings->reg.mask, data);
+	if (!err)
+		sensor->selftest_mode = mode;
+
+	return 0;
+}
+
 int st_lsm6dsx_check_odr(struct st_lsm6dsx_sensor *sensor, u32 odr, u8 *val)
 {
 	const struct st_lsm6dsx_odr_table_entry *odr_table;
@@ -1273,6 +1323,63 @@ st_lsm6dsx_check_odr_dependency(struct st_lsm6dsx_hw *hw, u32 odr,
 	} else {
 		return (hw->enable_mask & BIT(id)) ? ref->odr : 0;
 	}
+}
+
+static int
+st_lsm6dsx_calc_actual_odr(struct st_lsm6dsx_sensor *sensor, u32 req_odr)
+{
+	struct st_lsm6dsx_hw *hw = sensor->hw;
+	const struct st_lsm6dsx_hw_ts_settings *ts_settings;
+	u64 odr_coef = 1;
+	int err;
+	static int internal_freq_fine = 0;
+	static bool internal_freq_fine_init_flag = true;
+
+	if (sensor->id != ST_LSM6DSX_ID_GYRO &&
+	    sensor->id != ST_LSM6DSX_ID_ACC)
+		return 0;
+
+	switch (req_odr) {
+	case 833000:
+		odr_coef = 8;
+		break;
+	case 416000:
+		odr_coef = 16;
+		break;
+	case 208000:
+		odr_coef = 32;
+		break;
+	case 104000:
+		odr_coef = 64;
+		break;
+	case 52000:
+		odr_coef = 128;
+		break;
+	case 26000:
+		odr_coef = 256;
+		break;
+	case 12500:
+		odr_coef = 512;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	ts_settings = &hw->settings->ts_settings;
+
+	if (ts_settings->freq_fine) {
+		if (internal_freq_fine_init_flag) {
+			err = regmap_read(hw->regmap, ts_settings->freq_fine, &internal_freq_fine);
+			if (err < 0)
+				return err;
+			internal_freq_fine_init_flag = false;
+		}
+		sensor->actual_odr = (6667ULL * 10000ULL + (15ULL * internal_freq_fine * 6667ULL)) / odr_coef / 10000ULL;
+	} else {
+		sensor->actual_odr = (u64)req_odr;
+	}
+
+	return 0;
 }
 
 static int
@@ -1322,6 +1429,8 @@ st_lsm6dsx_set_odr(struct st_lsm6dsx_sensor *sensor, u32 req_odr)
 		if (err < 0)
 			return err;
 	}
+
+	st_lsm6dsx_calc_actual_odr(sensor, req_odr);
 
 	reg = &hw->settings->odr_table[ref_sensor->id].reg;
 	data = ST_LSM6DSX_SHIFT_VAL(val, reg->mask);
@@ -1670,6 +1779,98 @@ static ssize_t st_lsm6dsx_sysfs_scale_avail(struct device *dev,
 	return len;
 }
 
+static ssize_t st_lsm6dsx_sysfs_actual_sampling_frequency_show(struct device *dev,
+					      struct device_attribute *attr,
+					      char *buf)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+	return sprintf(buf, "%llu\n", sensor->actual_odr);
+}
+
+static ssize_t st_lsm6dsx_sysfs_selftest_show(struct device *dev,
+			       struct device_attribute *attr,
+			       char *buf)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+	int len = 0;
+
+	switch (sensor->selftest_mode) {
+	case ST_LSM6DSX_SELFTEST_NORMAL_MODE:
+		len = sprintf(buf, "normal-mode\n");
+		break;
+	case ST_LSM6DSX_SELFTEST_POSITIVE_SIGN:
+		len = sprintf(buf, "positive-sign\n");
+		break;
+	case ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN:	
+		len = sprintf(buf, "negative-sign\n");
+		break;
+	default:
+		len = sprintf(buf, "invalid\n");
+	}
+
+	return len;
+}
+
+static ssize_t st_lsm6dsx_sysfs_selftest_store(struct device *dev, 
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+	enum st_lsm6dsx_selftest_mode mode;
+	char mode_str[20];
+	int err;
+
+	if (sscanf(buf, "%s19", mode_str) != 1)
+		return -EINVAL;
+
+	if (strncmp(mode_str, "normal-mode", sizeof(mode_str) - 1) == 0) {
+		mode = ST_LSM6DSX_SELFTEST_NORMAL_MODE;
+	} else if (strncmp(mode_str, "positive-sign", sizeof(mode_str) - 1) == 0) {
+		mode = ST_LSM6DSX_SELFTEST_POSITIVE_SIGN;
+	} else if (strncmp(mode_str, "negative-sign", sizeof(mode_str) - 1) == 0) {
+		mode = ST_LSM6DSX_SELFTEST_NEGATIVE_SIGN;
+	} else {
+		return -EINVAL;
+	}
+	err = st_lsm6dsx_set_selftest_mode(sensor, mode);
+	if (err < 0)
+		return err;
+
+	return count;
+}
+
+static ssize_t st_lsm6dsx_sysfs_selftest_available(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+	if (sensor->hw->settings->selftest_settings[sensor->id].reg.addr == 0)
+		return 0;
+	return sprintf(buf, "normal-mode positive-sign negative-sign\n");
+}
+
+static ssize_t st_lsm6dsx_sysfs_selftest_toggle_duration_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+
+	return sprintf(buf, "%u\n", sensor->selftest_toggle_duration_msec);
+}
+
+static ssize_t st_lsm6dsx_sysfs_selftest_toggle_duration_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct st_lsm6dsx_sensor *sensor = iio_priv(dev_get_drvdata(dev));
+	u32 duration;
+
+	if (kstrtou32(buf, 0, &duration))
+		return -EINVAL;
+
+	sensor->selftest_toggle_duration_msec = duration;
+
+	return count;
+}
+
 static int st_lsm6dsx_write_raw_get_fmt(struct iio_dev *indio_dev,
 					struct iio_chan_spec const *chan,
 					long mask)
@@ -1693,10 +1894,24 @@ static IIO_DEVICE_ATTR(in_accel_scale_available, 0444,
 		       st_lsm6dsx_sysfs_scale_avail, NULL, 0);
 static IIO_DEVICE_ATTR(in_anglvel_scale_available, 0444,
 		       st_lsm6dsx_sysfs_scale_avail, NULL, 0);
-
+static IIO_DEVICE_ATTR(sampling_frequency_actual, 0444,
+		       st_lsm6dsx_sysfs_actual_sampling_frequency_show, NULL, 0);
+static IIO_DEVICE_ATTR(selftest, 0644,
+		       st_lsm6dsx_sysfs_selftest_show,
+		       st_lsm6dsx_sysfs_selftest_store, 0);
+static IIO_DEVICE_ATTR(selftest_available, 0444,
+		       st_lsm6dsx_sysfs_selftest_available, NULL, 0);
+static IIO_DEVICE_ATTR(selftest_toggle_duration_msec, 0644,
+		       st_lsm6dsx_sysfs_selftest_toggle_duration_show,
+		       st_lsm6dsx_sysfs_selftest_toggle_duration_store, 0);
+	
 static struct attribute *st_lsm6dsx_acc_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	&iio_dev_attr_in_accel_scale_available.dev_attr.attr,
+	&iio_dev_attr_sampling_frequency_actual.dev_attr.attr,
+	&iio_dev_attr_selftest.dev_attr.attr,
+	&iio_dev_attr_selftest_available.dev_attr.attr,
+	&iio_dev_attr_selftest_toggle_duration_msec.dev_attr.attr,
 	NULL,
 };
 
@@ -1719,6 +1934,10 @@ static const struct iio_info st_lsm6dsx_acc_info = {
 static struct attribute *st_lsm6dsx_gyro_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	&iio_dev_attr_in_anglvel_scale_available.dev_attr.attr,
+	&iio_dev_attr_sampling_frequency_actual.dev_attr.attr,
+	&iio_dev_attr_selftest.dev_attr.attr,
+	&iio_dev_attr_selftest_available.dev_attr.attr,
+	&iio_dev_attr_selftest_toggle_duration_msec.dev_attr.attr,
 	NULL,
 };
 
@@ -1885,9 +2104,7 @@ static int st_lsm6dsx_init_hw_timer(struct st_lsm6dsx_hw *hw)
 		 * ttrim[ns] ~= 25000 - (37500 * val) / 1000
 		 */
 		// hw->ts_gain -= ((s8)val * 37500) / 1000;
-		hw->ts_gain = (1000000000000000ULL  / (40000ULL +  (15ULL * (s64)val * 4ULL))); // in nsec
-		hw->actual_odr = (6667ULL * 10000ULL + (15ULL * val * 6667ULL)) / 32ULL / 10000ULL; // if ODR=208 then div is 32
-		dev_info(hw->dev, "ts_gain %lld, actual_odr %lld, val = %x\n", hw->ts_gain, hw->actual_odr, val);
+		hw->ts_gain = (1000000000ULL / (40000ULL + (15ULL * (s64)val * 4ULL ))); // in nsec
 	}
 
 	return 0;
@@ -2036,6 +2253,8 @@ static struct iio_dev *st_lsm6dsx_alloc_iiodev(struct st_lsm6dsx_hw *hw,
 	sensor->odr = hw->settings->odr_table[id].odr_avl[0].milli_hz;
 	sensor->gain = hw->settings->fs_table[id].fs_avl[0].gain;
 	sensor->watermark = 1;
+	sensor->selftest_mode = ST_LSM6DSX_SELFTEST_NORMAL_MODE;
+	sensor->selftest_toggle_duration_msec = 0;
 
 	switch (id) {
 	case ST_LSM6DSX_ID_ACC:

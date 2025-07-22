@@ -516,6 +516,15 @@ config CMA_AREAS
 
 	  If unsure, leave the default value "7" in UMA and "19" in NUMA.
 
+config CMA_NON_REUSABLE
+	bool "Make CMA heap non-reusable"
+	depends on CMA
+	help
+	  This option makes the CMA heap non-reusable, which means that
+	  the page allocator will not try to allocate pages from the CMA,
+	  and only the CMA subsystem will be able to allocate pages
+	  from the CMA heap.
+
 config MEM_SOFT_DIRTY
 	bool "Track memory changes"
 	depends on CHECKPOINT_RESTORE && HAVE_ARCH_SOFT_DIRTY && PROC_FS

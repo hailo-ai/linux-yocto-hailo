@@ -409,6 +409,81 @@ unsigned int dw_pcm_hailo15_scu_rx_blk(struct dw_i2s_dev *dev,
 }
 
 /*!
+ * @brief Hailo15 PCM playback function that prepares block of samples for SCU.
+ */
+unsigned int dw_pcm_hailo_scu_tx_blk(struct dw_i2s_dev *dev,
+                                       struct snd_pcm_runtime *runtime,
+                                       unsigned int tx_ptr,
+                                       bool *period_elapsed)
+{
+	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
+	const u16(*p)[2] = (void *)runtime->dma_area;
+	unsigned int period_pos = tx_ptr % runtime->period_size;
+	int i;
+	struct dwc_i2s_dma_block_desc *desc = DWC_I2S_DMA_BLK_RING__CURR_DESC_PTR(data->scu_dw_i2s_dma.playback_ring);
+	u16(*scu_dma_blk_samples)[2];
+
+	if (unlikely(DWC_I2S_DMA_BLK_DESC__STATE_GET(desc) == DWC_I2S_DMA_BLK_STATE_FULL)) {
+		data->scu_dw_i2s_dma.playback_overrun++;
+		*period_elapsed = period_pos >= runtime->period_size;
+		return tx_ptr;
+	}
+
+	scu_dma_blk_samples = DWC_I2S_DMA_BLK_RING__CURR_SAMPLES_BUF(data->scu_dw_i2s_dma.playback_ring);
+	for (i = 0; i < BLOCK_SAMPLE_BUF_SIZE; i++) {
+        scu_dma_blk_samples[i][0] = p[tx_ptr][0];
+        scu_dma_blk_samples[i][1] = p[tx_ptr][1];
+		/* Update indexes */
+        period_pos++;
+        if (++tx_ptr >= runtime->buffer_size)
+            tx_ptr = 0;
+	}
+    /* Block is full */
+    DWC_I2S_DMA_BLK_DESC__STATE_SET(desc, DWC_I2S_DMA_BLK_STATE_FULL); /* Update current block as full*/
+    DWC_I2S_DMA_BLK_RING__CURR_IDX_INC(data->scu_dw_i2s_dma.playback_ring); /* Inc to next block */
+
+	*period_elapsed = period_pos >= runtime->period_size;
+	return tx_ptr;
+}
+
+/*!
+ * @brief Hailo15 PCM Record function that read block of samples from SCU.
+ */
+unsigned int dw_pcm_hailo_scu_rx_blk(struct dw_i2s_dev *dev,
+                                       struct snd_pcm_runtime *runtime,
+                                       unsigned int rx_ptr,
+                                       bool *period_elapsed)
+{
+	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
+	struct dwc_i2s_dma_block_desc *desc = DWC_I2S_DMA_BLK_RING__CURR_DESC_PTR(data->scu_dw_i2s_dma.record_ring);
+	u16(*scu_dma_blk_samples)[2];
+	u16(*p)[2] = (void *)runtime->dma_area;
+	unsigned int period_pos = rx_ptr % runtime->period_size;
+	int i;
+
+	if (unlikely(DWC_I2S_DMA_BLK_DESC__STATE_GET(desc) == DWC_I2S_DMA_BLK_STATE_EMPTY)) {
+		data->scu_dw_i2s_dma.record_underrun++;
+       	*period_elapsed = period_pos >= PERIOD_BYTES_MIN;
+    	return rx_ptr;
+    }
+
+	scu_dma_blk_samples = (void *)DWC_I2S_DMA_BLK_RING__CURR_SAMPLES_BUF(data->scu_dw_i2s_dma.record_ring);
+	for (i = 0; i < BLOCK_SAMPLE_BUF_SIZE; i++) {
+		p[rx_ptr][0] = scu_dma_blk_samples[i][0];
+		p[rx_ptr][1] = scu_dma_blk_samples[i][1];
+		/* Update indexes */
+		period_pos++;
+		if (++rx_ptr >= runtime->buffer_size)
+			rx_ptr = 0;
+	}
+	DWC_I2S_DMA_BLK_DESC__STATE_SET(desc, DWC_I2S_DMA_BLK_STATE_EMPTY);	/* Update current block as empty */
+	DWC_I2S_DMA_BLK_RING__CURR_IDX_INC(data->scu_dw_i2s_dma.record_ring); /* Inc current idx */
+
+	*period_elapsed = period_pos >= runtime->period_size;
+	return rx_ptr;
+}
+
+/*!
  * @brief hrtimer callback function that every H15_BLK_POLL_INTERVAL_NSEC poll for rx/tx block from and to SCU.
  */
 enum hrtimer_restart scu_dma_blk_poll_timer_cb(struct hrtimer *timer)
@@ -428,7 +503,7 @@ enum hrtimer_restart scu_dma_blk_poll_timer_cb(struct hrtimer *timer)
     return HRTIMER_RESTART;
 }
 
-int dw_pcm_hailo15_open(struct snd_soc_component *component,
+int dw_pcm_open__hailo_processing_only(struct snd_soc_component *component,
                         struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -459,7 +534,7 @@ int dw_pcm_hailo15_open(struct snd_soc_component *component,
 	return 0;
 }
 
-int dw_pcm_hailo15_scu_dma_open(struct snd_soc_component *component,
+int dw_pcm_open__hailo_processing_and_scu_dma(struct snd_soc_component *component,
                                 struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -511,7 +586,51 @@ int dw_pcm_hailo15_scu_dma_open(struct snd_soc_component *component,
 	return 0;
 }
 
-int dw_pcm_hailo15_scu_dma_close(struct snd_soc_component *component,
+int dw_pcm_open__hailo_scu_dma_only(struct snd_soc_component *component,
+                                struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct dw_i2s_dev *dev = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
+	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
+	int i;
+
+	snd_soc_set_runtime_hwparams(substream, &dw_pcm_hardware);
+	snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
+	runtime->private_data = dev;
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		// data->tx_sample_cnt = 0;
+		// data->tx_dup_flag = false;
+		data->scu_dw_i2s_dma.playback_ring.idx = 0;
+		data->scu_dw_i2s_dma.playback_ring.sample_idx = 0;
+		for (i = 0; i < DWC_I2S_DMA_BLK_RING_SIZE; i++) {
+			data->scu_dw_i2s_dma.shmem->playback.desc[i].state = DWC_I2S_DMA_BLK_STATE_EMPTY;
+		}
+		data->scu_dw_i2s_dma.shmem->playback.reset = 1;
+		data->playback_poll_state_flag = true;
+	}
+
+	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		data->scu_dw_i2s_dma.record_ring.idx = 0;
+		data->scu_dw_i2s_dma.record_ring.sample_idx = 0;
+		for (i = 0; i < DWC_I2S_DMA_BLK_RING_SIZE; i++) {
+			data->scu_dw_i2s_dma.shmem->record.desc[i].state = DWC_I2S_DMA_BLK_STATE_EMPTY;
+		}
+		data->scu_dw_i2s_dma.shmem->record.reset = 1;
+		data->record_poll_state_flag = true;
+	}
+
+	if (data->playback_poll_state_flag ^ data->record_poll_state_flag) {
+		/* Start polling timer */
+		hrtimer_init(&data->scu_dma_blk_poll_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		data->scu_dma_blk_poll_timer.function = scu_dma_blk_poll_timer_cb;
+		hrtimer_start(&data->scu_dma_blk_poll_timer, ns_to_ktime(H15_BLK_POLL_INTERVAL_NSEC/2), HRTIMER_MODE_REL);
+	}
+	return 0;
+}
+
+static inline int __dw_pcm_hailo15_scu_dma_close(struct snd_soc_component *component,
                                  struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
@@ -531,7 +650,19 @@ int dw_pcm_hailo15_scu_dma_close(struct snd_soc_component *component,
 	return 0;
 }
 
-int dw_pcm_hailo15_hw_params(struct snd_soc_component *component,
+int dw_pcm_close__hailo_processing_and_scu_dma(struct snd_soc_component *component,
+                                 struct snd_pcm_substream *substream)
+{
+	return __dw_pcm_hailo15_scu_dma_close(component, substream);
+}
+
+int dw_pcm_close__hailo_scu_dma_only(struct snd_soc_component *component,
+                                 struct snd_pcm_substream *substream)
+{
+	return __dw_pcm_hailo15_scu_dma_close(component, substream);
+}
+
+int dw_pcm_hw_params__hailo_processing_only(struct snd_soc_component *component,
                              struct snd_pcm_substream *substream,
                              struct snd_pcm_hw_params *hw_params)
 {
@@ -559,7 +690,7 @@ int dw_pcm_hailo15_hw_params(struct snd_soc_component *component,
 	return 0;
 }
 
-int dw_pcm_hailo15_scu_dma_hw_params(struct snd_soc_component *component,
+int dw_pcm_hw_params__hailo_processing_and_scu_dma(struct snd_soc_component *component,
                                      struct snd_pcm_substream *substream,
                                      struct snd_pcm_hw_params *hw_params)
 {
@@ -578,6 +709,34 @@ int dw_pcm_hailo15_scu_dma_hw_params(struct snd_soc_component *component,
 	case SNDRV_PCM_FORMAT_S16_LE:
 		dev->tx_fn = dw_pcm_hailo15_scu_tx_blk;
 		dev->rx_fn = dw_pcm_hailo15_scu_rx_blk;
+		break;
+	default:
+		dev_err(dev->dev, "invalid format\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int dw_pcm_hw_params__hailo_scu_dma_only(struct snd_soc_component *component,
+                                     struct snd_pcm_substream *substream,
+                                     struct snd_pcm_hw_params *hw_params)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct dw_i2s_dev *dev = runtime->private_data;
+
+	switch (params_channels(hw_params)) {
+	case 2:
+		break;
+	default:
+		dev_err(dev->dev, "invalid channels number\n");
+		return -EINVAL;
+	}
+
+	switch (params_format(hw_params)) {
+	case SNDRV_PCM_FORMAT_S16_LE:
+		dev->tx_fn = dw_pcm_hailo_scu_tx_blk;
+		dev->rx_fn = dw_pcm_hailo_scu_rx_blk;
 		break;
 	default:
 		dev_err(dev->dev, "invalid format\n");

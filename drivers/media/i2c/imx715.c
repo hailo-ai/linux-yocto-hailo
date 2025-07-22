@@ -48,7 +48,7 @@
 #define IMX715_REG_SHUTTER_VERY_SHORT 0x3058
 #define IMX715_EXPOSURE_VERY_SHORT_STEP 1
 
-#define IMX715_REG_HMAX 0x302C
+#define IMX715_REG_HMAX 0x3028
 
 /* defaults */
 #define IMX715_DEFAULT_2DOL_RHS1 0x11d
@@ -102,7 +102,6 @@
 #define IMX715_INCLK_RATE 37125000
 
 /* CSI2 HW configuration */
-#define IMX715_LINK_FREQ 1782000000
 #define IMX715_NUM_DATA_LANES 4
 
 #define IMX715_REG_MIN 0x00
@@ -326,7 +325,7 @@ struct imx715 {
 };
 
 static const s64 link_freq[] = {
-	IMX715_LINK_FREQ,
+	720000000, 1782000000,
 };
 
 /* Sensor mode registers -- Tested OK */
@@ -662,7 +661,18 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x3000, 0x01}, // STANDBY					*imx715
 	{0x3002, 0x00}, // XMSTA Master mode operation start		*imx715
-	{0x3008, 0x5D},
+	{0x3008, 0x7F}, // BCWAIT_TIME 0x07F
+	{0x300A, 0x5B}, // CPWAIT_TIME 0x05B
+	{0x3033, 0x04}, // SYS_MODE = 1782Mbps
+	{0x3115, 0x00}, // INCKSEL1
+	{0x3116, 0x24}, // INCKSEL2
+	{0x3118, 0xC0}, // INCKSEL3
+	{0x311A, 0xE0}, // INCKSEL4
+	{0x311E, 0x24}, // INCKSEL5
+	{0x4004, 0x48}, // TXCLCKES_FREQ
+	{0x4005, 0x09}, // TXCLCKES_FREQ
+	{0x400C, 0x01}, // INCKSEL6
+	{0x4074, 0x00}, // INCKSEL7 for 1782Mbps
 	{0x300A, 0x42},
 	{0x301C, 0x04}, // WINMODE
 	{0x3024, 0xca}, // VMAX 2250
@@ -685,7 +695,7 @@ static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x3061, 0x01}, // RHS1_MSB
 	{0x3260, 0x00}, // GAIN_PGC_FIDMD - 0: set individual exposure gains
 	{0x30C1, 0x00},
-	{0x30CF, 0x01}, {0x3116, 0x23}, {0x3118, 0xC6}, {0x311A, 0xE7}, {0x311E, 0x23}, {0x32D4, 0x21},
+	{0x30CF, 0x01}, {0x32D4, 0x21},
 	{0x32EC, 0xA1}, {0x344C, 0x2B}, {0x344D, 0x01}, {0x344E, 0xED}, {0x344F, 0x01}, {0x3450, 0xF6},
 	{0x3451, 0x02}, {0x3452, 0x7F}, {0x3453, 0x03}, {0x358A, 0x04}, {0x35A1, 0x02}, {0x35EC, 0x27},
 	{0x35EE, 0x8D}, {0x35F0, 0x8D}, {0x35F2, 0x29}, {0x36BC, 0x0C}, {0x36CC, 0x53}, {0x36CD, 0x00},
@@ -702,7 +712,7 @@ static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x3BAD, 0x01}, {0x3BAE, 0xF6}, {0x3BAF, 0x02}, {0x3BB0, 0xA2}, {0x3BB1, 0x03}, {0x3BB2, 0xE0},
 	{0x3BB3, 0x03}, {0x3BB4, 0xE0}, {0x3BB5, 0x03}, {0x3BB6, 0xE0}, {0x3BB7, 0x03}, {0x3BB8, 0xE0},
 	{0x3BBA, 0xE0}, {0x3BBC, 0xDA}, {0x3BBE, 0x88}, {0x3BC0, 0x44}, {0x3BC2, 0x7B}, {0x3BC4, 0xA2},
-	{0x3BC8, 0xBD}, {0x3BCA, 0xBD}, {0x4004, 0xC0}, {0x4005, 0x06},
+	{0x3BC8, 0xBD}, {0x3BCA, 0xBD},
 };
 
 /* Test pattern wasn't attempted */
@@ -722,8 +732,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 2340,
 	.vblank_min = 90,
 	.vblank_max = IMX715_SDR_4K_VBLANK_MAX,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -742,8 +752,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 90,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -762,8 +772,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 3420,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -782,13 +792,13 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	{
     .width = 3840,
     .height = 2160,
-    .hblank = 1320,
+    .hblank = 550,
     .vblank = 90,
     .vblank_min = 90,
     .vblank_max = 132840,
 	.rhs1 = IMX715_DEFAULT_2DOL_RHS1,
-    .pclk = 594000000,
-    .link_freq_idx = 0,
+    .link_freq_idx = 1,
+    .pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_2X12,
 	.dol = 2,
     .reg_list = {
@@ -807,8 +817,8 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank = 1170,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
 	.link_freq_idx = 0,
+	.pclk = link_freq[0],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -827,8 +837,8 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank = 1170,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -1322,6 +1332,29 @@ void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
 	limits->exp_sef2_default = MAX(limits->exp_sef2_min, NON_NEGATIVE((int)rhs2 - (int)shr2));
 }
 
+static int imx715_set_ctrl_range_and_value(struct imx715 *imx715,
+		struct v4l2_ctrl *ctrl, u32 min, u32 max, u32 step, u32 def)
+{
+	int ret;
+
+	ret = __v4l2_ctrl_modify_range(ctrl, min, max, step, def);
+	if (ret) {
+		dev_err(imx715->dev, "Failed to modify control %s range. "
+			"ret=%d. min=%d, max=%d, default=%d",
+			ctrl->name, ret, min, max, def);
+		return ret;
+	}
+
+	ret = __v4l2_ctrl_s_ctrl(ctrl, def);
+	if (ret) {
+		dev_err(imx715->dev, "Failed to set control %s to default %d. ret=%d",
+			ctrl->name, def, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 /**
  * imx715_update_exp_vblank_controls() - Update control ranges based on streaming mode
  * @imx715: pointer to imx715 device
@@ -1331,60 +1364,41 @@ void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
 static int imx715_update_exp_vblank_controls(struct imx715* imx715)
 {
 	struct ExposureLimits_t limits;
+	const struct imx715_mode *mode = imx715->cur_mode;
 	int ret;
 
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx715, &limits);
 
-	ret = __v4l2_ctrl_modify_range(imx715->lef.exp_ctrl, limits.exp_lef_min, 
+	ret = imx715_set_ctrl_range_and_value(imx715, imx715->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX715_EXPOSURE_STEP, limits.exp_lef_default);
 	if (ret) {
-		dev_err(imx715->dev, "Failed to modify LEF exposure range. "
-							 "ret=%d. min=%d, max=%d, default=%d",
-							 ret, limits.exp_lef_min, limits.exp_lef_max, limits.exp_lef_default);
-		return ret;
-	}
-	ret = __v4l2_ctrl_s_ctrl(imx715->lef.exp_ctrl, limits.exp_lef_default);
-	if (ret) {
-		dev_err(imx715->dev, "Failed to set LEF exposure to default %d. ret=%d", limits.exp_lef_default, ret);
+		dev_err(imx715->dev, "Failed to update LEF exposure range and value\n");
 		return ret;
 	}
 
 	if (imx715->cur_mode->dol >= 2) {
-		ret = __v4l2_ctrl_modify_range(imx715->sef1.exp_ctrl, limits.exp_sef1_min, 
+		ret = imx715_set_ctrl_range_and_value(imx715, imx715->sef1.exp_ctrl, limits.exp_sef1_min,
 			limits.exp_sef1_max, IMX715_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
 		if (ret) {
-			dev_err(imx715->dev, "Failed to modify SEF1 exposure range. "
-								"ret=%d. min=%d, max=%d, default=%d",
-								ret, limits.exp_sef1_min, limits.exp_sef1_max, limits.exp_sef1_default);
-			return ret;
-		}
-		ret = __v4l2_ctrl_s_ctrl(imx715->sef1.exp_ctrl, limits.exp_sef1_default);
-		if (ret) {
-			dev_err(imx715->dev, "Failed to set SEF1 exposure to default %d. ret=%d", limits.exp_sef1_default, ret);
+			dev_err(imx715->dev, "Failed to update SEF1 exposure range and value\n");
 			return ret;
 		}
 	}
 
 	if (imx715->cur_mode->dol >= 3) {
-		ret = __v4l2_ctrl_modify_range(imx715->sef2.exp_ctrl, limits.exp_sef2_min, 
+		ret = imx715_set_ctrl_range_and_value(imx715, imx715->sef2.exp_ctrl, limits.exp_sef2_min,
 			limits.exp_sef2_max, IMX715_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
 		if (ret) {
-			dev_err(imx715->dev, "Failed to modify SEF2 exposure range. "
-								"ret=%d. min=%d, max=%d, default=%d",
-								ret, limits.exp_sef2_min, limits.exp_sef2_max, limits.exp_sef2_default);
-			return ret;
-		}
-		ret = __v4l2_ctrl_s_ctrl(imx715->sef2.exp_ctrl, limits.exp_sef2_default);
-		if (ret) {
-			dev_err(imx715->dev, "Failed to set SEF2 exposure to default %d. ret=%d", limits.exp_sef2_default, ret);
+			dev_err(imx715->dev, "Failed to update SEF2 exposure range and value\n");
 			return ret;
 		}
 	}
 
-	ret = __v4l2_ctrl_s_ctrl(imx715->vblank_ctrl, imx715->vblank);
+	ret = imx715_set_ctrl_range_and_value(imx715, imx715->vblank_ctrl, mode->vblank_min,
+		mode->vblank_max, 1, imx715->vblank);
 	if (ret) {
-		dev_err(imx715->dev, "Failed to set vblank to %d. ret=%d", imx715->vblank, ret);
+		dev_err(imx715->dev, "Failed to update vblank range and value\n");
 		return ret;
 	}
 
@@ -1408,8 +1422,21 @@ static void imx715_set_exp_activity(struct imx715 *imx715)
 
 static void imx715_set_mode(struct imx715 *imx715, const struct imx715_mode *mode)
 {
+	int ret;
 	imx715->cur_mode = mode;
 	imx715->vblank = mode->vblank;
+
+	/* set the link freq index and the pixel rate controls */
+	if (imx715->link_freq_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl(imx715->link_freq_ctrl, mode->link_freq_idx);
+		if (ret)
+			dev_err(imx715->dev, "Failed to set link freq index to %d.", mode->link_freq_idx);
+	}
+	if (imx715->pclk_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl_int64(imx715->pclk_ctrl, mode->pclk);
+		if (ret)
+			dev_err(imx715->dev, "Failed to set pixel rate to %lld.", mode->pclk);
+	}
 
 	if (imx715->hdr_enabled) {
 		if (mode->dol <= 1)
@@ -1623,6 +1650,10 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
 		}
 
 		ret = imx715_set_hdr_mode(imx715, ctrl->val);
+		break;
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
 		break;
 	default:
 		dev_err(imx715->dev, "Invalid control %d", ctrl->id);
@@ -2128,7 +2159,7 @@ static int imx715_parse_hw_config(struct imx715 *imx715)
 	struct fwnode_handle *ep;
 	unsigned long rate;
 	int ret;
-	int i;
+	int i, j;
 
 	if (!fwnode)
 		return -ENXIO;
@@ -2179,11 +2210,24 @@ static int imx715_parse_hw_config(struct imx715 *imx715)
 		goto done_endpoint_free;
 	}
 
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
-		if (bus_cfg.link_frequencies[i] == IMX715_LINK_FREQ)
+	/* check if all the required frequencies are provided in the device tree */
+	for (i = 0; i < ARRAY_SIZE(link_freq); i++) {
+		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+			if (bus_cfg.link_frequencies[j] ==
+			    link_freq[i]) {
+				break;
+			}
+		}
+		if (j == bus_cfg.nr_of_link_frequencies) {
+			dev_err(imx715->dev,
+				"required link frequency %lld not supported in device tree",
+				link_freq[i]);
+			ret = -EINVAL;
 			goto done_endpoint_free;
+		}
+	}
 
-	ret = -EINVAL;
+	ret = 0;
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -2340,9 +2384,15 @@ static int imx715_init_controls(struct imx715 *imx715)
 				IMX715_WDR_DEFAULT);
 	
 	/* Read only controls */
-	imx715->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx715_ctrl_ops,
-					      V4L2_CID_PIXEL_RATE, mode->pclk,
-					      mode->pclk, 1, mode->pclk);
+	imx715->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx715_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx715->pclk_ctrl)
+		imx715->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx715->link_freq_ctrl = v4l2_ctrl_new_int_menu(
 		ctrl_hdlr, &imx715_ctrl_ops, V4L2_CID_LINK_FREQ,
@@ -2504,5 +2554,4 @@ static struct i2c_driver imx715_driver = {
 module_i2c_driver(imx715_driver);
 
 MODULE_DESCRIPTION("Sony imx715 sensor driver");
-MODULE_AUTHOR("Eran Gur, <erang@hailo.ai>");
 MODULE_LICENSE("GPL");

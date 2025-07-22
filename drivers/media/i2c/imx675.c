@@ -20,15 +20,6 @@
 #include <linux/kernel.h>
 #include "sensor_id.h"
 
-/*
- * TODO: Remove this definition when the driver is fully implemented:
- * HDR support
- * dphy datarate is sensor dependant, instead of hardcoded in device tree (for SDR) -
- * 		imx334/imx678 - sensor is configured with 1782Mbps (default in both)
- * 		imx675 - sensor is configured with 720Mbps
- * 		csi - currently always configured with 891Mbps
-*/
-#define BRINGUP_CONFIG
 
 #define DEFAULT_MODE_IDX 0
 
@@ -40,8 +31,11 @@
 /* Lines per frame */
 #define IMX675_REG_LPFR 0x3028 // VMAX
 #define IMX675_REG_LPFR_BITS 20
-#define IMX675_ALL_PIXEL_VMAX_VALUE 0x898
-#define IMX675_ALL_PIXEL_HMAX_VALUE 0x65
+#define IMX675_SDR_VMAX_VALUE 0x898
+#define IMX675_2DOL_VMAX_VALUE 0x804
+
+#define IMX675_SDR_HMAX_VALUE 0x465
+#define IMX675_2DOL_HMAX_VALUE 0x25A
 
 // Native sensor resolution (effective pixels): 2608x1964
 // Using recommended resolution:
@@ -50,27 +44,42 @@
 
 #define IMX675_VMAX_MAX ((1 << IMX675_REG_LPFR_BITS) - 2) // max even value of unsigned IMX675_REG_LPFR_BITS
 
-#define IMX675_MAX_VBLANK_FHD (IMX675_VMAX_MAX - 1080)
-#define IMX675_MIN_VBLANK_FHD (IMX675_ALL_PIXEL_VMAX_VALUE - 1080)
+#define IMX675_SDR_MAX_VBLANK_FHD (IMX675_VMAX_MAX - 1080)
+#define IMX675_SDR_MIN_VBLANK_FHD (IMX675_SDR_VMAX_VALUE - 1080)
 
 #define IMX675_MAX_VBLANK_5MP (IMX675_VMAX_MAX - RES_5MP_HEIGHT)
-#define IMX675_MIN_VBLANK_5MP (IMX675_ALL_PIXEL_VMAX_VALUE - RES_5MP_HEIGHT)
+#define IMX675_SDR_MIN_VBLANK_5MP (IMX675_SDR_VMAX_VALUE - RES_5MP_HEIGHT)
+#define IMX675_2DOL_MIN_VBLANK_5MP (IMX675_2DOL_VMAX_VALUE - RES_5MP_HEIGHT)
 
 #define LOW_U8_OF_U16(val) ((u8)(val & 0xff))
 #define HIGH_U8_OF_U16(val) ((u8)((val >> 8) & 0xff))
 
+#define IMX675_REG_HMAX 0x302C
+
 /* defaults */
-#define IMX675_DEFAULT_RHS1 0x91
+#define IMX675_2DOL_RHS1 0x7D
 #define IMX675_DEFAULT_RHS2 0xaa
 #define IMX675_EXPOSURE_DEFAULT 0x0648
 
 /* gaps */
-#define IMX675_SHR0_RHS2_GAP 7
-#define IMX675_SHR0_FSC_GAP 3
-#define IMX675_SHR1_MIN_GAP 7
-#define IMX675_SHR1_RHS1_GAP 3
-#define IMX675_SHR2_RHS1_GAP 7
-#define IMX675_SHR2_RHS2_GAP 3
+#define IMX675_2DOL_SMALL_GAP 2
+#define IMX675_2DOL_LARGE_GAP 5
+#define IMX675_3DOL_SMALL_GAP 3
+#define IMX675_3DOL_LARGE_GAP 7
+
+#define IMX675_2DOL_SHR0_RHS1_GAP   IMX675_2DOL_LARGE_GAP
+#define IMX675_2DOL_SHR0_FSC_GAP    IMX675_2DOL_SMALL_GAP
+#define IMX675_2DOL_SHR1_MIN_GAP    IMX675_2DOL_LARGE_GAP
+#define IMX675_2DOL_SHR1_RHS1_GAP   IMX675_2DOL_SMALL_GAP
+
+#define IMX675_3DOL_SHR0_RHS2_GAP   IMX675_3DOL_LARGE_GAP
+#define IMX675_3DOL_SHR0_FSC_GAP    IMX675_3DOL_SMALL_GAP
+#define IMX675_3DOL_SHR1_MIN_GAP    IMX675_3DOL_LARGE_GAP
+#define IMX675_3DOL_SHR1_RHS1_GAP   IMX675_3DOL_SMALL_GAP
+#define IMX675_3DOL_SHR2_RHS1_GAP   IMX675_3DOL_LARGE_GAP
+#define IMX675_3DOL_SHR2_RHS2_GAP   IMX675_3DOL_SMALL_GAP
+
+#define IMX675_INTEGER_STEP 1
 
 /* Exposure control LEF */
 #define IMX675_REG_SHUTTER 0x3050
@@ -93,6 +102,13 @@
 #define IMX675_AGAIN_STEP 1
 #define IMX675_AGAIN_DEFAULT 0
 
+/* Hcg control */
+#define IMX675_REG_HCG 0x3030
+#define IMX675_HCG_MIN 0
+#define IMX675_HCG_MAX 1
+#define IMX675_HCG_STEP 1
+#define IMX675_HCG_DEFAULT 0
+
 /* Wide Dynamic Range control */
 #define IMX675_WDR_MIN 0
 #define IMX675_WDR_MAX 1
@@ -103,10 +119,24 @@
 #define IMX675_REG_HOLD 0x3001
 
 /* Input clock rate */
+enum imx675_input_clk_rate_code {
+	INPUT_CLK_74_25_MHZ = 0,
+	INPUT_CLK_37_125_MHZ,
+	INPUT_CLK_72_MHZ,
+	INPUT_CLK_27_MHZ,
+	INPUT_CLK_24_MHZ,
+	INPUT_CLK_36_MHZ,
+	INPUT_CLK_18_MHZ,
+	INPUT_CLK_13_5_MHZ,
+};
+
+#define IMX675_INCLK_CODE INPUT_CLK_27_MHZ
+/* TODO: This should actually be 27 Mhz, but this value only exists
+ * for validation with the device tree, and the device tree always returns
+ * 24 MHz at the moment. */
 #define IMX675_INCLK_RATE 24000000
 
 /* CSI2 HW configuration */
-#define IMX675_LINK_FREQ 720000000
 #define IMX675_NUM_DATA_LANES 4
 
 #define IMX675_REG_MIN 0x00
@@ -122,15 +152,15 @@
 static u32 imx675_reg_shutter[3] = {IMX675_REG_SHUTTER, IMX675_REG_SHUTTER_SHORT, IMX675_REG_SHUTTER_VERY_SHORT};
 static u32 imx675_reg_again[3] = {IMX675_REG_AGAIN, IMX675_REG_AGAIN_SHORT, IMX675_REG_AGAIN_VERY_SHORT};
 
-typedef enum {
-  LEF,
-  SEF1,
-  SEF2,
-} ExposureType;
+enum imx675_exposure_type {
+	LEF,
+	SEF1,
+	SEF2,
+};
 
 static int imx675_set_ctrl(struct v4l2_ctrl *ctrl);
+static int imx675_get_ctrl(struct v4l2_ctrl *ctrl);
 
-#ifndef BRINGUP_CONFIG
 /*
  * imx675 test pattern related structure
  */
@@ -167,11 +197,15 @@ static const char *const imx675_test_pattern_menu[] = {
 	"Horizontal Color Bars",
 	"Vertical Color Bars",
 };
-#endif
 
 /* V4l2 subdevice control ops*/
 static const struct v4l2_ctrl_ops imx675_ctrl_ops = {
 	.s_ctrl = imx675_set_ctrl,
+};
+
+/* V4l2 subdevice control ops*/
+static const struct v4l2_ctrl_ops imx675_get_ctrl_ops = {
+	.g_volatile_ctrl = imx675_get_ctrl,
 };
 
 /**
@@ -202,11 +236,13 @@ u32 _get_mode_reg_val_by_address(const struct imx675_reg_list *reg_list, u16 reg
 	while (left <= right) {
 		u32 mid = left + (right - left) / 2;
 		if (reg_list->regs[mid].address == reg_address) {
-		val = 0;
-		for (i = 0; i < num_bytes; i++) {
-			val |= (reg_list->regs[mid + i].val >> 8*i) & 0xff;
-		}
-		return val;
+			val = 0;
+			for (i = 0; i < num_bytes; i++) {
+				if (reg_list->regs[mid + i].address == reg_address + i) {
+					val |= (reg_list->regs[mid + i].val & 0xff) << (8 * i);
+				}
+			}
+			return val;
 		}
 		if (reg_list->regs[mid].address < reg_address) {
 			left = mid + 1;
@@ -242,6 +278,7 @@ struct imx675_mode {
 	u32 link_freq_idx;
 	u32 rhs1;
 	u32 rhs2;
+	u8 dol;
 	struct imx675_reg_list reg_list;
 	struct v4l2_fract frame_interval;
 };
@@ -297,8 +334,16 @@ struct imx675 {
 	struct v4l2_ctrl *pclk_ctrl;
 	struct v4l2_ctrl *hblank_ctrl;
 	struct v4l2_ctrl *vblank_ctrl;
+	struct v4l2_ctrl *rhs1_ctrl;
+	struct v4l2_ctrl *rhs2_ctrl;
+	struct v4l2_ctrl *shr0_ctrl;
+	struct v4l2_ctrl *shr1_ctrl;
+	struct v4l2_ctrl *shr2_ctrl;
+	struct v4l2_ctrl *vmax_ctrl;
+	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	struct v4l2_ctrl *hcg_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
 	struct exp_gain_ctrl_cluster sef2;
@@ -311,16 +356,16 @@ struct imx675 {
 };
 
 static const s64 link_freq[] = {
-	IMX675_LINK_FREQ,
+	720000000, 1188000000,
 };
 
-static const struct imx675_reg mode_native_5mp_all_pixel_30fps[] = {
+static const struct imx675_reg mode_native_5mp_all_pixel_30fps[] = { // Config #16
 	/* Using default value for 0x3000 (STANDBY, 0x01) */
 	/* Using default value for 0x3001 (REGHOLD, 0x00) */
 	/* Using default value for 0x3002 (XMSTA, 0x01) */
-	{ 0x3014, 0x04 }, /* 0x3014: Using default value (INCK_SEL[3:0]) */ // Manual change (fix for our clock)
+	{ 0x3014, IMX675_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
 	{ 0x3015, 0x06 }, /* DATARATE_SEL [3:0] */
-	{ 0x3018, 0x04 }, /* Using default value for 0x3018 (WINMODE [3:0], 0x00) */ // Manual change (recommended resolution)
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* Using default value for 0x3019 (CFMODE, 0x00) */
 	/* Using default value for 0x301A (WDMODE [7:0], 0x00) */
 	/* Using default value for 0x301B (ADDMODE [1:0], 0x00) */
@@ -340,13 +385,13 @@ static const struct imx675_reg mode_native_5mp_all_pixel_30fps[] = {
 	/* Using default value for 0x3032 (FDG_SEL2 [1:0], 0x00) */
 	/* Using default value for 0x303C (PIX_HST [12:0], 0x00) */
 	/* Using default value for 0x303D (0x00) */
-	{ 0x303E, LOW_U8_OF_U16(RES_5MP_WIDTH) }, /* Using default value for 0x303E (PIX_HWIDTH [12:0], 0x30) */ // Manual change (recommended resolution)
-    { 0x303F, HIGH_U8_OF_U16(RES_5MP_WIDTH) }, /* Using default value for 0x303F (0x0A) */ // Manual change (recommended resolution)
+	{ 0x303E, LOW_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x30) -> recommended resolution)
+	{ 0x303F, HIGH_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x0A) -> recommended resolution)
 	/* Using default value for 0x3040 (LANEMODE [2:0], 0x03) */
 	/* Using default value for 0x3044 (PIX_VST [11:0], 0x00) */
 	/* Using default value for 0x3045 (0x00) */
-	{ 0x3046, LOW_U8_OF_U16(RES_5MP_HEIGHT) }, /* Using default value for 0x3046 (PIX_VWIDTH [11:0], 0xAC) */ // Manual change (recommended resolution)
-    { 0x3047, HIGH_U8_OF_U16(RES_5MP_HEIGHT) }, /* Using default value for 0x3047 (0x07) */ // Manual change (recommended resolution)
+	{ 0x3046, LOW_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0xAC) -> recommended resolution)
+	{ 0x3047, HIGH_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0x07) -> recommended resolution)
 	/* Using default value for 0x304C (GAIN_HG0 [10:0], 0x00) */
 	/* Using default value for 0x304D (0x00) */
 	{ 0x3050, 0x04 }, /* SHR0 [19:0] */
@@ -381,7 +426,7 @@ static const struct imx675_reg mode_native_5mp_all_pixel_30fps[] = {
 	/* Using default value for 0x3130 (0x01) */
 	{ 0x3148, 0x00 },
 	/* Using default value for 0x315E (0x10) */
-	/* Using default value for 0x3400 (GAIN_PGC_FIDMD, 0x01) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x347B, 0x02 },
 	{ 0x3492, 0x08 },
@@ -527,9 +572,9 @@ static const struct imx675_reg mode_fhd_crop_30fps[] = {
 	/* Using default value for 0x3000 (STANDBY, 0x01) */
 	/* Using default value for 0x3001 (REGHOLD, 0x00) */
 	/* Using default value for 0x3002 (XMSTA, 0x01) */
-	{ 0x3014, 0x04 }, /* 0x3014: Using default value (INCK_SEL[3:0]) */ // Manual change (fix for our clock)
+	{ 0x3014, IMX675_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
 	{ 0x3015, 0x06 }, /* DATARATE_SEL [3:0] */
-	{ 0x3018, 0x04 }, /* Using default value for 0x3018 (WINMODE [3:0], 0x00) */ // Manual change (crop to FHD)
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> crop to FHD)
 	/* Using default value for 0x3019 (CFMODE, 0x00) */
 	/* Using default value for 0x301A (WDMODE [7:0], 0x00) */
 	/* Using default value for 0x301B (ADDMODE [1:0], 0x00) */
@@ -549,13 +594,13 @@ static const struct imx675_reg mode_fhd_crop_30fps[] = {
 	/* Using default value for 0x3032 (FDG_SEL2 [1:0], 0x00) */
 	/* Using default value for 0x303C (PIX_HST [12:0], 0x00) */
 	/* Using default value for 0x303D (0x00) */
-    { 0x303E, LOW_U8_OF_U16(1920) }, /* Using default value for 0x303E (PIX_HWIDTH [12:0], 0x30) */ // Manual change (crop to FHD)
-    { 0x303F, HIGH_U8_OF_U16(1920) }, /* Using default value for 0x303F (0x0A) */ // Manual change (crop to FHD)
+	{ 0x303E, LOW_U8_OF_U16(1920) }, // MANUAL (default(0x30) -> crop to FHD)
+    { 0x303F, HIGH_U8_OF_U16(1920) }, // MANUAL (default(0x0A) -> crop to FHD)
 	/* Using default value for 0x3040 (LANEMODE [2:0], 0x03) */
 	/* Using default value for 0x3044 (PIX_VST [11:0], 0x00) */
 	/* Using default value for 0x3045 (0x00) */
-    { 0x3046, LOW_U8_OF_U16(1080) }, /* Using default value for 0x3046 (PIX_VWIDTH [11:0], 0xAC) */ // Manual change (crop to FHD)
-    { 0x3047, HIGH_U8_OF_U16(1080) }, /* Using default value for 0x3047 (0x07) */ // Manual change (crop to FHD)
+	{ 0x3046, LOW_U8_OF_U16(1080) }, // MANUAL (default(0xAC) -> crop to FHD)
+	{ 0x3047, HIGH_U8_OF_U16(1080) }, // MANUAL (default(0x07) -> crop to FHD)
 	/* Using default value for 0x304C (GAIN_HG0 [10:0], 0x00) */
 	/* Using default value for 0x304D (0x00) */
 	{ 0x3050, 0x04 }, /* SHR0 [19:0] */
@@ -590,7 +635,7 @@ static const struct imx675_reg mode_fhd_crop_30fps[] = {
 	/* Using default value for 0x3130 (0x01) */
 	{ 0x3148, 0x00 },
 	/* Using default value for 0x315E (0x10) */
-	/* Using default value for 0x3400 (GAIN_PGC_FIDMD, 0x01) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
 	{ 0x3460, 0x22 },
 	{ 0x347B, 0x02 },
 	{ 0x3492, 0x08 },
@@ -732,14 +777,221 @@ static const struct imx675_reg mode_fhd_crop_30fps[] = {
 	/* Using default value for 0x4570 (0x06) */
 };
 
-#ifndef BRINGUP_CONFIG
 static const struct imx675_reg imx675_tpg_en_regs[] = {
 	//TPG config
 	{ 0x3042, 0x00 }, //XSIZE_OVERLAP
 	{ 0x30e0, 0x01 }, //TPG_EN_DUOUT
 	{ 0x30e4, 0x13 }, //TPG_COLORWIDTH
 };
-#endif
+
+static const struct imx675_reg mode_native_5mp_2dol_all_pixel_30fps[] = {  // Config #27
+	/* Using default value for 0x3000 (STANDBY, 0x01) */
+	/* Using default value for 0x3001 (REGHOLD, 0x00) */
+	/* Using default value for 0x3002 (XMSTA, 0x01) */
+	{ 0x3014, IMX675_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
+	/* Using default value for 0x3015 (DATARATE_SEL [3:0], 0x04) */
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
+	/* Using default value for 0x3019 (CFMODE, 0x00) */
+	{ 0x301A, 0x01 }, /* WDMODE [7:0] */
+	/* Using default value for 0x301B (ADDMODE [1:0], 0x00) */
+	{ 0x301C, 0x01 }, /* THIN_V_EN [7:0] */
+	/* Using default value for 0x301E (VCMODE [7:0], 0x01) */
+	/* Using default value for 0x3020 (HREVERSE, 0x00) */
+	/* Using default value for 0x3021 (VREVERSE, 0x00) */
+	{ 0x3022, 0x01 }, /* ADBIT [1:0] */
+	/* Using default value for 0x3023 (MDBIT, 0x01) */
+	{ 0x3028, 0x04 }, /* VMAX [19:0] */ // decimal 2052
+	{ 0x3029, 0x08 },
+	/* Using default value for 0x302A (0x00) */
+	{ 0x302C, 0x5a }, /* HMAX [15:0] */ // decimal 602
+	{ 0x302D, 0x02 },
+	/* Using default value for 0x3030 (FDG_SEL0 [1:0], 0x00) */
+	/* Using default value for 0x3031 (FDG_SEL1 [1:0], 0x00) */
+	/* Using default value for 0x3032 (FDG_SEL2 [1:0], 0x00) */
+	/* Using default value for 0x303C (PIX_HST [12:0], 0x00) */
+	/* Using default value for 0x303D (0x00) */
+	{ 0x303E, LOW_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x30) -> recommended resolution)
+	{ 0x303F, HIGH_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x0A) -> recommended resolution)
+	/* Using default value for 0x3040 (LANEMODE [2:0], 0x03) */
+	/* Using default value for 0x3044 (PIX_VST [11:0], 0x00) */
+	/* Using default value for 0x3045 (0x00) */
+	{ 0x3046, LOW_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0xAC) -> recommended resolution)
+	{ 0x3047, HIGH_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0x07) -> recommended resolution)
+	/* Using default value for 0x304C (GAIN_HG0 [10:0], 0x00) */
+	/* Using default value for 0x304D (0x00) */
+	{ 0x3050, 0xf4 }, /* SHR0 [19:0] */ // decimal 1268
+	{ 0x3051, 0x04 },
+	/* Using default value for 0x3052 (0x00) */
+	{ 0x3054, 0x05 }, /* SHR1 [19:0] */ // decimal 5
+	/* Using default value for 0x3055 (0x00) */
+	/* Using default value for 0x3056 (0x00) */
+	/* Using default value for 0x3058 (SHR2 [19:0], 0x53) */
+	/* Using default value for 0x3059 (0x00) */
+	/* Using default value for 0x305A (0x00) */
+	{ 0x3060, IMX675_2DOL_RHS1 }, // MANUAL (0x81 -> ISP's limit)
+	/* Using default value for 0x3061 (0x00) */
+	/* Using default value for 0x3062 (0x00) */
+	/* Using default value for 0x3064 (RHS2 [19:0], 0x56) */
+	/* Using default value for 0x3065 (0x00) */
+	/* Using default value for 0x3066 (0x00) */
+	/* Using default value for 0x3070 (GAIN_0 [10:0], 0x00) */
+	/* Using default value for 0x3071 (0x00) */
+	/* Using default value for 0x3072 (GAIN_1 [10:0], 0x00) */
+	/* Using default value for 0x3073 (0x00) */
+	/* Using default value for 0x3074 (GAIN_2 [10:0], 0x00) */
+	/* Using default value for 0x3075 (0x00) */
+	/* Using default value for 0x30A4 (XVSOUTSEL [1:0], 0xAA) */
+	{ 0x30A6, 0x00 }, /* XVS_DRV [1:0] */
+	/* Using default value for 0x30CC (0x00) */
+	/* Using default value for 0x30CD (0x00) */
+	{ 0x30CE, 0x02 },
+	/* Using default value for 0x30DC (BLKLEVEL [9:0], 0x32) */
+	/* Using default value for 0x30DD (0x40) */
+	/* Using default value for 0x310C (0x01) */
+	/* Using default value for 0x3130 (0x01) */
+	{ 0x3148, 0x00 },
+	/* Using default value for 0x315E (0x10) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ 0x3460, 0x22 },
+	{ 0x347B, 0x02 },
+	{ 0x3492, 0x08 },
+	/* Using default value for 0x3890 (HFR_EN [3:0], 0x08) */
+	/* Using default value for 0x3891 (0x00) */
+	/* Using default value for 0x3893 (0x00) */
+	{ 0x3B1D, 0x17 },
+	{ 0x3B44, 0x3F },
+	{ 0x3B60, 0x03 },
+	{ 0x3C03, 0x04 },
+	{ 0x3C04, 0x04 },
+	{ 0x3C0A, 0x1f },
+	{ 0x3C0B, 0x1f },
+	{ 0x3C0C, 0x1f },
+	{ 0x3C0D, 0x1f },
+	{ 0x3C0E, 0x1f },
+	{ 0x3C0F, 0x1f },
+	{ 0x3C30, 0x73 },
+	{ 0x3C3C, 0x20 },
+	/* Using default value for 0x3C44 (0x06) */
+	{ 0x3C7C, 0xB9 },
+	{ 0x3C7D, 0x01 },
+	{ 0x3C7E, 0xB7 },
+	{ 0x3C7F, 0x01 },
+	{ 0x3CB0, 0x00 },
+	{ 0x3CB2, 0xFF },
+	{ 0x3CB3, 0x03 },
+	{ 0x3CB4, 0xFF },
+	{ 0x3CB5, 0x03 },
+	{ 0x3CBA, 0xFF },
+	{ 0x3CBB, 0x03 },
+	{ 0x3CC0, 0xFF },
+	{ 0x3CC1, 0x03 },
+	{ 0x3CC2, 0x00 },
+	{ 0x3CC6, 0xFF },
+	{ 0x3CC7, 0x03 },
+	{ 0x3CC8, 0xFF },
+	{ 0x3CC9, 0x03 },
+	{ 0x3E00, 0x1E },
+	{ 0x3E02, 0x04 },
+	{ 0x3E03, 0x00 },
+	{ 0x3E20, 0x04 },
+	{ 0x3E21, 0x00 },
+	{ 0x3E22, 0x1E },
+	{ 0x3E24, 0xBA },
+	{ 0x3E72, 0x85 },
+	{ 0x3E76, 0x0C },
+	{ 0x3E77, 0x01 },
+	{ 0x3E7A, 0x85 },
+	{ 0x3E7E, 0x1F },
+	{ 0x3E82, 0xA6 },
+	{ 0x3E86, 0x2D },
+	{ 0x3EE2, 0x33 },
+	{ 0x3EE3, 0x03 },
+	{ 0x4490, 0x07 },
+	{ 0x4494, 0x19 },
+	{ 0x4495, 0x00 },
+	{ 0x4496, 0xBB },
+	{ 0x4497, 0x00 },
+	{ 0x4498, 0x55 },
+	{ 0x449A, 0x50 },
+	{ 0x449C, 0x50 },
+	{ 0x449E, 0x50 },
+	{ 0x44A0, 0x3C },
+	{ 0x44A2, 0x19 },
+	{ 0x44A4, 0x19 },
+	{ 0x44A6, 0x19 },
+	{ 0x44A8, 0x4B },
+	{ 0x44AA, 0x4B },
+	{ 0x44AC, 0x4B },
+	{ 0x44AE, 0x4B },
+	{ 0x44B0, 0x3C },
+	{ 0x44B2, 0x19 },
+	{ 0x44B4, 0x19 },
+	{ 0x44B6, 0x19 },
+	{ 0x44B8, 0x4B },
+	{ 0x44BA, 0x4B },
+	{ 0x44BC, 0x4B },
+	{ 0x44BE, 0x4B },
+	{ 0x44C0, 0x3C },
+	{ 0x44C2, 0x19 },
+	{ 0x44C4, 0x19 },
+	{ 0x44C6, 0x19 },
+	{ 0x44C8, 0xF0 },
+	{ 0x44CA, 0xEB },
+	{ 0x44CC, 0xEB },
+	{ 0x44CE, 0xE6 },
+	{ 0x44D0, 0xE6 },
+	{ 0x44D2, 0xBB },
+	{ 0x44D4, 0xBB },
+	{ 0x44D6, 0xBB },
+	{ 0x44D8, 0xE6 },
+	{ 0x44DA, 0xE6 },
+	{ 0x44DC, 0xE6 },
+	{ 0x44DE, 0xE6 },
+	{ 0x44E0, 0xE6 },
+	{ 0x44E2, 0xBB },
+	{ 0x44E4, 0xBB },
+	{ 0x44E6, 0xBB },
+	{ 0x44E8, 0xE6 },
+	{ 0x44EA, 0xE6 },
+	{ 0x44EC, 0xE6 },
+	{ 0x44EE, 0xE6 },
+	{ 0x44F0, 0xE6 },
+	{ 0x44F2, 0xBB },
+	{ 0x44F4, 0xBB },
+	{ 0x44F6, 0xBB },
+	{ 0x4538, 0x15 },
+	{ 0x4539, 0x15 },
+	{ 0x453A, 0x15 },
+	{ 0x4544, 0x15 },
+	{ 0x4545, 0x15 },
+	{ 0x4546, 0x15 },
+	{ 0x4550, 0x10 },
+	{ 0x4551, 0x10 },
+	{ 0x4552, 0x10 },
+	{ 0x4553, 0x10 },
+	{ 0x4554, 0x10 },
+	{ 0x4555, 0x10 },
+	{ 0x4556, 0x10 },
+	{ 0x4557, 0x10 },
+	{ 0x4558, 0x10 },
+	{ 0x455C, 0x10 },
+	{ 0x455D, 0x10 },
+	{ 0x455E, 0x10 },
+	{ 0x455F, 0x10 },
+	{ 0x4560, 0x10 },
+	{ 0x4561, 0x10 },
+	{ 0x4562, 0x10 },
+	{ 0x4563, 0x10 },
+	{ 0x4564, 0x10 },
+	/* Using default value for 0x4569 (0x01) */
+	/* Using default value for 0x456A (0x01) */
+	/* Using default value for 0x456B (0x06) */
+	/* Using default value for 0x456C (0x06) */
+	/* Using default value for 0x456D (0x06) */
+	/* Using default value for 0x456E (0x06) */
+	/* Using default value for 0x456F (0x06) */
+	/* Using default value for 0x4570 (0x06) */
+};
 
 /* Supported sensor mode configurations */
 static const struct imx675_mode supported_sdr_modes[] = {
@@ -747,15 +999,16 @@ static const struct imx675_mode supported_sdr_modes[] = {
 	{
 		.width = RES_5MP_WIDTH,
 		.height = RES_5MP_HEIGHT,
-		.hblank = IMX675_ALL_PIXEL_HMAX_VALUE,
-		.vblank = IMX675_MIN_VBLANK_5MP,
-		.vblank_min = IMX675_MIN_VBLANK_5MP,
+		.hblank = IMX675_SDR_HMAX_VALUE,
+		.vblank = IMX675_SDR_MIN_VBLANK_5MP,
+		.vblank_min = IMX675_SDR_MIN_VBLANK_5MP,
 		.vblank_max = IMX675_MAX_VBLANK_5MP,
 		.rhs1 = 0x0,
 		.rhs2 = 0x0,
-		.pclk = 594000000,
 		.link_freq_idx = 0,
+		.pclk = link_freq[0],
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+		.dol = 1,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_native_5mp_all_pixel_30fps),
 			.regs = mode_native_5mp_all_pixel_30fps,
@@ -769,15 +1022,16 @@ static const struct imx675_mode supported_sdr_modes[] = {
 	{
 		.width = 1920,
 		.height = 1080,
-		.hblank = IMX675_ALL_PIXEL_HMAX_VALUE,
-		.vblank = IMX675_MIN_VBLANK_FHD,
-		.vblank_min = IMX675_MIN_VBLANK_FHD,
-		.vblank_max = IMX675_MAX_VBLANK_FHD,
+		.hblank = IMX675_SDR_HMAX_VALUE,
+		.vblank = IMX675_SDR_MIN_VBLANK_FHD,
+		.vblank_min = IMX675_SDR_MIN_VBLANK_FHD,
+		.vblank_max = IMX675_SDR_MAX_VBLANK_FHD,
 		.rhs1 = 0x0,
 		.rhs2 = 0x0,
-		.pclk = 594000000,
 		.link_freq_idx = 0,
+		.pclk = link_freq[0],
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+		.dol = 1,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_fhd_crop_30fps),
 			.regs = mode_fhd_crop_30fps,
@@ -790,9 +1044,32 @@ static const struct imx675_mode supported_sdr_modes[] = {
 };
 
 static const struct imx675_mode supported_hdr_modes[] = {
+	// Native 5MP Resolution ("Recommended Pixels") 2DOL 12 bit
+	{
+		.width = RES_5MP_WIDTH,
+		.height = RES_5MP_HEIGHT,
+		.hblank = IMX675_2DOL_HMAX_VALUE,
+		.vblank = IMX675_2DOL_MIN_VBLANK_5MP,
+		.vblank_min = IMX675_2DOL_MIN_VBLANK_5MP,
+		.vblank_max = IMX675_MAX_VBLANK_5MP,
+		.rhs1 = IMX675_2DOL_RHS1,
+		.rhs2 = 0x0,
+		.link_freq_idx = 1,
+		.pclk = link_freq[1],
+		.code = MEDIA_BUS_FMT_SRGGB12_2X12,
+		.dol = 2,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mode_native_5mp_2dol_all_pixel_30fps),
+			.regs = mode_native_5mp_2dol_all_pixel_30fps,
+		},
+		.frame_interval = {
+			.denominator = 30,
+			.numerator = 1,
+		}
+	}
 };
 
-struct v4l2_ctrl_config imx675_3dol_ctrls[] = {
+struct v4l2_ctrl_config imx675_custom_ctrls[] = {
 	{
 		.ops = &imx675_ctrl_ops,
 		.id = IMX675_CID_ANALOGUE_GAIN_SHORT,
@@ -831,18 +1108,114 @@ struct v4l2_ctrl_config imx675_3dol_ctrls[] = {
 		.name = "exposure_very_short",
 		.step = IMX675_EXPOSURE_VERY_SHORT_STEP,
 	},
+	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_HCG,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg",
+		.step = IMX675_HCG_STEP,
+		.min = IMX675_HCG_MIN,
+		.max = IMX675_HCG_MAX,
+		.def = IMX675_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_RHS1,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "readout_timing_short",
+		.step = IMX675_INTEGER_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_RHS2,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "readout_timing_very_short",
+		.step = IMX675_INTEGER_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_SHR0,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "shutter_timing_long",
+		.step = IMX675_INTEGER_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_SHR1,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "shutter_timing_short",
+		.step = IMX675_EXPOSURE_SHORT_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_SHR2,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "shutter_timing_very_short",
+		.step = IMX675_EXPOSURE_VERY_SHORT_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_VMAX,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "vertical_span",
+		.step = IMX675_INTEGER_STEP,
+	},
+	{
+		.ops = &imx675_get_ctrl_ops,
+		.id = IMX675_CID_HMAX,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+		.name = "horizontal_span",
+		.step = IMX675_INTEGER_STEP,
+	},	
 };
 
-static int get_3dol_ctrl_index_by_name(const char *name)
-{
+static struct v4l2_ctrl_config *get_custom_ctrl_by_id(u32 id) {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(imx675_3dol_ctrls); i++) {
-		if (!strcmp(imx675_3dol_ctrls[i].name, name))
-			return i;
+	for (i = 0; i < ARRAY_SIZE(imx675_custom_ctrls); i++) {
+		if (imx675_custom_ctrls[i].id == id)
+			return &imx675_custom_ctrls[i];
 	}
 
-	return -EINVAL;
+	pr_err("Invalid control id: %d\n", id);
+	return NULL;
+}
+
+static void imx675_setup_custom_ctrl(struct imx675 *imx675, struct v4l2_ctrl **ctrl, u32 id) {
+	struct v4l2_ctrl_config *config = get_custom_ctrl_by_id(id);
+
+	if (!config) {
+		dev_err(imx675->dev, "Setup invalid custom control id: %d\n", id);
+		return;
+	}
+
+	*ctrl = v4l2_ctrl_new_custom(&imx675->ctrl_handler, config, NULL);
+}
+
+static void imx675_setup_custom_ctrl_limits(
+	struct imx675 *imx675, struct v4l2_ctrl **ctrl, u32 id,
+	s64 min, s64 max, s64 def)
+{
+	struct v4l2_ctrl_config *config = get_custom_ctrl_by_id(id);
+
+	if (!config) {
+		dev_err(imx675->dev, "Setup invalid custom control id: %d\n", id);
+		return;
+	}
+
+	config->min = min;
+	config->max = max;
+	config->def = def;
+	
+	*ctrl = v4l2_ctrl_new_custom(&imx675->ctrl_handler, config, NULL);
 }
 
 /**
@@ -986,40 +1359,64 @@ typedef struct ExposureLimits_t {
 } * ExposureLimits;
 
 void calculate_exposure_limits(struct imx675* imx675, ExposureLimits limits) {
-	const int hdr_multiple = imx675->hdr_enabled ? 3 : 1;
-	const int rhs1 = imx675->cur_mode->rhs1 > 0 ? imx675->cur_mode->rhs1 : IMX675_DEFAULT_RHS1;
+	/* TODO: here assumed hdr is only of type 2dol, since this is the mode that was ported.
+	If using 3dol, change limits accordingly. */
+	const int rhs1 = imx675->cur_mode->rhs1 > 0 ? imx675->cur_mode->rhs1 : IMX675_2DOL_RHS1;
 	const int rhs2 = imx675->cur_mode->rhs2 > 0 ? imx675->cur_mode->rhs2 : IMX675_DEFAULT_RHS2;
 	u32 shr0, shr1, shr2;
 
-	limits->lpfr = hdr_multiple * (imx675->vblank + imx675->cur_mode->height);
-	limits->min_lpfr = hdr_multiple * (imx675->cur_mode->vblank_min + imx675->cur_mode->height);
-	limits->max_lpfr = hdr_multiple * (imx675->cur_mode->vblank_max + imx675->cur_mode->height);
+	limits->lpfr = imx675->cur_mode->dol * (imx675->vblank + imx675->cur_mode->height);
+	limits->min_lpfr = imx675->cur_mode->dol * (imx675->cur_mode->vblank_min + imx675->cur_mode->height);
+	limits->max_lpfr = imx675->cur_mode->dol * (imx675->cur_mode->vblank_max + imx675->cur_mode->height);
 
 	limits->lef_reg = IMX675_REG_SHUTTER;
-	limits->shr0_min = imx675->hdr_enabled ? imx675->cur_mode->rhs2 + IMX675_SHR0_RHS2_GAP : IMX675_SHR0_FSC_GAP;
-	limits->shr0_max = NON_NEGATIVE(limits->max_lpfr - IMX675_SHR0_FSC_GAP);
-	limits->exp_lef_min = IMX675_SHR0_FSC_GAP;
+	limits->shr0_min = imx675->hdr_enabled ? imx675->cur_mode->rhs1 + IMX675_2DOL_SHR0_RHS1_GAP : IMX675_2DOL_SHR0_FSC_GAP;
+	limits->shr0_max = NON_NEGATIVE(limits->max_lpfr - IMX675_2DOL_SHR0_FSC_GAP);
+	limits->exp_lef_min = IMX675_2DOL_SHR0_FSC_GAP;
 	limits->exp_lef_max = NON_NEGATIVE(limits->max_lpfr - limits->shr0_min);
 	shr0 = _get_mode_reg_val_by_address(&imx675->cur_mode->reg_list, limits->lef_reg, 3);
 	limits->exp_lef_default = MAX(limits->exp_lef_min, NON_NEGATIVE((int)limits->lpfr - (int)shr0));
 
 	limits->sef1_reg = IMX675_REG_SHUTTER_SHORT;
-	limits->shr1_min = IMX675_SHR1_MIN_GAP;
-	limits->shr1_max = NON_NEGATIVE(rhs1 - IMX675_SHR1_RHS1_GAP);
+	limits->shr1_min = IMX675_2DOL_SHR1_MIN_GAP;
+	limits->shr1_max = NON_NEGATIVE(rhs1 - IMX675_2DOL_SHR1_RHS1_GAP);
 	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - limits->shr1_max);
 	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - limits->shr1_min);
 	shr1 = MAX(limits->shr1_min, _get_mode_reg_val_by_address(&imx675->cur_mode->reg_list, limits->sef1_reg, 3));
 	limits->exp_sef1_default = MAX(limits->exp_sef1_min, NON_NEGATIVE((int)rhs1 - (int)shr1));
 
+    // sef2/shr2 are irrelevant for 2dol, using 3dol constants
 	limits->sef2_reg = IMX675_REG_SHUTTER_VERY_SHORT;
-	limits->shr2_min = rhs1 + IMX675_SHR2_RHS1_GAP;
-	limits->shr2_max = NON_NEGATIVE(rhs2 - IMX675_SHR2_RHS2_GAP);
+	limits->shr2_min = rhs1 + IMX675_3DOL_SHR2_RHS1_GAP;
+	limits->shr2_max = NON_NEGATIVE(rhs2 - IMX675_3DOL_SHR2_RHS2_GAP);
 	limits->exp_sef2_min = NON_NEGATIVE(rhs2 - limits->shr2_max);
 	limits->exp_sef2_max = NON_NEGATIVE(rhs2 - limits->shr2_min);
 	shr2 = MAX(limits->shr2_min, _get_mode_reg_val_by_address(&imx675->cur_mode->reg_list, limits->sef2_reg, 3));
 	limits->exp_sef2_default = MAX(limits->exp_sef2_min, NON_NEGATIVE((int)rhs2 - (int)shr2));
 }
 
+static int imx675_set_ctrl_range_and_value(struct imx675 *imx675,
+		struct v4l2_ctrl *ctrl, u32 min, u32 max, u32 step, u32 def)
+{
+	int ret;
+
+	ret = __v4l2_ctrl_modify_range(ctrl, min, max, step, def);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to modify control %s range. "
+			"ret=%d. min=%d, max=%d, default=%d",
+			ctrl->name, ret, min, max, def);
+		return ret;
+	}
+
+	ret = __v4l2_ctrl_s_ctrl(ctrl, def);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to set control %s to default %d. ret=%d",
+			ctrl->name, def, ret);
+		return ret;
+	}
+
+	return 0;
+}
 
 /**
  * imx675_update_exp_vblank_controls() - Update control ranges based on streaming mode
@@ -1030,26 +1427,108 @@ void calculate_exposure_limits(struct imx675* imx675, ExposureLimits limits) {
 static int imx675_update_exp_vblank_controls(struct imx675* imx675)
 {
 	struct ExposureLimits_t limits;
+	const struct imx675_mode *mode = imx675->cur_mode;
 	int ret;
 
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx675, &limits);
 
-	ret = __v4l2_ctrl_modify_range(imx675->lef.exp_ctrl, limits.exp_lef_min, 
+	ret = imx675_set_ctrl_range_and_value(imx675, imx675->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX675_EXPOSURE_STEP, limits.exp_lef_default);
-	if (ret)
+	if (ret) {
+		dev_err(imx675->dev, "Failed to update LEF exposure range and value\n");
 		return ret;
+	}
 
-	ret = __v4l2_ctrl_modify_range(imx675->sef1.exp_ctrl, limits.exp_sef1_min, 
-		limits.exp_sef1_max, IMX675_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
-	if (ret)
-		return ret;
+	if (imx675->cur_mode->dol >= 2) {
+		ret = imx675_set_ctrl_range_and_value(imx675, imx675->sef1.exp_ctrl, limits.exp_sef1_min,
+			limits.exp_sef1_max, IMX675_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
+		if (ret) {
+			dev_err(imx675->dev, "Failed to update SEF1 exposure range and value\n");
+			return ret;
+		}
+	}
 
-	ret = __v4l2_ctrl_modify_range(imx675->sef2.exp_ctrl, limits.exp_sef2_min, 
-		limits.exp_sef2_max, IMX675_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
-	if (ret)
+	if (imx675->cur_mode->dol >= 3) {
+		ret = imx675_set_ctrl_range_and_value(imx675, imx675->sef2.exp_ctrl, limits.exp_sef2_min,
+			limits.exp_sef2_max, IMX675_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
+		if (ret) {
+			dev_err(imx675->dev, "Failed to update SEF2 exposure range and value\n");
+			return ret;
+		}
+	}
+
+	ret = imx675_set_ctrl_range_and_value(imx675, imx675->vblank_ctrl, mode->vblank_min,
+		mode->vblank_max, 1, imx675->vblank);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to update vblank range and value\n");
 		return ret;
-	return __v4l2_ctrl_s_ctrl(imx675->vblank_ctrl, imx675->vblank);
+	}
+
+	return 0;
+}
+
+static int imx675_set_hcg_mode(struct imx675 *imx675, u32 hcg)
+{
+	int ret;
+	ret = imx675_write_reg(imx675, IMX675_REG_HCG, 1, hcg);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to write HCG register: %d\n", ret);
+		return ret;
+	}
+
+	dev_dbg(imx675->dev, "HCG mode set to %s\n", hcg ? "enabled" : "disabled");
+
+	return 0;
+}
+
+static int search_mode(const struct imx675_mode *mode, bool *o_hdr)
+{
+	// First search in HDR modes, then SDR modes
+	if (mode >= supported_hdr_modes && mode < supported_hdr_modes + ARRAY_SIZE(supported_hdr_modes)) {
+		if (o_hdr) *o_hdr = true;
+		return mode - supported_hdr_modes;
+	} else if (mode >= supported_sdr_modes && mode < supported_sdr_modes + ARRAY_SIZE(supported_sdr_modes)) {
+		if (o_hdr) *o_hdr = false;
+		return mode - supported_sdr_modes;
+	}
+
+	pr_err("Error. selected mode was not found!\n");
+	return -1;
+}
+
+static const char *imx675_get_mode_name(struct imx675 *imx675)
+{
+	static char mode_str[32];
+	int fps;
+	int idx;
+
+	fps = imx675->cur_mode->frame_interval.denominator / 
+		imx675->cur_mode->frame_interval.numerator;
+
+	switch (imx675->cur_mode->dol) {
+    case 1:
+        if (imx675->hdr_enabled) {
+            dev_err(imx675->dev, "Invalid HDR mode with dol=%d\n", imx675->cur_mode->dol);
+            return NULL;
+        }
+        idx = search_mode(imx675->cur_mode, NULL);
+        snprintf(mode_str, sizeof(mode_str), "SDR #%d %dfps", idx, fps);
+        return mode_str;
+	case 2:
+	case 3:
+        if (!imx675->hdr_enabled) {
+            dev_err(imx675->dev, "Invalid SDR mode with dol=%d\n", imx675->cur_mode->dol);
+            return NULL;
+        }
+		idx = search_mode(imx675->cur_mode, NULL);
+		snprintf(mode_str, sizeof(mode_str), "HDR #%d, %dDOL %dfps", 
+			idx, imx675->cur_mode->dol, fps);
+		return mode_str;
+	default:
+		dev_err(imx675->dev, "Invalid mode with dol=%d\n", imx675->cur_mode->dol);
+		return NULL;
+	}
 }
 
 /**
@@ -1061,26 +1540,25 @@ static int imx675_update_exp_vblank_controls(struct imx675* imx675)
  *
  * Return: 0 if successful, error code otherwise.
  */
-static int imx675_update_exp_gain(struct imx675 *imx675, u32 exposure, u32 gain, ExposureType exposure_type)
+static int imx675_update_exp_gain(struct imx675 *imx675, u32 exposure, u32 gain, enum imx675_exposure_type exposure_type)
 {
 	u32 lpfr, shutter;
 	int ret;
-	int hdr_multiple = imx675->hdr_enabled ? 3 : 1;
 	int gap;
 
 	switch (exposure_type) {
 		case (LEF): {
-			gap = imx675->hdr_enabled ? imx675->cur_mode->rhs2 + IMX675_SHR0_RHS2_GAP : IMX675_SHR0_FSC_GAP;
+            gap = imx675->hdr_enabled ? imx675->cur_mode->rhs1 + IMX675_2DOL_SHR0_RHS1_GAP : IMX675_2DOL_SHR0_FSC_GAP;
 
 			// If the vblank is too small to fit the requested exposure, increase vblank
-			if (exposure > hdr_multiple * (imx675->vblank + imx675->cur_mode->height) - gap) {
-				imx675->vblank = exposure - hdr_multiple * (imx675->cur_mode->height) + gap;
+			if (exposure > imx675->cur_mode->dol * (imx675->vblank + imx675->cur_mode->height) - gap) {
+				imx675->vblank = exposure - imx675->cur_mode->dol * (imx675->cur_mode->height) + gap;
 				__v4l2_ctrl_s_ctrl(imx675->vblank_ctrl, imx675->vblank);
 			}
 
 			lpfr = imx675->vblank + imx675->cur_mode->height;
 			lpfr += lpfr % 2; // LPFR must be even
-			shutter = NON_NEGATIVE(hdr_multiple * (int)lpfr - (int)exposure);
+			shutter = NON_NEGATIVE(imx675->cur_mode->dol * (int)lpfr - (int)exposure);
 			break;
 		}
 		case (SEF1): {
@@ -1118,7 +1596,6 @@ error_release_group_hold:
 	return ret;
 }
 
-#ifndef BRINGUP_CONFIG
 /*
  * imx675_set_test_pattern - Function called when setting test pattern
  * @priv: Pointer to device structure
@@ -1144,7 +1621,150 @@ static int imx675_set_test_pattern(struct imx675 *imx675, int val)
 	}
 	return ret;
 }
-#endif
+
+static void imx675_set_mode(struct imx675 *imx675, const struct imx675_mode *mode)
+{
+	int ret;
+	imx675->cur_mode = mode;
+	imx675->vblank = mode->vblank;
+
+	/* set the link freq index and the pixel rate controls */
+	if (imx675->link_freq_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl(imx675->link_freq_ctrl, mode->link_freq_idx);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set link freq index to %d.", mode->link_freq_idx);
+	}
+	if (imx675->pclk_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl_int64(imx675->pclk_ctrl, mode->pclk);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set pixel rate to %lld.", mode->pclk);
+	}
+
+	if (imx675->hdr_enabled) {
+		if (mode->dol <= 1)
+			dev_err(imx675->dev, "Set to invalid HDR mode with DOL %d", mode->dol);
+	} else {
+		if (mode->dol > 1)
+			dev_err(imx675->dev, "Set to invalid SDR mode with DOL %d", mode->dol);
+	}
+}
+
+static void imx675_set_exp_activity(struct imx675 *imx675)
+{
+	int dol = imx675->cur_mode->dol;
+	bool sef1, sef2;
+
+	sef1 = dol >= 2;
+	sef2 = dol >= 3;
+
+	v4l2_ctrl_activate(imx675->sef1.again_ctrl, sef1);
+	v4l2_ctrl_activate(imx675->sef1.exp_ctrl, sef1);
+
+	v4l2_ctrl_activate(imx675->sef2.again_ctrl, sef2);
+	v4l2_ctrl_activate(imx675->sef2.exp_ctrl, sef2);
+}
+
+static int imx675_set_hdr_mode(struct imx675 *imx675, bool enable)
+{
+	const struct imx675_mode *prev_mode = NULL;
+	int ret, revert_ret;
+
+	ret = 0;
+	if (imx675->hdr_enabled != enable) {
+		imx675->hdr_enabled = enable;
+		prev_mode = imx675->cur_mode;
+
+		imx675_set_mode(imx675, imx675->hdr_enabled ? 
+								&supported_hdr_modes[DEFAULT_MODE_IDX] :
+								&supported_sdr_modes[DEFAULT_MODE_IDX]);
+
+		ret = imx675_update_exp_vblank_controls(imx675);
+		if (ret) {
+			dev_warn(imx675->dev, "Failed to update exp controls, trying to revert to previous mode\n");
+
+			imx675->hdr_enabled = !imx675->hdr_enabled;
+			imx675_set_mode(imx675, prev_mode);
+
+			revert_ret = imx675_update_exp_vblank_controls(imx675);
+			if (revert_ret)
+				dev_err(imx675->dev, "Failed to revert to previous mode (hdr_enabled back to %d, ret=%d)\n",
+					 imx675->hdr_enabled, revert_ret);
+		}
+
+		dev_dbg(imx675->dev, "Set HDR mode to %d", imx675->hdr_enabled);
+		imx675_set_exp_activity(imx675);
+	}
+
+	return ret;
+}
+
+/**
+ * imx675_get_ctrl() - Get subdevice control
+ * @ctrl: pointer to v4l2_ctrl structure
+ *
+ * Supported controls:
+ * - IMX675_CID_RHS1
+ * - IMX675_CID_RHS2
+ * - IMX675_CID_SHR0
+ * - IMX675_CID_SHR1
+ * - IMX675_CID_SHR2
+ * - IMX675_CID_VMAX
+ * - IMX675_CID_HMAX
+ *
+ * Return: 0 if successful, error code otherwise.
+ */
+static int imx675_get_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct imx675 *imx675 = container_of(ctrl->handler, struct imx675, ctrl_handler);
+	u16 reg = 0;
+	u32 len = 0;
+	int ret = 0;
+
+	switch (ctrl->id) {
+	case IMX675_CID_RHS1:
+		ctrl->val = imx675->cur_mode->rhs1;
+		break;
+	case IMX675_CID_RHS2:
+		ctrl->val = imx675->cur_mode->rhs2;
+		break;
+	case IMX675_CID_SHR0:
+		reg = IMX675_REG_SHUTTER;
+		len = 3;
+		break;
+	case IMX675_CID_SHR1:
+		reg = IMX675_REG_SHUTTER_SHORT;
+		len = 3;
+		break;
+	case IMX675_CID_SHR2:
+		reg = IMX675_REG_SHUTTER_VERY_SHORT;
+		len = 3;
+		break;
+	case IMX675_CID_VMAX:
+		reg = IMX675_REG_LPFR;
+		len = 3;
+		break;
+	case IMX675_CID_HMAX:
+		reg = IMX675_REG_HMAX;
+		len = 2;
+		break;
+	default:
+		dev_err(imx675->dev, "Invalid control %d", ctrl->id);
+		return -EINVAL;
+	}
+
+	if (reg && len) {
+		if (!imx675->streaming) {
+			dev_warn(imx675->dev, "Cannot read register 0x%x from sensor while not streaming\n", reg);
+			return -EBUSY;
+		}
+
+		ret = imx675_read_reg(imx675, reg, len, &ctrl->val);
+		if (ret)
+			dev_err(imx675->dev, "Failed to read register %d", reg);
+	}
+
+	return ret;
+}
 
 /**
  * imx675_set_ctrl() - Set subdevice control
@@ -1164,21 +1784,20 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 	struct imx675 *imx675 =
 		container_of(ctrl->handler, struct imx675, ctrl_handler);
 	u32 analog_gain, exposure, lpfr, max_lpfr;
-	int hdr_multiple = imx675->hdr_enabled ? 3 : 1;
 	int ret;
 
 	switch (ctrl->id) {
 	case V4L2_CID_VBLANK:
 		imx675->vblank = imx675->vblank_ctrl->val;
-		max_lpfr = (imx675->cur_mode->vblank_max + imx675->cur_mode->height) * hdr_multiple;
-		lpfr = (imx675->vblank + imx675->cur_mode->height) * hdr_multiple;
+		max_lpfr = (imx675->cur_mode->vblank_max + imx675->cur_mode->height) * imx675->cur_mode->dol;
+		lpfr = (imx675->vblank + imx675->cur_mode->height) * imx675->cur_mode->dol;
 
 		dev_dbg(imx675->dev, "Received vblank %u, new lpfr %u",
 			imx675->vblank, lpfr);
 		ret = __v4l2_ctrl_modify_range(
-			imx675->lef.exp_ctrl, IMX675_SHR0_FSC_GAP,
-			max_lpfr - imx675->cur_mode->rhs2 - IMX675_SHR0_RHS2_GAP,
-			IMX675_EXPOSURE_STEP, lpfr - imx675->cur_mode->rhs2 - IMX675_SHR0_RHS2_GAP);
+			imx675->lef.exp_ctrl, IMX675_2DOL_SHR0_FSC_GAP,
+			max_lpfr - imx675->cur_mode->rhs1 - IMX675_2DOL_SHR0_RHS1_GAP,
+			IMX675_EXPOSURE_STEP, lpfr - imx675->cur_mode->rhs1 - IMX675_2DOL_SHR0_RHS1_GAP);
 		break;
 	case V4L2_CID_EXPOSURE:
 
@@ -1235,7 +1854,6 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 		pm_runtime_put(imx675->dev);
 
 		break;
-#ifndef BRINGUP_CONFIG
 	case V4L2_CID_TEST_PATTERN:
 		if (!pm_runtime_get_if_in_use(imx675->dev))
 			return 0;
@@ -1244,26 +1862,33 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 		pm_runtime_put(imx675->dev);
 
 		break;
-#endif
+	case IMX675_CID_HCG:
+		/* Set controls only if sensor is in power on state */
+		if (!pm_runtime_get_if_in_use(imx675->dev))
+			return 0;
+		
+		dev_dbg(imx675->dev, "Setting HCG to %u\n", ctrl->val);
+
+		ret = imx675_set_hcg_mode(imx675, ctrl->val);
+		if (ret) {
+			dev_err(imx675->dev, "Failed to set HCG mode: %d\n", ret);
+		}
+		pm_runtime_put(imx675->dev);
+		break;
+
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
 		if (imx675->streaming) {
 			dev_warn(imx675->dev,
 				"Cannot set WDR mode while streaming\n");
-			return 0;
+			return -EBUSY;
 		}
 
-		ret = 0;
-		if (imx675->hdr_enabled != ctrl->val) {
-			imx675->hdr_enabled = ctrl->val;
-			dev_dbg(imx675->dev, "hdr enable set to %d\n", imx675->hdr_enabled);
-			imx675->cur_mode = imx675->hdr_enabled ? &supported_hdr_modes[DEFAULT_MODE_IDX] : &supported_sdr_modes[DEFAULT_MODE_IDX];
-			imx675->vblank = imx675->cur_mode->vblank;
-
-			v4l2_ctrl_activate(imx675->sef1.exp_ctrl, ctrl->val);
-			v4l2_ctrl_activate(imx675->sef2.exp_ctrl, ctrl->val);
-			ret = imx675_update_exp_vblank_controls(imx675);
-		}
+		ret = imx675_set_hdr_mode(imx675, ctrl->val);
 		break;		
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
+		break;	
 	default:
 		dev_err(imx675->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -1462,7 +2087,8 @@ static int imx675_set_pad_format(struct v4l2_subdev *sd,
 	
 	ret = imx675_get_fmt_mode(imx675, fmt, &mode);
 	if(ret){
-		pr_err("%s - get_fmt failed with %d\n", __func__, ret);
+		pr_err("%s - get_fmt failed with %d (h=%d, w=%d, code: %d)\n", __func__,
+			ret, fmt->format.width, fmt->format.height, fmt->format.code);
 		goto out;
 	}
 
@@ -1471,8 +2097,7 @@ static int imx675_set_pad_format(struct v4l2_subdev *sd,
 	// even if which is V4L2_SUBDEV_FORMAT_TRY, update current format for tuning case
 	memcpy(&imx675->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
 	if (compare_imx675_mode(mode, imx675->cur_mode)) {
-		imx675->cur_mode = mode;
-		imx675->vblank = mode->vblank;
+		imx675_set_mode(imx675, mode);
 		ret = imx675_update_exp_vblank_controls(imx675);
 	}
 
@@ -1501,6 +2126,7 @@ static int imx675_init_pad_cfg(struct v4l2_subdev *sd,
 	imx675_fill_pad_format(imx675, &supported_modes[DEFAULT_MODE_IDX], &fmt);
 	return imx675_set_pad_format(sd, sd_state, &fmt);
 }
+
 
 /**
  * imx675_start_streaming() - Start sensor stream
@@ -1543,7 +2169,7 @@ static int imx675_start_streaming(struct imx675 *imx675)
 		return ret;
 	}
 
-	pr_info("imx675: start_streaming successful\n");
+	dev_info(imx675->dev, "imx675: start_streaming successful (%s)", imx675_get_mode_name(imx675));
 	return 0;
 }
 
@@ -1687,8 +2313,7 @@ static int imx675_s_frame_interval(struct v4l2_subdev *sd,
 	if (ret == 0) {
 		fi->interval = mode->frame_interval;
 		if (compare_imx675_mode(mode, imx675->cur_mode)) {
-			imx675->cur_mode = mode;
-			imx675->vblank = mode->vblank;
+			imx675_set_mode(imx675, mode);
 			ret = imx675_update_exp_vblank_controls(imx675);
 		}
 	}
@@ -1710,7 +2335,14 @@ static int imx675_g_frame_interval(struct v4l2_subdev *sd,
 
 	return 0;
 }
-
+/**
+ * check_sensor_id() - Check sensor ID
+ * @imx675: pointer to imx675 device
+ * @id_reg: register address to read sensor ID
+ * @sensor_id: expected sensor ID value
+ *
+ * Return: 0 if successful, -ENXIO if sensor ID does not match
+ */
 static int check_sensor_id(struct imx675 *imx675, u16 id_reg, u8 sensor_id)
 {
 	int ret;
@@ -1738,18 +2370,23 @@ static int check_sensor_id(struct imx675 *imx675, u16 id_reg, u8 sensor_id)
  * imx675_detect() - Detect imx675 sensor
  * @imx675: pointer to imx675 device
  *
- * Return: 0 if successful, -ENXIO if sensor id does not match
+ * Return: 0 if successful, -EIO if sensor id does not match
  */
 static int imx675_detect(struct imx675 *imx675)
 {
-	int ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG, SENSOR_ID_IMX675);
-
+	int ret;
+	
+	ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG, SENSOR_ID_IMX675);
 	if (ret)
 		return ret;
-
-	dev_info(imx675->dev, "sensor detected!");
+	
+	ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG3, IMX675_SENSOR_ID_VAL);
+	if (ret)
+		return ret;
+	
 	return 0;
 }
+
 
 /**
  * imx675_parse_hw_config() - Parse HW configuration and check if supported
@@ -1765,7 +2402,7 @@ static int imx675_parse_hw_config(struct imx675 *imx675)
 	struct fwnode_handle *ep;
 	unsigned long rate;
 	int ret;
-	int i;
+	int i, j;
 
 	if (!fwnode)
 		return -ENXIO;
@@ -1815,16 +2452,24 @@ static int imx675_parse_hw_config(struct imx675 *imx675)
 		goto done_endpoint_free;
 	}
 
-#ifndef BRINGUP_CONFIG
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
-		if (bus_cfg.link_frequencies[i] == IMX675_LINK_FREQ)
+	/* check if all the required frequencies are provided in the device tree */
+	for (i = 0; i < ARRAY_SIZE(link_freq); i++) {
+		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+			if (bus_cfg.link_frequencies[j] ==
+				link_freq[i]) {
+				break;
+			}
+		}
+		if (j == bus_cfg.nr_of_link_frequencies) {
+			dev_err(imx675->dev,
+				"required link frequency %lld not supported in device tree",
+				link_freq[i]);
+			ret = -EINVAL;
 			goto done_endpoint_free;
+		}
+	}
 
-	dev_err(imx675->dev, "link frequency %u was not found in bus cfg", IMX675_LINK_FREQ);
-	ret = -EINVAL;
-#else
-	(void)i;
-#endif
+	ret = 0;
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -1911,10 +2556,9 @@ static int imx675_init_controls(struct imx675 *imx675)
 	struct v4l2_ctrl_handler *ctrl_hdlr = &imx675->ctrl_handler;
 	const struct imx675_mode *mode = imx675->cur_mode;
 	struct ExposureLimits_t limits;
-	int ctrl_3dol_idx = 0;
 	int ret;
 
-	const int num_ctrls = 11;
+	const int num_ctrls = 12;
 
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
@@ -1941,34 +2585,15 @@ static int imx675_init_controls(struct imx675 *imx675)
 	v4l2_ctrl_cluster(2, &imx675->lef.exp_ctrl);
 
 	/* Initialize exposure and gain SEF1 */
-	ctrl_3dol_idx = get_3dol_ctrl_index_by_name("exposure_short");
-	imx675_3dol_ctrls[ctrl_3dol_idx].min = limits.exp_sef1_min;
-	imx675_3dol_ctrls[ctrl_3dol_idx].max = limits.exp_sef1_max;
-	imx675_3dol_ctrls[ctrl_3dol_idx].def = limits.exp_sef1_default;
-	
-	imx675->sef1.exp_ctrl =
-		v4l2_ctrl_new_custom(ctrl_hdlr,
-					 &imx675_3dol_ctrls[ctrl_3dol_idx], NULL);
-	
-	ctrl_3dol_idx = get_3dol_ctrl_index_by_name("analogue_gain_short");
-	imx675->sef1.again_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr,
-					 &imx675_3dol_ctrls[ctrl_3dol_idx], NULL);
-	
+	imx675_setup_custom_ctrl_limits(imx675, &imx675->sef1.exp_ctrl, IMX675_CID_EXPOSURE_SHORT,
+		limits.exp_sef1_min, limits.exp_sef1_max, limits.exp_sef1_default);
+	imx675_setup_custom_ctrl(imx675, &imx675->sef1.again_ctrl, IMX675_CID_ANALOGUE_GAIN_SHORT);
 	v4l2_ctrl_cluster(2, &imx675->sef1.exp_ctrl);
 
 	/* Initialize exposure and gain SEF2 */
-	ctrl_3dol_idx = get_3dol_ctrl_index_by_name("exposure_very_short");
-	imx675_3dol_ctrls[ctrl_3dol_idx].min = limits.exp_sef2_min;
-	imx675_3dol_ctrls[ctrl_3dol_idx].max = limits.exp_sef2_max;
-	imx675_3dol_ctrls[ctrl_3dol_idx].def = limits.exp_sef2_default;
-	
-	imx675->sef2.exp_ctrl =
-		v4l2_ctrl_new_custom(ctrl_hdlr, &imx675_3dol_ctrls[ctrl_3dol_idx], NULL);
-	
-	ctrl_3dol_idx = get_3dol_ctrl_index_by_name("analogue_gain_very_short");
-	imx675->sef2.again_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr,
-					 &imx675_3dol_ctrls[ctrl_3dol_idx], NULL);
-	
+	imx675_setup_custom_ctrl_limits(imx675, &imx675->sef2.exp_ctrl, IMX675_CID_EXPOSURE_VERY_SHORT,
+		limits.exp_sef2_min, limits.exp_sef2_max, limits.exp_sef2_default);
+	imx675_setup_custom_ctrl(imx675, &imx675->sef2.again_ctrl, IMX675_CID_ANALOGUE_GAIN_VERY_SHORT);
 	v4l2_ctrl_cluster(2, &imx675->sef2.exp_ctrl);
 
 	imx675->vblank_ctrl =
@@ -1976,22 +2601,39 @@ static int imx675_init_controls(struct imx675 *imx675)
 				  mode->vblank_min, mode->vblank_max, 1,
 				  mode->vblank);
 
-#ifndef BRINGUP_CONFIG
 	imx675->test_pattern_ctrl = v4l2_ctrl_new_std_menu_items(
 		ctrl_hdlr, &imx675_ctrl_ops, V4L2_CID_TEST_PATTERN,
 		ARRAY_SIZE(imx675_test_pattern_menu) - 1, 0, 0,
 		imx675_test_pattern_menu);
-	
-#endif
+
+	/* Read only HDR custom controls */
+	imx675_setup_custom_ctrl(imx675, &imx675->rhs1_ctrl, IMX675_CID_RHS1);
+	imx675_setup_custom_ctrl(imx675, &imx675->rhs2_ctrl, IMX675_CID_RHS2);
+	imx675_setup_custom_ctrl(imx675, &imx675->shr0_ctrl, IMX675_CID_SHR0);
+	imx675_setup_custom_ctrl(imx675, &imx675->shr1_ctrl, IMX675_CID_SHR1);
+	imx675_setup_custom_ctrl(imx675, &imx675->shr2_ctrl, IMX675_CID_SHR2);
+
+	/* Other read only custom controls */
+	imx675_setup_custom_ctrl(imx675, &imx675->vmax_ctrl, IMX675_CID_VMAX);
+	imx675_setup_custom_ctrl(imx675, &imx675->hmax_ctrl, IMX675_CID_HMAX);
+	/* Initialize HCG control */
+	imx675_setup_custom_ctrl(imx675, &imx675->hcg_ctrl, IMX675_CID_HCG);
+
 	imx675->mode_sel_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx675_ctrl_ops,
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX675_WDR_MIN,
 				IMX675_WDR_MAX, IMX675_WDR_STEP,
 				IMX675_WDR_DEFAULT);
 
 	/* Read only controls */
-	imx675->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx675_ctrl_ops,
-						  V4L2_CID_PIXEL_RATE, mode->pclk,
-						  mode->pclk, 1, mode->pclk);
+	imx675->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx675_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx675->pclk_ctrl)
+		imx675->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx675->link_freq_ctrl = v4l2_ctrl_new_int_menu(
 		ctrl_hdlr, &imx675_ctrl_ops, V4L2_CID_LINK_FREQ,
@@ -2061,8 +2703,7 @@ static int imx675_probe(struct i2c_client *client)
 	}
 
 	/* Set default mode to max resolution sdr */
-	imx675->cur_mode = &supported_sdr_modes[DEFAULT_MODE_IDX];
-	imx675->vblank = imx675->cur_mode->vblank;
+	imx675_set_mode(imx675, &supported_sdr_modes[DEFAULT_MODE_IDX]);
 
 	ret = imx675_init_controls(imx675);
 	if (ret) {
@@ -2160,5 +2801,4 @@ static struct i2c_driver imx675_driver = {
 module_i2c_driver(imx675_driver);
 
 MODULE_DESCRIPTION("Sony imx675 sensor driver");
-MODULE_AUTHOR("Muhyeon Kang, <muhyeon.kang@truen.co.kr>");
 MODULE_LICENSE("GPL");

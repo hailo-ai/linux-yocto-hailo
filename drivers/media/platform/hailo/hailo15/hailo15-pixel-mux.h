@@ -10,6 +10,8 @@
 #define DT_RAW_12 0x2C
 
 #define ENABLE_VC_0_DT_RAW_10 { .enable = 1, .vc = 0, .dt = DT_RAW_10 }
+#define ENABLE_VC_1_DT_RAW_10 { .enable = 1, .vc = 1, .dt = DT_RAW_10 }
+#define ENABLE_VC_2_DT_RAW_10 { .enable = 1, .vc = 2, .dt = DT_RAW_10 }
 #define ENABLE_VC_0_DT_RAW_12 { .enable = 1, .vc = 0, .dt = DT_RAW_12 }
 #define ENABLE_VC_1_DT_RAW_12 { .enable = 1, .vc = 1, .dt = DT_RAW_12 }
 #define ENABLE_VC_2_DT_RAW_12 { .enable = 1, .vc = 2, .dt = DT_RAW_12 }
