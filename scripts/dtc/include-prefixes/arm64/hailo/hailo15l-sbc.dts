@@ -144,6 +144,7 @@
 &sdio0 {
     status = "okay";
     sdhci-caps = <0 0x01000000>; // Force VOLT33 capability
+    sdhci-caps-mask = <0x00000002 0x00000000>;  // Disable support for SDR104
     bus-width = <4>;
     phy-config {
             card-is-emmc = <0x0>;
