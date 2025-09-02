@@ -341,6 +341,9 @@ static int hailo15_video_node_subdev_set_stream(
 	// set the grp_id of subdev to indicate from which pad the call came
 	vid_node->direct_sd->grp_id = vid_node->path;
 
+	// On stream start/stop, reset this boolean so that next stream will start with "false"
+	vid_node->processed_first_buffer = false;
+
 	dev_dbg(vid_node->dev, "before subdev call, stream %s\n", enable ? "on" : "off");
 	ret = hailo15_subdev_call(vid_node, video, s_stream, enable);
 	if (ret) {
@@ -1161,7 +1164,8 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 
 	/* Add given buffer to list of used buffers, and if it's empty - process immediately */
 	mutex_lock(&vid_node->qlock);
-	if (list_empty(&vid_node->buf_queue)) {
+	if (list_empty(&vid_node->buf_queue) && !vid_node->processed_first_buffer) {
+		vid_node->processed_first_buffer = true;
 		if (hailo15_is_p2a_grp_id(vid_node->path)) {
 			vid_node->skip_first_list_entry = true;
 		}
@@ -1196,8 +1200,10 @@ static int hailo15_video_device_buffer_dequeue(struct hailo15_dma_ctx *ctx,
 		return -EINVAL;
 	}
 
-	if (buf != NULL)
+	if (buf != NULL) {
 		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		trace_printk("bufdone: %p\n", &(buf->vb.vb2_buf));
+	}
 	return 0;
 }
 
@@ -1227,6 +1233,15 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		/* not isp flow, we can release buffer immediatly */
 		vid_node->prev_buf = buf;
 	}
+
+	/* Delete buffer from irqlist.
+	   This must happen before the buffer is passed to vb2_buffer_done() and thus can be dequeued by the user
+	   and potentially re-inserted into the irqlist while it is still in the irqlist. */
+	if (buf) {
+		mutex_lock(&vid_node->qlock);
+		list_del(&buf->irqlist);
+		mutex_unlock(&vid_node->qlock);
+	}
 	if (vid_node->prev_buf) {
 		vid_node->prev_buf->vb.sequence = vid_node->sequence++;
 
@@ -1238,20 +1253,16 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_raw_ns();
 		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf,
 					VB2_BUF_STATE_DONE);
+		
+		if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF)
+			trace_printk("ts are invalid! not turned on!\n");
 
+		trace_printk("vid-cap: is_p2a: %d ts: %lld\n",
+			hailo15_is_p2a_grp_id(vid_node->path),
+			vid_node->prev_buf->vb.vb2_buf.timestamp);
 		vid_node->prev_buf = NULL;
 	}
 
-	if (buf) {
-		mutex_lock(&vid_node->qlock);
-		list_del(&buf->irqlist);
-		mutex_unlock(&vid_node->qlock);
-	}
-
-	/* In P2A flow, the first time this function is called, `buf` will be null, and the next value (stored in the shadow register)
-	 * is already the first element in the list. So the next buffer must be different than the first one (already there).
-	 * This means that first buffer in the list will remain a buffer to be skipped (as it represents buffer that is already being processed).
-	 */
 	mutex_lock(&vid_node->qlock);
 	next_buffer = list_first_entry_or_null(
 		&vid_node->buf_queue, struct hailo15_buffer, irqlist);
@@ -1323,6 +1334,7 @@ int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int count)
 
 	dev_dbg(vid_node->dev, "start streaming on node %d\n", vid_node->id);
 
+	
 	if (!vid_node->streaming) {
 		ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
 		if (ret) {

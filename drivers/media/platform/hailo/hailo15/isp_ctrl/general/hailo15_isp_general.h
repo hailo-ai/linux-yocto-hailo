@@ -36,6 +36,7 @@
 #define __HAILO15_ISP_GENERAL_H__
 
 #define HAILO15_ISP_CID_GENERAL_STREAMING (HAILO15_ISP_CID_GENERAL_BASE + 0x0000)
+#define HAILO15_ISP_CID_GENERAL_3A_UNIX_EPOCH (HAILO15_ISP_CID_GENERAL_BASE + 0x0001)
 
 int hailo15_isp_general_ctrl_count(void);
 int hailo15_isp_general_ctrl_create(struct hailo15_isp_device *isp_dev);

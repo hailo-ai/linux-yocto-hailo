@@ -19,7 +19,7 @@
 
     sensor_0: camera-sensor@1a {
         status = "ok";
-        compatible = "sony,imx334", "sony,imx675", "sony,imx678", "sony,imx715";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
@@ -31,7 +31,7 @@
             sensor_out_csi2rx: endpoint {
                 data-lanes = <1 2 3 4>;
                 remote-endpoint = <&csi2rx_in_sensor>;
-                link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
+                link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
             };
         };
      };

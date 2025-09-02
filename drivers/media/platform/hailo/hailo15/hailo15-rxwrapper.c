@@ -324,17 +324,15 @@ struct hailo15_rxwrapper_priv {
 	u64 frame_count;
 
 	/* Defer Interrupt handling variables */
-	struct list_head irq_work_list;
-	spinlock_t irq_work_list_lock;
 	struct workqueue_struct* irq_work_wq;
-	struct work_struct irq_work;
 };
 
 /* Defer Interrupt info element */
 struct hailo15_irq_work {
 	int grp_id;
 	struct hailo15_buffer *dequeued_buf;
-	struct list_head list;
+	struct work_struct work_struct;
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper;
 };
 
 static const struct v4l2_mbus_framefmt fmt_default = {
@@ -722,6 +720,11 @@ static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address_or_null(
 	config_address = buf ? 
 		buf->dma[plane_idx] : 
 		hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr;
+
+	if (config_address == hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr)
+	{
+		trace_printk("Buf drop!\n");
+	}
 	return hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe, config_address);
 }
 
@@ -1218,41 +1221,17 @@ static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
 static void wait_for_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
 	int i = 0;
-	const int MAX_WAIT_ITERS = 40;
+	const int MAX_WAIT_ITERS = 50;
 	const int MSECS_SLEEP = 20;
-	bool ready = false;
-	
-	unsigned long flags;
-	struct hailo15_irq_work *work, *tmp;
-	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
 
 	for (i = 0; i < MAX_WAIT_ITERS; i++) {
-		/* Check no works are waiting to be handled, and that all dispatched works have finished executing */
-		spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
-		ready = list_empty(&hailo15_rxwrapper->irq_work_list) && atomic_read(&hailo15_rxwrapper->num_works_processing) == 0;
-		spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
-
-		if (ready)
+		if (atomic_read(&hailo15_rxwrapper->num_works_processing) == 0)
 			return;
 		msleep(MSECS_SLEEP);
 	}
 
-	/* The work haven't been called this long? Pro-actively clean the queue */
-	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	if (!list_empty(&hailo15_rxwrapper->irq_work_list)) {
-		list_for_each_entry_safe(work, tmp, &hailo15_rxwrapper->irq_work_list, list) {
-			hailo15_dma_buffer_dequeue(ctx, work->grp_id, work->dequeued_buf);
-			list_del(&work->list); // Remove the work from the list
-			kfree(work);           // Free the allocated memory
-		}
-	}
-	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
-
-	/* Note we must use memory barrier to make sure this is the last operation in this function. */
-	mb();
-	if (atomic_read(&hailo15_rxwrapper->num_works_processing) != 0) {
-		pr_err("Deferred work not finished after %d iterations of %d ms - should not happen\n", MAX_WAIT_ITERS, MSECS_SLEEP);
-	}
+	pr_err("Not all deferred works completed after %d iterations (%d ms), processing %d works\n",
+		MAX_WAIT_ITERS, MSECS_SLEEP, atomic_read(&hailo15_rxwrapper->num_works_processing));
 }
 
 static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
@@ -1279,7 +1258,7 @@ static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
 			hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_vision_ss_null_addr);
 	}
 
-	/* Delete all list elements - and dequeue them back to the userspace */
+	/* Delete all list elements - and dequeue them back to the userspace (w/o deferred work) */
 	list_for_each_entry_safe (buf, nbuf, &hailo15_rxwrapper->buf_queue[grp_id], irqlist) {
 		if (buf) {
 			list_del(&buf->irqlist);
@@ -1377,39 +1356,45 @@ void write_next_bufs_to_shadow_regs(struct hailo15_rxwrapper_priv *hailo15_rxwra
 
 static int hailo15_irq_work_enqueue(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_irq_work *work)
 {
-	unsigned long flags;
-
-	if (unlikely(!hailo15_rxwrapper->irq_work_wq)) {
-		pr_err("%s[%d]: irq_work_wq is NULL\n", __func__, __LINE__);
+	if (work == NULL) {
+		pr_err_ratelimited("%s[%d]: Trying to run NULL task. should never happen\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
-	/* Add work to work queue, increase atomic counter of works that are under process
+	/* schedule task to run in workqueue, update atomic counter of tasks not finished yet.
 	 * Place memory barrier to make sure that the increment is done before the work is added to the queue
 	 */
 	atomic_inc(&hailo15_rxwrapper->num_works_processing);
 	mb();
-	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	list_add_tail(&work->list, &hailo15_rxwrapper->irq_work_list);
-	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	queue_work(hailo15_rxwrapper->irq_work_wq, &hailo15_rxwrapper->irq_work);
-
-	return 0;
+	if (queue_work(hailo15_rxwrapper->irq_work_wq, &work->work_struct))
+		return 0;
+	
+	pr_err("Failed to queue work to return buffer to user!\n");
+	atomic_dec(&hailo15_rxwrapper->num_works_processing);
+	
+	return -EBUSY;
 }
 
+void hailo15_rxwrapper_irq_work_handle(struct work_struct *work);
 void dequeue_buffer_with_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_dma_ctx *ctx, int grp_id, struct hailo15_buffer *dequeued_buf)
 {
-	/* Allocate a deferred work */
+	/* Allocate hailo data attached to a single deferred work */
 	struct hailo15_irq_work *work = kzalloc(sizeof(struct hailo15_irq_work), GFP_ATOMIC);
 	if (!work) {
 		pr_err_ratelimited("%s[%d]: failed to allocate irq work\n", __func__, __LINE__);
 		return;
 	}
-	/* Update interrupted pipes to be handled by defer IRQ work. */
+
+	/* Fill hailo data attached to irq */
 	work->dequeued_buf = dequeued_buf;
 	work->grp_id = grp_id;
+	work->hailo15_rxwrapper = hailo15_rxwrapper;
+	INIT_WORK(&work->work_struct, hailo15_rxwrapper_irq_work_handle);
 
-	hailo15_irq_work_enqueue(hailo15_rxwrapper, work);
+	if (hailo15_irq_work_enqueue(hailo15_rxwrapper, work) != 0) {
+		pr_err("Critical! could not enqueue work to return buffer to user!\n");
+		kfree(work);
+	}
 }
 
 void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, bool is_first_frame_hdr, u32 real_pipe, u32 grp_id)
@@ -1419,6 +1404,9 @@ void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrap
 	struct hailo15_buffer *dequeued_buf;
 	unsigned long flags;
 	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
+
+    struct hailo15_buffer *buf2, *buf3;
+    int counter = 0;
 
 	unprocessed_ready = check_unprocessed_credits(hailo15_rxwrapper, real_pipe, unprocessed_frames, is_first_frame_hdr);
 
@@ -1442,6 +1430,12 @@ void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrap
 		}
 		
 		write_next_bufs_to_shadow_regs(hailo15_rxwrapper, real_pipe, grp_id);
+
+        list_for_each_entry_safe (buf2, buf3, &hailo15_rxwrapper->buf_queue[grp_id], irqlist) {
+                counter++;
+        }
+ 
+        trace_printk("buf_dq size = %d. works waiting: %d\n", counter, atomic_read(&hailo15_rxwrapper->num_works_processing));
 
 		/* Pass buffer back to userspace (deferred work - outside of critical section) */
 		spin_unlock_irqrestore(&hailo15_rxwrapper->buf_lock, flags);
@@ -1593,48 +1587,23 @@ static int hailo15_rxwrapper_get_private_data(struct hailo15_dma_ctx *ctx,
 	return 0;
 }
 
-static struct hailo15_irq_work * hailo15_irq_work_dequeue(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
-{
-	struct hailo15_irq_work *work;
-	unsigned long flags;
-
-	if (unlikely(!hailo15_rxwrapper->irq_work_wq)) {
-		pr_err("%s[%d]: irq_work_wq is NULL\n", __func__, __LINE__);
-		return NULL;
-	}
-
-	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
-	work = list_first_entry_or_null(&hailo15_rxwrapper->irq_work_list, struct hailo15_irq_work, list);
-	if (work)
-		list_del(&work->list);
-	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
-
-	return work;
-}
-
 static int hailo15_irq_work_queue_release(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
-	unsigned long flags;
-	struct hailo15_irq_work *work, *tmp;
 	if (unlikely(!hailo15_rxwrapper)) {
 		pr_err("%s[%d]: hailo15_rxwrapper is NULL\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	pr_debug("%s[%d]: rxwrapper_work_wq flush and destroy...\n", __FUNCTION__, __LINE__);
-	spin_lock_irqsave(&hailo15_rxwrapper->irq_work_list_lock, flags);
 	flush_workqueue(hailo15_rxwrapper->irq_work_wq);
 	destroy_workqueue(hailo15_rxwrapper->irq_work_wq);
-	list_for_each_entry_safe(work, tmp, &hailo15_rxwrapper->irq_work_list, list) {
-		list_del(&work->list); // Remove the work from the list
-		kfree(work);           // Free the allocated memory
-	}
-	spin_unlock_irqrestore(&hailo15_rxwrapper->irq_work_list_lock, flags);
+
+	/* There is no workqueue of deferred tasks, so assert the counter's value is 0 */
+	atomic_set(&hailo15_rxwrapper->num_works_processing, 0);
 
 	return 0;
 }
 
-void hailo15_rxwrapper_irq_work_handle(struct work_struct *work);
 static int hailo15_irq_work_queue_setup(struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
 	if (unlikely(!hailo15_rxwrapper)) {
@@ -1643,10 +1612,7 @@ static int hailo15_irq_work_queue_setup(struct hailo15_rxwrapper_priv *hailo15_r
 	}
 
 	pr_debug("%s[%d]: rxwrapper_work_wq setup...\n", __FUNCTION__, __LINE__);
-	INIT_LIST_HEAD(&hailo15_rxwrapper->irq_work_list);
-	spin_lock_init(&hailo15_rxwrapper->irq_work_list_lock);
 	hailo15_rxwrapper->irq_work_wq = alloc_ordered_workqueue("rxwrapper_work_wq", WQ_HIGHPRI);
-	INIT_WORK(&hailo15_rxwrapper->irq_work, hailo15_rxwrapper_irq_work_handle);
 
 	return 0;
 }
@@ -1711,22 +1677,14 @@ static bool hailo15_rxwrapper_check_all_hdr_exposures_rdy(
 
 void hailo15_rxwrapper_irq_work_handle(struct work_struct *work)
 {
-	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
-		(struct hailo15_rxwrapper_priv *)container_of(work, struct hailo15_rxwrapper_priv, irq_work);
+	struct hailo15_irq_work *hailo_work = container_of(work	, struct hailo15_irq_work, work_struct);
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = hailo_work->hailo15_rxwrapper;
 	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
-	struct hailo15_irq_work *h15_irq_work = hailo15_irq_work_dequeue(hailo15_rxwrapper);
-
-	if (!h15_irq_work) {
-		pr_warn("%s[%d]: irq_work is NULL - possible if it's the end of stream\n", __func__, __LINE__);
-		goto work_done;
-	}
 
 	hailo15_rxwrapper->frame_count++;
-	hailo15_dma_buffer_dequeue(ctx, h15_irq_work->grp_id, h15_irq_work->dequeued_buf);
-	kfree(h15_irq_work);
+	hailo15_dma_buffer_dequeue(ctx, hailo_work->grp_id, hailo_work->dequeued_buf);
+	kfree(hailo_work);
 
-
-work_done:
 	/* Decrease counter of works under processing.
 	 * Note we must use memory barrier to make sure this is the last operation in this function.
 	 */

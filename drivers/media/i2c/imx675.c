@@ -24,11 +24,27 @@
  * TODO: Remove this definition when the driver is fully implemented:
  * HDR support
  * dphy datarate is sensor dependant, instead of hardcoded in device tree (for SDR) -
- * 		imx334/imx678 - sensor is configured with 1782Mbps (default in both)
+ * 		imx334/imx675 - sensor is configured with 1782Mbps (default in both)
  * 		imx675 - sensor is configured with 720Mbps
  * 		csi - currently always configured with 891Mbps
 */
 #define BRINGUP_CONFIG
+
+/* Input clock rate */
+enum imx675_input_clk_rate_code {
+	INPUT_CLK_74_25_MHZ = 0,
+	INPUT_CLK_37_125_MHZ,
+	INPUT_CLK_72_MHZ,
+	INPUT_CLK_27_MHZ,
+	INPUT_CLK_24_MHZ,
+	INPUT_CLK_36_MHZ,
+	INPUT_CLK_18_MHZ,
+	INPUT_CLK_13_5_MHZ,
+};
+
+#define IMX675_INCLK_CODE INPUT_CLK_27_MHZ
+#define IMX675_2DOL_RHS1 0x8d
+#define IMX675_INCLK_RATE 24000000
 
 #define DEFAULT_MODE_IDX 0
 
@@ -106,7 +122,6 @@
 #define IMX675_INCLK_RATE 24000000
 
 /* CSI2 HW configuration */
-#define IMX675_LINK_FREQ 720000000
 #define IMX675_NUM_DATA_LANES 4
 
 #define IMX675_REG_MIN 0x00
@@ -229,6 +244,7 @@ u32 _get_mode_reg_val_by_address(const struct imx675_reg_list *reg_list, u16 reg
  * @pclk: Sensor pixel clock
  * @link_freq_idx: Link frequency index
  * @reg_list: Register list for sensor mode
+ * @dol: DOL (Digital Overlap) mode level
  */
 struct imx675_mode {
 	u32 width;
@@ -242,6 +258,7 @@ struct imx675_mode {
 	u32 link_freq_idx;
 	u32 rhs1;
 	u32 rhs2;
+	u32 dol;
 	struct imx675_reg_list reg_list;
 	struct v4l2_fract frame_interval;
 };
@@ -311,7 +328,7 @@ struct imx675 {
 };
 
 static const s64 link_freq[] = {
-	IMX675_LINK_FREQ,
+	720000000, 1188000000,
 };
 
 static const struct imx675_reg mode_native_5mp_all_pixel_30fps[] = {
@@ -732,6 +749,215 @@ static const struct imx675_reg mode_fhd_crop_30fps[] = {
 	/* Using default value for 0x4570 (0x06) */
 };
 
+static const struct imx675_reg mode_native_5mp_2dol_all_pixel_30fps[] = {
+	/* Using default value for 0x3000 (STANDBY, 0x01) */
+	/* Using default value for 0x3001 (REGHOLD, 0x00) */
+	/* Using default value for 0x3002 (XMSTA, 0x01) */
+	{ 0x3014, IMX675_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
+	/* Using default value for 0x3015 (DATARATE_SEL [3:0], 0x04) */
+	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
+	/* Using default value for 0x3019 (CFMODE, 0x00) */
+	{ 0x301A, 0x01 }, /* WDMODE [7:0] */
+	/* Using default value for 0x301B (ADDMODE [1:0], 0x00) */
+	{ 0x301C, 0x01 }, /* THIN_V_EN [7:0] */
+	/* Using default value for 0x301E (VCMODE [7:0], 0x01) */
+	/* Using default value for 0x3020 (HREVERSE, 0x00) */
+	/* Using default value for 0x3021 (VREVERSE, 0x00) */
+	{ 0x3022, 0x01 }, /* ADBIT [1:0] */
+	/* Using default value for 0x3023 (MDBIT, 0x01) */
+	{ 0x3028, 0x04 }, /* VMAX [19:0] */ // decimal 2052
+	{ 0x3029, 0x08 },
+	/* Using default value for 0x302A (0x00) */
+	{ 0x302C, 0x5a }, /* HMAX [15:0] */ // decimal 602
+	{ 0x302D, 0x02 },
+	/* Using default value for 0x3030 (FDG_SEL0 [1:0], 0x00) */
+	/* Using default value for 0x3031 (FDG_SEL1 [1:0], 0x00) */
+	/* Using default value for 0x3032 (FDG_SEL2 [1:0], 0x00) */
+	/* Using default value for 0x303C (PIX_HST [12:0], 0x00) */
+	/* Using default value for 0x303D (0x00) */
+	{ 0x303E, LOW_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x30) -> recommended resolution)
+	{ 0x303F, HIGH_U8_OF_U16(RES_5MP_WIDTH) }, // MANUAL (default(0x0A) -> recommended resolution)
+	/* Using default value for 0x3040 (LANEMODE [2:0], 0x03) */
+	/* Using default value for 0x3044 (PIX_VST [11:0], 0x00) */
+	/* Using default value for 0x3045 (0x00) */
+	{ 0x3046, LOW_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0xAC) -> recommended resolution)
+	{ 0x3047, HIGH_U8_OF_U16(RES_5MP_HEIGHT) }, // MANUAL (default(0x07) -> recommended resolution)
+	/* Using default value for 0x304C (GAIN_HG0 [10:0], 0x00) */
+	/* Using default value for 0x304D (0x00) */
+	{ 0x3050, 0xf4 }, /* SHR0 [19:0] */ // decimal 1268
+	{ 0x3051, 0x04 },
+	/* Using default value for 0x3052 (0x00) */
+	{ 0x3054, 0x05 }, /* SHR1 [19:0] */ // decimal 5
+	/* Using default value for 0x3055 (0x00) */
+	/* Using default value for 0x3056 (0x00) */
+	/* Using default value for 0x3058 (SHR2 [19:0], 0x53) */
+	/* Using default value for 0x3059 (0x00) */
+	/* Using default value for 0x305A (0x00) */
+	{ 0x3060, IMX675_2DOL_RHS1 }, // MANUAL (0x81 -> ISP's limit)
+	/* Using default value for 0x3061 (0x00) */
+	/* Using default value for 0x3062 (0x00) */
+	/* Using default value for 0x3064 (RHS2 [19:0], 0x56) */
+	/* Using default value for 0x3065 (0x00) */
+	/* Using default value for 0x3066 (0x00) */
+	/* Using default value for 0x3070 (GAIN_0 [10:0], 0x00) */
+	/* Using default value for 0x3071 (0x00) */
+	/* Using default value for 0x3072 (GAIN_1 [10:0], 0x00) */
+	/* Using default value for 0x3073 (0x00) */
+	/* Using default value for 0x3074 (GAIN_2 [10:0], 0x00) */
+	/* Using default value for 0x3075 (0x00) */
+	/* Using default value for 0x30A4 (XVSOUTSEL [1:0], 0xAA) */
+	{ 0x30A6, 0x00 }, /* XVS_DRV [1:0] */
+	/* Using default value for 0x30CC (0x00) */
+	/* Using default value for 0x30CD (0x00) */
+	{ 0x30CE, 0x02 },
+	/* Using default value for 0x30DC (BLKLEVEL [9:0], 0x32) */
+	/* Using default value for 0x30DD (0x40) */
+	/* Using default value for 0x310C (0x01) */
+	/* Using default value for 0x3130 (0x01) */
+	{ 0x3148, 0x00 },
+	/* Using default value for 0x315E (0x10) */
+	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ 0x3460, 0x22 },
+	{ 0x347B, 0x02 },
+	{ 0x3492, 0x08 },
+	/* Using default value for 0x3890 (HFR_EN [3:0], 0x08) */
+	/* Using default value for 0x3891 (0x00) */
+	/* Using default value for 0x3893 (0x00) */
+	{ 0x3B1D, 0x17 },
+	{ 0x3B44, 0x3F },
+	{ 0x3B60, 0x03 },
+	{ 0x3C03, 0x04 },
+	{ 0x3C04, 0x04 },
+	{ 0x3C0A, 0x1f },
+	{ 0x3C0B, 0x1f },
+	{ 0x3C0C, 0x1f },
+	{ 0x3C0D, 0x1f },
+	{ 0x3C0E, 0x1f },
+	{ 0x3C0F, 0x1f },
+	{ 0x3C30, 0x73 },
+	{ 0x3C3C, 0x20 },
+	/* Using default value for 0x3C44 (0x06) */
+	{ 0x3C7C, 0xB9 },
+	{ 0x3C7D, 0x01 },
+	{ 0x3C7E, 0xB7 },
+	{ 0x3C7F, 0x01 },
+	{ 0x3CB0, 0x00 },
+	{ 0x3CB2, 0xFF },
+	{ 0x3CB3, 0x03 },
+	{ 0x3CB4, 0xFF },
+	{ 0x3CB5, 0x03 },
+	{ 0x3CBA, 0xFF },
+	{ 0x3CBB, 0x03 },
+	{ 0x3CC0, 0xFF },
+	{ 0x3CC1, 0x03 },
+	{ 0x3CC2, 0x00 },
+	{ 0x3CC6, 0xFF },
+	{ 0x3CC7, 0x03 },
+	{ 0x3CC8, 0xFF },
+	{ 0x3CC9, 0x03 },
+	{ 0x3E00, 0x1E },
+	{ 0x3E02, 0x04 },
+	{ 0x3E03, 0x00 },
+	{ 0x3E20, 0x04 },
+	{ 0x3E21, 0x00 },
+	{ 0x3E22, 0x1E },
+	{ 0x3E24, 0xBA },
+	{ 0x3E72, 0x85 },
+	{ 0x3E76, 0x0C },
+	{ 0x3E77, 0x01 },
+	{ 0x3E7A, 0x85 },
+	{ 0x3E7E, 0x1F },
+	{ 0x3E82, 0xA6 },
+	{ 0x3E86, 0x2D },
+	{ 0x3EE2, 0x33 },
+	{ 0x3EE3, 0x03 },
+	{ 0x4490, 0x07 },
+	{ 0x4494, 0x19 },
+	{ 0x4495, 0x00 },
+	{ 0x4496, 0xBB },
+	{ 0x4497, 0x00 },
+	{ 0x4498, 0x55 },
+	{ 0x449A, 0x50 },
+	{ 0x449C, 0x50 },
+	{ 0x449E, 0x50 },
+	{ 0x44A0, 0x3C },
+	{ 0x44A2, 0x19 },
+	{ 0x44A4, 0x19 },
+	{ 0x44A6, 0x19 },
+	{ 0x44A8, 0x4B },
+	{ 0x44AA, 0x4B },
+	{ 0x44AC, 0x4B },
+	{ 0x44AE, 0x4B },
+	{ 0x44B0, 0x3C },
+	{ 0x44B2, 0x19 },
+	{ 0x44B4, 0x19 },
+	{ 0x44B6, 0x19 },
+	{ 0x44B8, 0x4B },
+	{ 0x44BA, 0x4B },
+	{ 0x44BC, 0x4B },
+	{ 0x44BE, 0x4B },
+	{ 0x44C0, 0x3C },
+	{ 0x44C2, 0x19 },
+	{ 0x44C4, 0x19 },
+	{ 0x44C6, 0x19 },
+	{ 0x44C8, 0xF0 },
+	{ 0x44CA, 0xEB },
+	{ 0x44CC, 0xEB },
+	{ 0x44CE, 0xE6 },
+	{ 0x44D0, 0xE6 },
+	{ 0x44D2, 0xBB },
+	{ 0x44D4, 0xBB },
+	{ 0x44D6, 0xBB },
+	{ 0x44D8, 0xE6 },
+	{ 0x44DA, 0xE6 },
+	{ 0x44DC, 0xE6 },
+	{ 0x44DE, 0xE6 },
+	{ 0x44E0, 0xE6 },
+	{ 0x44E2, 0xBB },
+	{ 0x44E4, 0xBB },
+	{ 0x44E6, 0xBB },
+	{ 0x44E8, 0xE6 },
+	{ 0x44EA, 0xE6 },
+	{ 0x44EC, 0xE6 },
+	{ 0x44EE, 0xE6 },
+	{ 0x44F0, 0xE6 },
+	{ 0x44F2, 0xBB },
+	{ 0x44F4, 0xBB },
+	{ 0x44F6, 0xBB },
+	{ 0x4538, 0x15 },
+	{ 0x4539, 0x15 },
+	{ 0x453A, 0x15 },
+	{ 0x4544, 0x15 },
+	{ 0x4545, 0x15 },
+	{ 0x4546, 0x15 },
+	{ 0x4550, 0x10 },
+	{ 0x4551, 0x10 },
+	{ 0x4552, 0x10 },
+	{ 0x4553, 0x10 },
+	{ 0x4554, 0x10 },
+	{ 0x4555, 0x10 },
+	{ 0x4556, 0x10 },
+	{ 0x4557, 0x10 },
+	{ 0x4558, 0x10 },
+	{ 0x455C, 0x10 },
+	{ 0x455D, 0x10 },
+	{ 0x455E, 0x10 },
+	{ 0x455F, 0x10 },
+	{ 0x4560, 0x10 },
+	{ 0x4561, 0x10 },
+	{ 0x4562, 0x10 },
+	{ 0x4563, 0x10 },
+	{ 0x4564, 0x10 },
+	/* Using default value for 0x4569 (0x01) */
+	/* Using default value for 0x456A (0x01) */
+	/* Using default value for 0x456B (0x06) */
+	/* Using default value for 0x456C (0x06) */
+	/* Using default value for 0x456D (0x06) */
+	/* Using default value for 0x456E (0x06) */
+	/* Using default value for 0x456F (0x06) */
+	/* Using default value for 0x4570 (0x06) */
+};
+
 #ifndef BRINGUP_CONFIG
 static const struct imx675_reg imx675_tpg_en_regs[] = {
 	//TPG config
@@ -753,8 +979,9 @@ static const struct imx675_mode supported_sdr_modes[] = {
 		.vblank_max = IMX675_MAX_VBLANK_5MP,
 		.rhs1 = 0x0,
 		.rhs2 = 0x0,
-		.pclk = 594000000,
+		.dol = 1,
 		.link_freq_idx = 0,
+		.pclk = link_freq[0],
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_native_5mp_all_pixel_30fps),
@@ -775,8 +1002,9 @@ static const struct imx675_mode supported_sdr_modes[] = {
 		.vblank_max = IMX675_MAX_VBLANK_FHD,
 		.rhs1 = 0x0,
 		.rhs2 = 0x0,
-		.pclk = 594000000,
+		.dol = 1,
 		.link_freq_idx = 0,
+		.pclk = link_freq[0],
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_fhd_crop_30fps),
@@ -790,6 +1018,29 @@ static const struct imx675_mode supported_sdr_modes[] = {
 };
 
 static const struct imx675_mode supported_hdr_modes[] = {
+	// Native 5MP Resolution ("Recommended Pixels") 2DOL 12 bit
+    {
+        .width = RES_5MP_WIDTH,
+        .height = RES_5MP_HEIGHT,
+        .hblank = 0x25a,
+        .vblank = 0x804 - RES_5MP_HEIGHT,
+        .vblank_min = 0x804 - RES_5MP_HEIGHT,
+        .vblank_max = IMX675_MAX_VBLANK_5MP,
+        .rhs1 = 0x8d,
+        .rhs2 = 0x0,
+        .link_freq_idx = 1,
+        .pclk = link_freq[1],
+        .code = MEDIA_BUS_FMT_SRGGB12_2X12,
+		.dol = 2,
+        .reg_list = {
+            .num_of_regs = ARRAY_SIZE(mode_native_5mp_2dol_all_pixel_30fps),
+            .regs = mode_native_5mp_2dol_all_pixel_30fps,
+        },
+        .frame_interval = {
+            .denominator = 30,
+            .numerator = 1,
+        }
+    }
 };
 
 struct v4l2_ctrl_config imx675_3dol_ctrls[] = {
@@ -1146,6 +1397,48 @@ static int imx675_set_test_pattern(struct imx675 *imx675, int val)
 }
 #endif
 
+static void __maybe_unused imx675_set_mode(struct imx675 *imx675, const struct imx675_mode *mode)
+{
+	int ret;
+	imx675->cur_mode = mode;
+	imx675->vblank = mode->vblank;
+
+	/* set the link freq index and the pixel rate controls */
+	if (imx675->link_freq_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl(imx675->link_freq_ctrl, mode->link_freq_idx);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set link freq index to %d.", mode->link_freq_idx);
+	}
+	if (imx675->pclk_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl_int64(imx675->pclk_ctrl, mode->pclk);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set pixel rate to %lld.", mode->pclk);
+	}
+
+	if (imx675->hdr_enabled) {
+		if (mode->dol <= 1)
+			dev_err(imx675->dev, "Set to invalid HDR mode with DOL %d", mode->dol);
+	} else {
+		if (mode->dol > 1)
+			dev_err(imx675->dev, "Set to invalid SDR mode with DOL %d", mode->dol);
+	}
+}
+
+static void __maybe_unused imx675_set_exp_activity(struct imx675 *imx675)
+{
+	int dol = imx675->cur_mode->dol;
+	bool sef1, sef2;
+
+	sef1 = dol >= 2;
+	sef2 = dol >= 3;
+
+	v4l2_ctrl_activate(imx675->sef1.again_ctrl, sef1);
+	v4l2_ctrl_activate(imx675->sef1.exp_ctrl, sef1);
+
+	v4l2_ctrl_activate(imx675->sef2.again_ctrl, sef2);
+	v4l2_ctrl_activate(imx675->sef2.exp_ctrl, sef2);
+}
+
 /**
  * imx675_set_ctrl() - Set subdevice control
  * @ctrl: pointer to v4l2_ctrl structure
@@ -1264,6 +1557,10 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 			ret = imx675_update_exp_vblank_controls(imx675);
 		}
 		break;		
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
+		break;	
 	default:
 		dev_err(imx675->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -1710,46 +2007,58 @@ static int imx675_g_frame_interval(struct v4l2_subdev *sd,
 
 	return 0;
 }
-
+/**
+ * check_sensor_id() - Check sensor ID
+ * @imx675: pointer to imx675 device
+ * @id_reg: register address to read sensor ID
+ * @sensor_id: expected sensor ID value
+ *
+ * Return: 0 if successful, -ENXIO if sensor ID does not match
+ */
 static int check_sensor_id(struct imx675 *imx675, u16 id_reg, u8 sensor_id)
 {
-	int ret;
-	u32 id;
+    int ret;
+    u32 id;
 
-	ret = imx675_read_reg(imx675, id_reg, 1, &id);
-	if (ret) {
-		dev_err(imx675->dev,
-			"failed to read sensor id register 0x%x, ret %d\n",
-			id_reg, ret);
-		return ret;
-	}
+    ret = imx675_read_reg(imx675, id_reg, 1, &id);
+    if (ret) {
+        dev_err(imx675->dev,
+            "failed to read sensor id register 0x%x, ret %d\n",
+            id_reg, ret);
+        return ret;
+    }
 
-	if (id != sensor_id) {
-		dev_info(imx675->dev,
-			"sensor is not connected: (reg %x, expected %x, found %x)",
-			id_reg, sensor_id, id);
-		return -ENXIO;
-	}
+    if (id != sensor_id) {
+        dev_info(imx675->dev,
+            "sensor is not connected: (reg %x, expected %x, found %x)",
+            id_reg, sensor_id, id);
+        return -ENXIO;
+    }
 
-	return 0;
+    return 0;
 }
 
 /**
  * imx675_detect() - Detect imx675 sensor
  * @imx675: pointer to imx675 device
  *
- * Return: 0 if successful, -ENXIO if sensor id does not match
+ * Return: 0 if successful, -EIO if sensor id does not match
  */
 static int imx675_detect(struct imx675 *imx675)
 {
-	int ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG, SENSOR_ID_IMX675);
-
+	int ret;
+	
+	ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG, SENSOR_ID_IMX675);
 	if (ret)
 		return ret;
-
-	dev_info(imx675->dev, "sensor detected!");
+	
+	ret = check_sensor_id(imx675, GENERIC_SENSOR_ID_REG3, IMX675_SENSOR_ID_VAL);
+	if (ret)
+		return ret;
+	
 	return 0;
 }
+
 
 /**
  * imx675_parse_hw_config() - Parse HW configuration and check if supported
@@ -1765,7 +2074,7 @@ static int imx675_parse_hw_config(struct imx675 *imx675)
 	struct fwnode_handle *ep;
 	unsigned long rate;
 	int ret;
-	int i;
+	int i, j;
 
 	if (!fwnode)
 		return -ENXIO;
@@ -1816,14 +2125,27 @@ static int imx675_parse_hw_config(struct imx675 *imx675)
 	}
 
 #ifndef BRINGUP_CONFIG
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
-		if (bus_cfg.link_frequencies[i] == IMX675_LINK_FREQ)
+	/* check if all the required frequencies are provided in the device tree */
+	for (i = 0; i < ARRAY_SIZE(link_freq); i++) {
+		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+			if (bus_cfg.link_frequencies[j] ==
+			    link_freq[i]) {
+				break;
+			}
+		}
+		if (j == bus_cfg.nr_of_link_frequencies) {
+			dev_err(imx675->dev,
+				"required link frequency %lld not supported in device tree",
+				link_freq[i]);
+			ret = -EINVAL;
 			goto done_endpoint_free;
+		}
+	}
 
-	dev_err(imx675->dev, "link frequency %u was not found in bus cfg", IMX675_LINK_FREQ);
-	ret = -EINVAL;
+	ret = 0;
 #else
 	(void)i;
+	(void)j;
 #endif
 
 done_endpoint_free:
@@ -1989,9 +2311,15 @@ static int imx675_init_controls(struct imx675 *imx675)
 				IMX675_WDR_DEFAULT);
 
 	/* Read only controls */
-	imx675->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx675_ctrl_ops,
-						  V4L2_CID_PIXEL_RATE, mode->pclk,
-						  mode->pclk, 1, mode->pclk);
+	imx675->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx675_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx675->pclk_ctrl)
+		imx675->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx675->link_freq_ctrl = v4l2_ctrl_new_int_menu(
 		ctrl_hdlr, &imx675_ctrl_ops, V4L2_CID_LINK_FREQ,
@@ -2160,5 +2488,4 @@ static struct i2c_driver imx675_driver = {
 module_i2c_driver(imx675_driver);
 
 MODULE_DESCRIPTION("Sony imx675 sensor driver");
-MODULE_AUTHOR("Muhyeon Kang, <muhyeon.kang@truen.co.kr>");
 MODULE_LICENSE("GPL");

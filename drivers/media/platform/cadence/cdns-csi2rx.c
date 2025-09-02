@@ -82,7 +82,6 @@ enum csi2rx_fifo_mode {
 
 #define CSI2RX_LANES_MAX 4
 #define CSI2RX_STREAMS_MAX 4
-#define CSI2RX_LINK_FREQ_MAX 3
 
 #define CSI2RX_CID_MODE_SEL (V4L2_CID_USER_BASE + 0x2000)
 
@@ -158,9 +157,6 @@ struct csi2rx_priv {
 	/* Remote source */
 	struct v4l2_subdev *source_subdev;
 	int source_pad;
-
-	// link frequency in which to configure the internal dphy, if exists
-	u64 link_freq[CSI2RX_LINK_FREQ_MAX];
 
 	enum csi2rx_mode cur_mode;
     int irq;
@@ -261,7 +257,9 @@ static const struct csi2rx_fmt *csi2rx_get_fmt_by_code(u32 code)
 
 static int cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 {
-	u64 link_freq = csi2rx->link_freq[csi2rx->cur_mode];
+	struct v4l2_ctrl_handler *ctrl_hdl;
+	struct v4l2_ctrl *ctrl;
+	s64 pixel_rate;
 	int ret = 0;
 
 	if (!csi2rx->dphy) {
@@ -269,8 +267,23 @@ static int cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 		return -ENXIO;
 	}
 
-	if (link_freq == 0) {
-		dev_err(csi2rx->dev, "link_freq for mode %s is not initialized\n",
+	ctrl_hdl = csi2rx->source_subdev->ctrl_handler;
+	if (!ctrl_hdl) {
+		dev_err(csi2rx->dev, "Failed to get ctrl handler %s\n", csi2rx->source_subdev->name);
+		return -ENODEV;
+	}
+
+	ctrl = v4l2_ctrl_find(ctrl_hdl, V4L2_CID_PIXEL_RATE);
+	if (!ctrl) {
+		dev_err(csi2rx->dev, "Sensor does not expose V4L2_CID_PIXEL_RATE\n");
+		return -EINVAL;
+	}
+
+	pixel_rate = v4l2_ctrl_g_ctrl_int64(ctrl);
+	dev_dbg(csi2rx->dev, "pixel_rate: %lld\n", pixel_rate);
+
+	if (pixel_rate == 0) {
+		dev_err(csi2rx->dev, "pixel_rate for mode %s is not initialized\n",
 			csi2rx->cur_mode == CSI2RX_MODE_SDR ? "SDR" : "HDR");
 		return -ENXIO;
 	}
@@ -278,7 +291,7 @@ static int cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 	writel(CSI2RX_DPHY_LANE_CONTROL_REG_LANES_RESET,
 		csi2rx->base + CSI2RX_DPHY_LANE_CONTROL_REG_OFFSET);
 
-	ret = hailo15_dphy_rx_init(csi2rx->dphy, link_freq);
+	ret = hailo15_dphy_rx_init(csi2rx->dphy, pixel_rate);
 	if (ret)
 		return ret;
 
@@ -704,43 +717,6 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 	return 0;
 }
 
-static void csi2rx_parse_v4l2_remote_ep(struct csi2rx_priv *csi2rx)
-{
-	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
-	struct fwnode_handle *fwh;
-	struct device_node *ep;
-	struct fwnode_handle *remote_ep;
-	int i;
-	int ret;
-
-	ep = of_graph_get_endpoint_by_regs(csi2rx->dev->of_node, 0, 0);
-	if (!ep)
-		return;
-	fwh = of_fwnode_handle(ep);
-	remote_ep = fwnode_graph_get_remote_endpoint(fwh);
-	ret = v4l2_fwnode_endpoint_alloc_parse(remote_ep, &v4l2_ep);
-	if (ret) {
-		dev_info(csi2rx->dev, "Could not parse v4l2 remote endpoint\n");
-		of_node_put(ep);
-		v4l2_fwnode_endpoint_free(&v4l2_ep);
-		return;
-	}
-	if (v4l2_ep.nr_of_link_frequencies == 0 ||
-		v4l2_ep.nr_of_link_frequencies > CSI2RX_LINK_FREQ_MAX) {
-		dev_err(csi2rx->dev,
-			"Unsupported number of link frequencies: %d\n",
-			v4l2_ep.nr_of_link_frequencies);
-		return;
-	}
-
-	for (i = 0; i < v4l2_ep.nr_of_link_frequencies; i++){
-		csi2rx->link_freq[i] = v4l2_ep.link_frequencies[i];
-		dev_info(csi2rx->dev, "link_freq[%d] = %llu\n", i, csi2rx->link_freq[i]);
-	}
-	of_node_put(ep);
-	v4l2_fwnode_endpoint_free(&v4l2_ep);
-}
-
 static int csi2rx_parse_dt(struct csi2rx_priv *csi2rx)
 {
 	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
@@ -777,8 +753,6 @@ static int csi2rx_parse_dt(struct csi2rx_priv *csi2rx)
 		of_node_put(ep);
 		return -EINVAL;
 	}
-
-	csi2rx_parse_v4l2_remote_ep(csi2rx);
 
 	v4l2_async_notifier_init(&csi2rx->notifier);
 

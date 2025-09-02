@@ -843,6 +843,34 @@ config VIDEO_IMX334
 	  To compile this driver as a module, choose M here: the
 	  module will be called imx334.
 
+config VIDEO_IMX664
+	tristate "Sony IMX664 sensor support"
+	depends on OF_GPIO
+	depends on I2C && VIDEO_V4L2
+	select VIDEO_V4L2_SUBDEV_API
+	select MEDIA_CONTROLLER
+	select V4L2_FWNODE
+	help
+	  This is a Video4Linux2 sensor driver for the Sony
+	  IMX664 camera.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called imx664.
+
+config VIDEO_IMX675
+	tristate "Sony IMX675 sensor support"
+	depends on OF_GPIO
+	depends on I2C && VIDEO_V4L2
+	select VIDEO_V4L2_SUBDEV_API
+	select MEDIA_CONTROLLER
+	select V4L2_FWNODE
+	help
+	  This is a Video4Linux2 sensor driver for the Sony
+	  IMX678 camera.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called imx675.
+
 config VIDEO_IMX678
 	tristate "Sony IMX678 sensor support"
 	depends on OF_GPIO

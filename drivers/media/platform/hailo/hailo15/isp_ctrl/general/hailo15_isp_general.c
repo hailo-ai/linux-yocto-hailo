@@ -54,6 +54,10 @@ static int hailo15_isp_general_g_ctrl(struct v4l2_ctrl *ctrl)
 		ctrl->val = atomic_read(&isp_dev->streaming_started);
 		break;
 
+	case HAILO15_ISP_CID_GENERAL_3A_UNIX_EPOCH:
+		ret = hailo15_isp_g_ctrl_event(isp_dev, isp_dev->ctrl_pad, ctrl);
+		break;
+
 	default:
 		dev_err(isp_dev->dev, "unknow v4l2 ctrl id %d\n", ctrl->id);
 		return -EACCES;
@@ -79,6 +83,18 @@ const struct v4l2_ctrl_config hailo15_isp_general_ctrls[] = {
 		.min = 0,
 		.max = 1,
 	},
+    {
+        .ops = &hailo15_isp_general_ctrl_ops,
+        .id = HAILO15_ISP_CID_GENERAL_3A_UNIX_EPOCH,
+        .type = V4L2_CTRL_TYPE_U32,
+        .flags = V4L2_CTRL_FLAG_VOLATILE |
+                V4L2_CTRL_FLAG_READ_ONLY,
+        .name = "isp_general_3a_unix_epoch",
+        .step = 1,
+        .min = 0,
+        .max = 4294967295,
+        .dims = { 1 },
+    }
 };
 
 int hailo15_isp_general_ctrl_count(void)
