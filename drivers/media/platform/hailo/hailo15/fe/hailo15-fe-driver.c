@@ -1234,8 +1234,8 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		fe->fe_buff[vdid].refresh_part_regs.cmd_num_max = ISP_FE_REG_PART_REFRESH_NUM;
 		fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
 		fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = (union isp_fe_cmd_u *)dma_alloc_coherent(dev->dev,
-								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max,
-								&fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr + 1, GFP_KERNEL);
+								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max + 1,
+								&fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr, GFP_KERNEL);
 		isp_info("%s:%d refresh_part_regs.cmd_num_max=0x%08x\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_num_max);
 		isp_info("%s:%d refresh_part_regs.cmd_buffer=%p\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_buffer);
 		isp_info("%s:%d refresh_part_regs.cmd_dma_addr=0x%llx\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr);
@@ -1329,7 +1329,7 @@ alloc_full_err:
 alloc_part_err:
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
 		if (fe->fe_buff[vdid].refresh_part_regs.cmd_buffer) {
-			dma_free_coherent(dev->dev, sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max,
+			dma_free_coherent(dev->dev, sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max + 1,
 					fe->fe_buff[vdid].refresh_part_regs.cmd_buffer, fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr);
 			fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = NULL;
 		}
