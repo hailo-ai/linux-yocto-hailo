@@ -20,6 +20,7 @@
 #include "mscc_serdes.h"
 #include "mscc.h"
 
+#define CLK_DELAY_INVALID_VLAUE U32_MAX
 static const struct vsc85xx_hw_stat vsc85xx_hw_stats[] = {
 	{
 		.string	= "phy_receive_errors",
@@ -383,6 +384,53 @@ out_unlock:
 }
 
 #if IS_ENABLED(CONFIG_OF_MDIO)
+
+static int vsc85xx_dt_clock_skew_get(struct device_node *of_node, const char *propname, uint32_t *clk_skew)
+{
+	uint32_t skew_val;
+	int ret;
+
+	ret = of_property_read_u32(of_node, propname, &skew_val);
+	if (ret == -ENODATA) {
+		return 0;
+	} else if (ret < 0) {
+		pr_err("Node %pOF Failed to read %s property: err (%pe)\n", of_node, propname, ERR_PTR(ret));
+		return ret;
+	}
+
+	if (skew_val < RGMII_CLK_DELAY_0_2_NS || skew_val > RGMII_CLK_DELAY_3_4_NS) {
+		pr_warn("Node %pOF Invalid %s property value %u\n", of_node, propname, skew_val);
+		return -EINVAL;
+	}
+
+	*clk_skew = skew_val;
+
+	return 0;
+}
+
+static int vsc85xx_dt_clocks_skew_get(struct phy_device *phydev)
+{
+	struct vsc8531_private *priv = phydev->priv;
+	struct device *dev = &phydev->mdio.dev;
+	struct device_node *of_node = dev->of_node;
+	int rc;
+
+	priv->rx_clk_skew = CLK_DELAY_INVALID_VLAUE;
+	priv->tx_clk_skew = CLK_DELAY_INVALID_VLAUE;
+	if (!of_node)
+		return -ENODEV;
+
+	rc = vsc85xx_dt_clock_skew_get(of_node, "vsc8531,tx-clk-skew", &priv->tx_clk_skew);
+	if (rc < 0) {
+		return rc;
+	}
+	rc = vsc85xx_dt_clock_skew_get(of_node, "vsc8531,rx-clk-skew", &priv->rx_clk_skew);
+	if (rc < 0) {
+		return rc;
+	}
+	return 0;
+}
+
 static int vsc85xx_edge_rate_magic_get(struct phy_device *phydev)
 {
 	u32 vdd, sd;
@@ -444,6 +492,17 @@ static int vsc85xx_dt_led_mode_get(struct phy_device *phydev,
 {
 	return default_mode;
 }
+
+static int vsc85xx_dt_clocks_skew_get(struct phy_device *phydev)
+{
+	struct vsc8531_private *priv = phydev->priv;
+
+	priv->rx_clk_skew = CLK_DELAY_INVALID_VLAUE;
+	priv->tx_clk_skew = CLK_DELAY_INVALID_VLAUE;
+	
+	return 0;
+}
+
 #endif /* CONFIG_OF_MDIO */
 
 static int vsc85xx_dt_led_modes_get(struct phy_device *phydev,
@@ -531,6 +590,7 @@ static int vsc85xx_rgmii_set_skews(struct phy_device *phydev, u32 rgmii_cntl,
 				   u16 rgmii_rx_delay_mask,
 				   u16 rgmii_tx_delay_mask)
 {
+	struct vsc8531_private *vsc8531 = phydev->priv;
 	u16 rgmii_rx_delay_pos = ffs(rgmii_rx_delay_mask) - 1;
 	u16 rgmii_tx_delay_pos = ffs(rgmii_tx_delay_mask) - 1;
 	u16 reg_val = 0;
@@ -538,12 +598,27 @@ static int vsc85xx_rgmii_set_skews(struct phy_device *phydev, u32 rgmii_cntl,
 
 	mutex_lock(&phydev->lock);
 
-	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID ||
-	    phydev->interface == PHY_INTERFACE_MODE_RGMII_ID)
-		reg_val |= RGMII_CLK_DELAY_2_0_NS << rgmii_rx_delay_pos;
-	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID ||
-	    phydev->interface == PHY_INTERFACE_MODE_RGMII_ID)
-		reg_val |= RGMII_CLK_DELAY_2_0_NS << rgmii_tx_delay_pos;
+	if (vsc8531->rx_clk_skew == CLK_DELAY_INVALID_VLAUE) {
+		vsc8531->rx_clk_skew = RGMII_CLK_DELAY_0_2_NS;
+		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID ||
+			phydev->interface == PHY_INTERFACE_MODE_RGMII_ID) {
+			vsc8531->rx_clk_skew = RGMII_CLK_DELAY_2_0_NS;
+		}
+	}
+
+	if (vsc8531->tx_clk_skew == CLK_DELAY_INVALID_VLAUE) {
+		vsc8531->tx_clk_skew = RGMII_CLK_DELAY_0_2_NS;
+		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID ||
+		    phydev->interface == PHY_INTERFACE_MODE_RGMII_ID) {
+			vsc8531->tx_clk_skew = RGMII_CLK_DELAY_2_0_NS;
+		}
+	}
+
+	dev_dbg(&phydev->mdio.dev, "set RX_CLK delay = %u, TX_CLK delay = %u\n",
+		vsc8531->rx_clk_skew, vsc8531->tx_clk_skew);
+
+	reg_val |= (u16)(vsc8531->rx_clk_skew) << rgmii_rx_delay_pos;
+	reg_val |= (u16)(vsc8531->tx_clk_skew) << rgmii_tx_delay_pos;
 
 	rc = phy_modify_paged(phydev, MSCC_PHY_PAGE_EXTENDED_2,
 			      rgmii_cntl,
@@ -2295,7 +2370,7 @@ static int vsc8584_probe(struct phy_device *phydev)
 static int vsc85xx_probe(struct phy_device *phydev)
 {
 	struct vsc8531_private *vsc8531;
-	int rate_magic;
+	int rate_magic, rc;
 	u32 default_mode[2] = {VSC8531_LINK_1000_ACTIVITY,
 	   VSC8531_LINK_100_ACTIVITY};
 
@@ -2319,6 +2394,9 @@ static int vsc85xx_probe(struct phy_device *phydev)
 	if (!vsc8531->stats)
 		return -ENOMEM;
 
+	rc = vsc85xx_dt_clocks_skew_get(phydev);
+	if( rc < 0)
+		return rc;
 	return vsc85xx_dt_led_modes_get(phydev, default_mode);
 }
 

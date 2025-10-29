@@ -23,8 +23,16 @@ static int scmi_hailo_get_fuse_info(struct scmi_hailo_get_fuse_info_p2a *fuse_in
 static int scmi_hailo_send_boot_success_ind(struct scmi_hailo_boot_success_indication_a2p *params);
 static int scmi_hailo_send_swupdate_ind(void);
 static int scmi_hailo_send_send_components_version(struct scmi_hailo_send_components_version_p2a *info);
+static int scmi_hailo_get_jtag_selector(u8 *jtag_selector);
+static int scmi_hailo_set_jtag_selector(u8 jtag_selector);
 static int scmi_hailo_set_i2s_source_clk(struct scmi_hailo_set_i2s_source_clock_a2p *params);
 static int scmi_hailo_set_spi_interrupt_forwarding(struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
+static int scmi_hailo_set_throttling_mode(struct scmi_hailo_set_throttling_mode_a2p *params);
+static int scmi_hailo_get_throttling_mode(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+static int scmi_hailo_set_source_clock(struct scmi_hailo_set_source_clock_a2p *params);
+static int scmi_hailo_get_source_clock(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
+static int scmi_hailo_get_identification_attributes(struct scmi_hailo_identification_attributes_p2a *params);
+static int scmi_hailo_get_sku_id(struct scmi_hailo_get_sku_id_p2a *params);
 
 const struct scmi_hailo_ops ops = {
 	.register_notifier = scmi_hailo_register_notifier,
@@ -37,8 +45,16 @@ const struct scmi_hailo_ops ops = {
 	.send_boot_success_ind = scmi_hailo_send_boot_success_ind,
 	.send_swupdate_ind = scmi_hailo_send_swupdate_ind,
 	.send_components_version = scmi_hailo_send_send_components_version,
+	.get_jtag_selector = scmi_hailo_get_jtag_selector,
+	.set_jtag_selector = scmi_hailo_set_jtag_selector,
 	.set_i2s_source_clk = scmi_hailo_set_i2s_source_clk,
 	.set_spi_interrupt_forwarding = scmi_hailo_set_spi_interrupt_forwarding,
+	.set_throttling_mode = scmi_hailo_set_throttling_mode,
+	.get_throttling_mode = scmi_hailo_get_throttling_mode,
+	.set_source_clock = scmi_hailo_set_source_clock,
+	.get_source_clock = scmi_hailo_get_source_clock,
+	.get_identification_attributes = scmi_hailo_get_identification_attributes,
+	.get_sku_id = scmi_hailo_get_sku_id,
 };
 
 static int scmi_hailo_register_notifier(u8 evt_id, struct notifier_block *nb)
@@ -111,14 +127,66 @@ static int scmi_hailo_send_send_components_version(struct scmi_hailo_send_compon
 	return hailo_ops->send_components_version(ph, info);
 }
 
-static int scmi_hailo_set_i2s_source_clk(struct scmi_hailo_set_i2s_source_clock_a2p  *params)
+static int scmi_hailo_get_jtag_selector(u8 *jtag_selector)
+{
+	struct scmi_hailo_get_jtag_p2a info;
+	int ret;
+
+	ret = hailo_ops->get_jtag_selector(ph, &info);
+	if (ret)
+		return ret;
+
+	*jtag_selector = info.value;
+	return 0;
+}
+
+static int scmi_hailo_set_jtag_selector(u8 jtag_selector)
+{
+	struct scmi_hailo_set_jtag_a2p params = {
+		.value = jtag_selector,
+	};
+
+	return hailo_ops->set_jtag_selector(ph, &params);
+}
+
+static int scmi_hailo_set_i2s_source_clk(struct scmi_hailo_set_i2s_source_clock_a2p *params)
 {
 	return hailo_ops->set_i2s_source_clk(ph, params);
 }
 
-static int scmi_hailo_set_spi_interrupt_forwarding(struct scmi_hailo_set_spi_interrupt_forwarding_a2p  *params)
+static int scmi_hailo_set_spi_interrupt_forwarding(struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params)
 {
 	return hailo_ops->set_spi_interrupt_forwarding(ph, params);
+}
+
+static int scmi_hailo_set_throttling_mode(struct scmi_hailo_set_throttling_mode_a2p *params)
+{
+	return hailo_ops->set_throttling_mode(ph, params);
+}
+
+static int scmi_hailo_get_throttling_mode(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a  *info)
+{
+	return hailo_ops->get_throttling_mode(ph, params, info);
+}
+
+static int scmi_hailo_set_source_clock(struct scmi_hailo_set_source_clock_a2p *params)
+{
+	return hailo_ops->set_source_clock(ph, params);
+}
+
+static int scmi_hailo_get_source_clock(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info)
+{
+	return hailo_ops->get_source_clock(ph, params, info);
+}
+
+static int scmi_hailo_get_identification_attributes(struct scmi_hailo_identification_attributes_p2a *params)
+{
+	return hailo_ops->get_identification_attributes(ph, params);
+}
+
+static int scmi_hailo_get_sku_id(struct scmi_hailo_get_sku_id_p2a *params)
+{
+	return hailo_ops->get_sku_id(ph, params);
 }
 
 int scmi_hailo_ops_init(struct scmi_device *sdev)

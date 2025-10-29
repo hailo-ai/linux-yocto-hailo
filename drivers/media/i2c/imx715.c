@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2021 Intel Corporation
  */
+#include "imx715.h"
 #include <asm/unaligned.h>
 
 #include <linux/clk.h>
@@ -115,19 +116,6 @@
 #define MAX(val1, val2) ((val1) < val2 ? val2 : (val1))
 #define MIN(val1, val2) ((val1) < val2 ? val1 : (val2))
 
-#define IMX715_CID_BASE (V4L2_CID_USER_BASE + 0x2000)
-#define IMX715_CID_EXPOSURE_SHORT (IMX715_CID_BASE + 1)
-#define IMX715_CID_EXPOSURE_VERY_SHORT	(IMX715_CID_BASE + 2)
-#define IMX715_CID_ANALOGUE_GAIN_SHORT (IMX715_CID_BASE + 3)
-#define IMX715_CID_ANALOGUE_GAIN_VERY_SHORT (IMX715_CID_BASE + 4)
-#define IMX715_CID_RHS1 (IMX715_CID_BASE + 5)
-#define IMX715_CID_RHS2 (IMX715_CID_BASE + 6)
-#define IMX715_CID_SHR0 (IMX715_CID_BASE + 7)
-#define IMX715_CID_SHR1 (IMX715_CID_BASE + 8)
-#define IMX715_CID_SHR2 (IMX715_CID_BASE + 9)
-#define IMX715_CID_VMAX (IMX715_CID_BASE + 10)
-#define IMX715_CID_HMAX (IMX715_CID_BASE + 11)
-#define IMX715_CID_HCG (IMX715_CID_BASE + 12)
 
 static u32 imx715_reg_shutter[3] = {IMX715_REG_SHUTTER, IMX715_REG_SHUTTER_SHORT, IMX715_REG_SHUTTER_VERY_SHORT};
 static u32 imx715_reg_again[3] = {IMX715_REG_AGAIN, IMX715_REG_AGAIN1, IMX715_REG_AGAIN2};

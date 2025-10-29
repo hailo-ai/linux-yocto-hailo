@@ -123,26 +123,33 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 	memset(&try_fmt, 0, sizeof(try_fmt));
 	memset(&pad_cfg, 0, sizeof(pad_cfg));
 
-	if (WARN_ON(!vid_node))
+	if (WARN_ON(!vid_node)) {
+		pr_err("%s - vid_node is NULL, returning -EINVAL\n", __func__);
 		return -EINVAL;
-	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
+    }
+
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
 
 	if (!V4L2_TYPE_IS_MULTIPLANAR(f->type)){
+		pr_err("%s - f->type %d is not multiplanar, returning -EINVAL\n", __func__, f->type);
 		return -EINVAL;
 	}
 	format = hailo15_fourcc_get_out_format(pix_mp->pixelformat, pix_mp->num_planes);
 
 	if (format == NULL) {
+		pr_err("%s - format is NULL, returning -EINVAL\n", __func__);
 		return -EINVAL;
 	}
 
 	if (pix_mp->width % format->width_modulus){
+		pr_err("%s - pix_mp->width %d is not divisible by format->width_modulus %d, returning -EINVAL\n",
+            __func__, pix_mp->width, format->width_modulus);
 		return -EINVAL;
 	}
 
 	ret = hailo15_fill_planes_fmt(format, pix_mp);
 	if (ret) {
-		pr_err("%s - fill_planes_fmt failed\n", __func__);
+		pr_err("%s - fill_planes_fmt failed with: %d\n", __func__, ret);
 		return ret;
 	}
 
@@ -165,7 +172,7 @@ static int hailo15_s_fmt_vid_out(struct file *file, void *priv,
 
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
-	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
 	ret = _hailo15_try_fmt_vid_out(file, priv, f, 1);
 	if (ret) {
 		pr_err("%s - try set fmt failed with: %d\n", __func__, ret);
@@ -473,7 +480,7 @@ static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb)
 	}
 	buf->grp_id = vid_node->path;
 	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
-	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf);
+	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf, true);
 }
 
 static void hailo15_buffer_queue(struct vb2_buffer *vb)

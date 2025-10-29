@@ -3,21 +3,32 @@
  * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
  */
 
-#define HAILO_SOC_TYPE HAILO_SOC_HAILO10H2
+#define HAILO_SOC_TYPE HAILO_SOC_HAILO12L
 #include "hailo1x-base.dtsi"
 
 / {
     soc {
-        compatible = "hailo,hailo10h2";
+        compatible = "hailo,hailo12l";
     };
 
     pl320_mailbox: mailbox {
         reg = <0 0x78003000 0 0x1000>;
     };
+
+    pinctrl: pinctrl@7c291000 {
+        compatible = "hailo12l,pinctrl";
+        reg = <0 0x7c291000 0 0x1000>,
+                <0 0x7c292000 0 0x1000>,
+                <0 0x7c293000 0 0x1000>,
+                <0 0x00306000 0 0x1000>,
+                <0 0x00304000 0 0x1000>;
+        reg-names = "general_pads_config_base", "gpio_pads_config_base", "slow_pads_config_base", "aon_pads_config_base", "aon_pinmux_config_base";
+    };
+
 };
 
 &hailo_pci_ep_driver {
-    compatible = "hailo,hailo_pci_ep,hailo10h2";
+    compatible = "hailo,hailo_pci_ep,hailo12l";
     status = "okay";
 };
 
@@ -28,7 +39,7 @@
 };
 
 &integrated_nnc {
-    compatible = "hailo,integrated-nnc,hailo10h2";
+    compatible = "hailo,integrated-nnc,hailo12l";
     reg = <0 0x5c000 0 0x14000>, <0 0x80000 0 0x240>, <0 0x80240 0 0x0edc0>, <0 0x0008f000 0 0x1000>;
     reg-names = "core-fw-code", "core-fw-isr-vector", "core-fw-data", "core-fw-log";
     vdma0: vdma@0 {
@@ -65,7 +76,7 @@
 };
 
 &nocpmu {
-    compatible = "hailo,hailo10h2-noc-pmu";
+    compatible = "hailo,hailo12l-noc-pmu";
     reg = <0 0x000a5000 0 0x2100>;
 };
 

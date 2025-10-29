@@ -31,10 +31,18 @@
 #define SCMI_HAILO_NOC_STOP_MEASURE_ID 8
 #define SCMI_HAILO_BOOT_SUCCESS_INDICATION_ID 9
 #define SCMI_HAILO_SWUPDATE_INDICATION_ID 10
-#define SCMI_HAILO_SEND_COMPONENTS_VERSION 11
+#define SCMI_HAILO_SEND_COMPONENTS_VERSION_ID 11
 #define SCMI_HAILO_SET_I2S_SOURCE_CLK_ID 12
 #define SCMI_HAILO_SET_SPI_INTERRUPT_FORWARDING_ID 13
 #define SCMI_HAILO_GET_MBIST_SUBSERVERS_STATUS_ID 14
+#define SCMI_HAILO_SET_THROTTLING_MODE_ID 15
+#define SCMI_HAILO_GET_THROTTLING_MODE_ID 16
+#define SCMI_HAILO_SET_JTAG_ID 17
+#define SCMI_HAILO_GET_JTAG_ID 18
+#define SCMI_HAILO_SET_SOURCE_CLK_ID 19
+#define SCMI_HAILO_GET_SOURCE_CLK_ID 20
+#define SCMI_HAILO_GET_IDENTIFICATION_ATTRIBUTES_ID 21
+#define SCMI_HAILO_GET_SKU_ID 22
 
 /*******************************
  * SCMI-Hailo notification IDs *
@@ -77,7 +85,14 @@ struct scmi_hailo_protocol_message_attributes_p2a {
 /*************************************
  * Get Boot Info message definitions *
  *************************************/
-
+typedef enum {
+    BOOT_SOURCE_BOOTSTRAP = 0,
+    BOOT_SOURCE_SPI_FLASH = 1,
+    BOOT_SOURCE_UART = 2,
+    BOOT_SOURCE_PCIE = 3,
+    BOOT_SOURCE_EMMC0 = 4,
+    BOOT_SOURCE_EMMC1 = 5,
+} BOOT_SOURCE_t;
 /****************************************************
  * SCMI-Hailo get boot info image mode enum *
  ****************************************************/
@@ -264,12 +279,113 @@ struct scmi_hailo_set_i2s_source_clock_a2p {
     uint32_t source_clock;
 } __packed;
 
+/***********************************************
+ * Set JTAG message definitions *
+ ***********************************************/
+struct scmi_hailo_set_jtag_a2p {
+    uint8_t value;
+} __packed;
+
+/***********************************************
+ * Get JTAG message definitions *
+ ***********************************************/
+struct scmi_hailo_get_jtag_p2a {
+    uint8_t value;
+} __packed;
 
 /***********************************************
  * Set SPI Interrupt forwarding                *
  ***********************************************/
- struct scmi_hailo_set_spi_interrupt_forwarding_a2p {
+struct scmi_hailo_set_spi_interrupt_forwarding_a2p {
     uint32_t interrupt_id;
     uint32_t forward; /* 0 - mask, 1 - forward to gic for AP handling */
 } __packed;
+
+/***********************************************
+ * Throttling mode                         *
+ ***********************************************/
+enum scmi_hailo_throttling_domain {
+    SCMI_HAILO_THROTTLING_DOMAIN_AP = 0,
+    SCMI_HAILO_THROTTLING_DOMAIN_NNCORE,
+    SCMI_HAILO_THROTTLING_DOMAIN_DSP,
+};
+
+/***********************************************
+ * - Set throttling mode                       *
+ ***********************************************/
+struct scmi_hailo_set_throttling_mode_a2p {
+    uint8_t domain;
+    uint8_t ctrl; /* 0 - disable, 1 - enable*/
+} __packed;
+
+/***********************************************
+ * - Get throttling mode                       *
+ ***********************************************/
+struct scmi_hailo_get_throttling_mode_a2p {
+    uint8_t domain;
+} __packed;
+
+struct scmi_hailo_get_throttling_mode_p2a {
+    uint8_t ctrl;
+} __packed;
+
+/***********************************************
+ * Get identification attributes               *
+ ***********************************************/
+struct scmi_hailo_identification_attributes_p2a {
+    #define CRYPTOCELL_SOC_ID_SIZE (0x20)
+    uint8_t lcs;
+    uint8_t cryptocell_soc_id[CRYPTOCELL_SOC_ID_SIZE];
+    uint32_t lvt;
+    uint32_t svt;
+    uint32_t ulvt;
+};
+
+/***********************************************
+ * - source clock                              *
+ ***********************************************/
+enum scmi_hailo_source_clock {
+    SCMI_HAILO_SOURCE_CLOCK_NONE = 0,
+    SCMI_HAILO_SOURCE_CLOCK_DEFAULT_PARENT,
+    SCMI_HAILO_SOURCE_CLOCK_ALTERNATIVE_PARENT,
+};
+
+/***********************************************
+ * - Set source clock                          *
+ ***********************************************/
+struct scmi_hailo_set_source_clock_a2p {
+    uint32_t clock_id;
+    uint32_t parent; /* 1 - default, 2 - alternative */
+} __packed;
+
+/***********************************************
+ * - Get source clock                          *
+ ***********************************************/
+struct scmi_hailo_get_source_clock_a2p {
+    uint32_t clock_id;
+} __packed;
+
+struct scmi_hailo_get_source_clock_p2a {
+    uint32_t parent; /* 0 - none, 1 - default, 2 - alternative */
+} __packed;
+
+/***********************************************
+ * - Get SKU ids: SoC and board                *
+ ***********************************************/
+
+enum hailo_scmi_soc_id {
+    HAILO_SCMI_SOC_ID__INVALID,
+    HAILO_SCMI_SOC_ID__15H,
+    HAILO_SCMI_SOC_ID__15M,
+    HAILO_SCMI_SOC_ID__15L,
+    HAILO_SCMI_SOC_ID__15U,
+    HAILO_SCMI_SOC_ID__10H,
+    HAILO_SCMI_SOC_ID__12L,
+};
+
+struct scmi_hailo_get_sku_id_p2a {
+    uint32_t soc; /* 16-bit value */
+    uint32_t board; /* 16-bit value - Currently valid only for HAILO_SCMI_SOC_ID__10H */
+} __packed;
+
 #endif /* SCMI_HAILO_PROTOCOL_H */

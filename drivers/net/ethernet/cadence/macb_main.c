@@ -342,10 +342,12 @@ static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 	struct macb *bp = bus->priv;
 	int status;
 
-	status = pm_runtime_get_sync(&bp->pdev->dev);
-	if (status < 0) {
-		pm_runtime_put_noidle(&bp->pdev->dev);
-		goto mdio_pm_exit;
+	if (pm_runtime_enabled(&bp->pdev->dev)) {
+		status = pm_runtime_get_sync(&bp->pdev->dev);
+		if (status < 0) {
+			pm_runtime_put_noidle(&bp->pdev->dev);
+			goto mdio_pm_exit;
+		}
 	}
 
 	status = macb_mdio_wait_for_idle(bp);
@@ -385,7 +387,8 @@ static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 
 mdio_read_exit:
 	pm_runtime_mark_last_busy(&bp->pdev->dev);
-	pm_runtime_put_autosuspend(&bp->pdev->dev);
+	if (pm_runtime_enabled(&bp->pdev->dev))
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
 mdio_pm_exit:
 	return status;
 }
@@ -396,10 +399,12 @@ static int macb_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 	struct macb *bp = bus->priv;
 	int status;
 
-	status = pm_runtime_get_sync(&bp->pdev->dev);
-	if (status < 0) {
-		pm_runtime_put_noidle(&bp->pdev->dev);
-		goto mdio_pm_exit;
+	if (pm_runtime_enabled(&bp->pdev->dev)) {
+		status = pm_runtime_get_sync(&bp->pdev->dev);
+		if (status < 0) {
+			pm_runtime_put_noidle(&bp->pdev->dev);
+			goto mdio_pm_exit;
+		}
 	}
 
 	status = macb_mdio_wait_for_idle(bp);
@@ -439,7 +444,8 @@ static int macb_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 
 mdio_write_exit:
 	pm_runtime_mark_last_busy(&bp->pdev->dev);
-	pm_runtime_put_autosuspend(&bp->pdev->dev);
+	if (pm_runtime_enabled(&bp->pdev->dev))
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
 mdio_pm_exit:
 	return status;
 }
@@ -2796,10 +2802,11 @@ static int macb_open(struct net_device *dev)
 
 	netdev_dbg(bp->dev, "open\n");
 
-	err = pm_runtime_get_sync(&bp->pdev->dev);
-	if (err < 0)
-		goto pm_exit;
-
+	if (pm_runtime_enabled(&bp->pdev->dev)) {
+		err = pm_runtime_get_sync(&bp->pdev->dev);
+		if (err < 0)
+			goto pm_exit;
+	}
 	/* RX buffers initialization */
 	macb_init_rx_buffer_size(bp, bufsz);
 
@@ -2832,7 +2839,8 @@ reset_hw:
 		napi_disable(&queue->napi);
 	macb_free_consistent(bp);
 pm_exit:
-	pm_runtime_put_sync(&bp->pdev->dev);
+	if (pm_runtime_enabled(&bp->pdev->dev))
+		pm_runtime_put_sync(&bp->pdev->dev);
 	return err;
 }
 
@@ -4197,10 +4205,12 @@ static int at91ether_open(struct net_device *dev)
 	u32 ctl;
 	int ret;
 
-	ret = pm_runtime_get_sync(&lp->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&lp->pdev->dev);
-		return ret;
+	if (pm_runtime_enabled(&lp->pdev->dev)) {
+		ret = pm_runtime_get_sync(&lp->pdev->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&lp->pdev->dev);
+			return ret;
+		}
 	}
 
 	/* Clear internal statistics */
@@ -4224,7 +4234,9 @@ static int at91ether_open(struct net_device *dev)
 stop:
 	at91ether_stop(lp);
 pm_exit:
-	pm_runtime_put_sync(&lp->pdev->dev);
+	if (pm_runtime_enabled(&lp->pdev->dev)) {
+		pm_runtime_put_sync(&lp->pdev->dev);
+	}
 	return ret;
 }
 
@@ -4240,7 +4252,11 @@ static int at91ether_close(struct net_device *dev)
 
 	at91ether_stop(lp);
 
-	return pm_runtime_put(&lp->pdev->dev);
+	if (pm_runtime_enabled(&lp->pdev->dev)) {
+		pm_runtime_put(&lp->pdev->dev);
+	}
+
+	return 0;
 }
 
 /* Transmit packet */
@@ -4705,7 +4721,8 @@ static const struct macb_config hailo15_config = {
 	.usrio = &macb_default_usrio,
 	.queue_mask = 1, // working with half duplex with more than 1 queue might result error -> when moving to half duplex this value should be ignored and use value 1 (MSW-2355)
 	.disable_queues_at_init = true,
-	.allocate_segments_equally = true
+	.allocate_segments_equally = true,
+	.force_pm_runtime_disable = true,
 };
 
 static const struct of_device_id macb_dt_ids[] = {
@@ -4826,6 +4843,7 @@ static int macb_probe(struct platform_device *pdev)
 		bp->jumbo_max_len = macb_config->jumbo_max_len;
 		bp->disable_queues_at_init = macb_config->disable_queues_at_init;
 		bp->allocate_segments_equally = macb_config->allocate_segments_equally;
+		bp->force_pm_runtime_disable = macb_config->force_pm_runtime_disable;
 	}
 
 	bp->wol = 0;
@@ -4913,8 +4931,13 @@ static int macb_probe(struct platform_device *pdev)
 		    macb_is_gem(bp) ? "GEM" : "MACB", macb_readl(bp, MID),
 		    dev->base_addr, dev->irq, dev->dev_addr);
 
-	pm_runtime_mark_last_busy(&bp->pdev->dev);
-	pm_runtime_put_autosuspend(&bp->pdev->dev);
+		
+	if (bp->force_pm_runtime_disable) {
+		pm_runtime_disable(&pdev->dev);
+	} else {
+		pm_runtime_mark_last_busy(&bp->pdev->dev);
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
+	}
 
 	return 0;
 

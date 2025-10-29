@@ -46,8 +46,8 @@ int hailo15_plane_get_bytesperline(const struct hailo15_video_fmt *format,
 {
 	if (plane >= format->num_planes)
 		return 0;
-	return ((width * format->planes[plane].bpp) /
-		format->planes[plane].hscale_ratio);
+	return (((width * format->planes[plane].bpp) /
+		format->planes[plane].hscale_ratio) / BITS_IN_BYTE);
 }
 EXPORT_SYMBOL(hailo15_plane_get_bytesperline);
 
@@ -127,21 +127,122 @@ const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code)
 };
 EXPORT_SYMBOL(hailo15_code_get_format);
 
-struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev)
+struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp_id)
 {
-	struct media_entity *entity;
+	struct media_entity *entity, *csi_entity, *sensor_entity;
+	struct media_pad *csi_pad, *sensor_pad;
+	struct v4l2_subdev *pixel_mux_sd = NULL;
+	struct v4l2_subdev *csi_sd = NULL;
 	struct v4l2_subdev *sensor_sd = NULL;
+	int pad;
+	u32 i;
 
-	if (!mdev)
+	if (!mdev) {
+		pr_err("%s: media device is NULL\n", __func__);
 		return NULL;
+	}
 
 	media_device_for_each_entity (entity, mdev) {
-		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
-			sensor_sd = media_entity_to_v4l2_subdev(entity);
+		if (entity->function == MEDIA_ENT_F_VID_MUX) {
+			pixel_mux_sd = media_entity_to_v4l2_subdev(entity);
 			break;
 		}
+	}
+
+	if (!pixel_mux_sd) {
+		pr_err("%s: no pixel mux subdev found\n", __func__);
+		return NULL;
+	}
+
+	pad = pixel_mux_grp_id_to_sink_pad_index(grp_id);
+	csi_pad = media_entity_remote_pad(&pixel_mux_sd->entity.pads[pad]);
+	if (!csi_pad) {
+		pr_err("%s: no remote pad found for group id %d (pad %d)\n", __func__, grp_id, pad);
+		return NULL;
+	}
+
+	csi_entity = csi_pad->entity;
+	if (!is_media_entity_v4l2_subdev(csi_entity)){
+		pr_err("%s: remote pad %d is not a v4l2 subdev\n", __func__, pad);
+		return NULL;
+	}
+
+	csi_sd = media_entity_to_v4l2_subdev(csi_entity);
+	if (!csi_sd) {
+		pr_err("%s: no csi subdev found for group id %d (pad %d)\n", __func__, grp_id, pad);
+		return NULL;
+	}
+
+	/* Iterate over the pads of the CSI subdev to find the sensor subdev */
+	for (i = 0; i < csi_sd->entity.num_pads; i++) {
+		sensor_pad = media_entity_remote_pad(&csi_sd->entity.pads[i]);
+		if (!sensor_pad)
+			continue;
+
+		sensor_entity = sensor_pad->entity;
+		if (!is_media_entity_v4l2_subdev(sensor_entity))
+			continue;
+
+		/* Check if this entity is marked as a camera sensor */
+		if (sensor_entity->function != MEDIA_ENT_F_CAM_SENSOR)
+			continue;
+
+		sensor_sd = media_entity_to_v4l2_subdev(sensor_entity);
+		if (!sensor_sd) {
+			pr_err("%s: no sensor subdev found for group id %d (pad %d)\n", __func__, grp_id, pad);
+			return NULL;
+		}
+		break;
+	}
+
+	if (!sensor_sd) {
+		pr_err("%s: no sensor subdev found for group id %d (pad %d)\n", __func__, grp_id, pad);
+		return NULL;
 	}
 
 	return sensor_sd;
 };
 EXPORT_SYMBOL(hailo15_get_sensor_subdev);
+
+void hailo15_print_irq_error_message(struct err_status_reg *err_status_reg, u32 errors, int irq)
+{
+	int i;
+	struct error_message error_message;
+
+	if (!err_status_reg) {
+		pr_err("err_status_reg is null\n");
+		return;
+	}
+
+	for (i = 0; i < err_status_reg->num_errors; i++) {
+		error_message = err_status_reg->errors[i];
+		if (errors & error_message.mask) {
+			pr_err("IRQ %d - %s: %s 0x%x\n", irq, err_status_reg->name, error_message.message, errors & error_message.mask);
+		}
+	}
+}
+EXPORT_SYMBOL(hailo15_print_irq_error_message);
+
+const struct hailo15_video_fmt *hailo15_get_out_formats(void)
+{
+	return __hailo15_out_formats;
+}
+EXPORT_SYMBOL(hailo15_get_out_formats);
+
+const struct hailo15_video_fmt *hailo15_get_formats(void)
+{
+    return __hailo15_formats;
+}
+EXPORT_SYMBOL(hailo15_get_formats);
+
+unsigned int hailo15_get_out_formats_count(void)
+{
+    return ARRAY_SIZE(__hailo15_out_formats);
+}
+EXPORT_SYMBOL(hailo15_get_out_formats_count);
+
+unsigned int hailo15_get_formats_count(void)
+{
+    return ARRAY_SIZE(__hailo15_formats);
+}
+EXPORT_SYMBOL(hailo15_get_formats_count);

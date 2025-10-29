@@ -3,6 +3,8 @@
  * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
  */
 
+/* reseve memory for devicetree */
+/memreserve/ 0x84800000 0x20000;
 #include "hailo10-base.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 

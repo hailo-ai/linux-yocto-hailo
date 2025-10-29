@@ -49,6 +49,10 @@ static const struct h15l_pin_group h15l_pin_groups[] = {
 	H15L_PIN_GROUP(gpio30_2, 90, 0),
 	H15L_PIN_GROUP(gpio31_2, 91, 0),
 
+	H15L_PIN_GROUP(i2c0_scl_0, 0, 0),
+	H15L_PIN_GROUP(i2c0_sda_0, 1, 0),
+	H15L_PIN_GROUP(i2c1_scl_0, 2, 0),
+	H15L_PIN_GROUP(i2c1_sda_0, 3, 0),
 	H15L_PIN_GROUP(uart0_rxd_in_0, 4, 0),
 	H15L_PIN_GROUP(can0_rx_in_0, 4, 1),
 	H15L_PIN_GROUP(can1_rx_in_0, 4, 2),
@@ -673,6 +677,22 @@ static const struct h15l_pin_group h15l_pin_groups[] = {
 	H15L_PIN_GROUP(sdio1_uhs_sel_out_2, 91, 6),
 	H15L_PIN_GROUP(parallel_vsync_in, 91, 7),
 	H15L_PIN_GROUP(sdio0_uhs_sel_out_2, 91, 8),
+};
+
+static const char *const i2c0_scl_grps[] = {
+	"i2c0_scl_0_grp",
+};
+
+static const char *const i2c0_sda_grps[] = {
+	"i2c0_sda_0_grp",
+};
+
+static const char *const i2c1_scl_grps[] = {
+	"i2c1_scl_0_grp",
+};
+
+static const char *const i2c1_sda_grps[] = {
+	"i2c1_sda_0_grp",
 };
 
 static const char *const uart0_rxd_in_grps[] = {
@@ -2317,6 +2337,10 @@ static const struct h15l_pin_function h15l_pin_functions[] = {
 	H15_PIN_FUNCTION(uart3_txd_out),
 	H15_PIN_FUNCTION(usb_drive_vbus_out),
 	H15_PIN_FUNCTION(usb_overcurrent_n_in),
+	H15_PIN_FUNCTION(i2c0_scl),
+	H15_PIN_FUNCTION(i2c0_sda),
+	H15_PIN_FUNCTION(i2c1_scl),
+	H15_PIN_FUNCTION(i2c1_sda),
 };
 
 #define H15L_PINMUX_INVALID_FUNCTION_SELECTOR (ARRAY_SIZE(h15l_pin_functions))
@@ -2337,7 +2361,7 @@ static struct h15l_pin_data hailo15l_pins_drv_data[] = {
 
 	/* I2C */
 	H15L_PIN_DESC_STATIC_DRV_DATA(0, false, 0, H15L_SLOW_PAD, 5),
-	H15L_PIN_DESC_STATIC_DRV_DATA(1, false, 1,  H15L_SLOW_PAD, 4),
+	H15L_PIN_DESC_STATIC_DRV_DATA(1, false, 1, H15L_SLOW_PAD, 4),
 	H15L_PIN_DESC_STATIC_DRV_DATA(2, false, 2, H15L_SLOW_PAD, 7),
 	H15L_PIN_DESC_STATIC_DRV_DATA(3, false, 3, H15L_SLOW_PAD, 6),
 

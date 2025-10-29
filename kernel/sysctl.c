@@ -3185,6 +3185,13 @@ static struct ctl_table vm_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif
+	{
+		.procname       = "cma_non_reusable",
+		.data           = &cma_non_reusable,
+		.maxlen         = sizeof(cma_non_reusable),
+		.mode           = 0644,
+		.proc_handler   = proc_dobool,
+	},
 	{ }
 };
 

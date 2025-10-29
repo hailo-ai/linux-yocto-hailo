@@ -20,8 +20,16 @@ struct scmi_hailo_ops {
     int (*send_boot_success_ind)(struct scmi_hailo_boot_success_indication_a2p *params);
 	int (*send_swupdate_ind)(void);
     int (*send_components_version)(struct scmi_hailo_send_components_version_p2a *info);
+    int (*get_jtag_selector)(u8 *jtag_selector);
+    int (*set_jtag_selector)(u8 jtag_selector);
 	int (*set_i2s_source_clk)(struct scmi_hailo_set_i2s_source_clock_a2p *params);
     int (*set_spi_interrupt_forwarding)(struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
+    int (*set_throttling_mode)(struct scmi_hailo_set_throttling_mode_a2p *params);
+    int (*get_throttling_mode)(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+	int (*set_source_clock)(struct scmi_hailo_set_source_clock_a2p *params);
+	int (*get_source_clock)(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
+    int (*get_identification_attributes)(struct scmi_hailo_identification_attributes_p2a *params);
+    int (*get_sku_id)(struct scmi_hailo_get_sku_id_p2a *params);
 };
 
 #if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)

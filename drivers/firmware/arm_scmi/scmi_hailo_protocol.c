@@ -63,6 +63,20 @@ static int scmi_hailo_get_mbist_subservers_status(const struct scmi_protocol_han
 	return ret;
 }
 
+static int scmi_hailo_get_identification_attributes(const struct scmi_protocol_handle *ph, struct scmi_hailo_identification_attributes_p2a *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_IDENTIFICATION_ATTRIBUTES_ID, NULL, 0, params, sizeof(*params));
+	dev_dbg(ph->dev, "scmi hailo get identification attributes: lcs=%d lvt=%u svt=%u ulvt=%u  ret=%d\n", (int)params->lcs, params->lvt, params->svt, params->ulvt, ret);
+	return ret;
+}
+
+static int scmi_hailo_get_sku_id(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_sku_id_p2a *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_SKU_ID, NULL, 0, params, sizeof(*params));
+	dev_dbg(ph->dev, "scmi hailo get sku id: soc=%d board=%d ret=%d\n", (int)params->soc, params->board, ret);
+	return ret;
+}
+
 static int scmi_hailo_set_eth_rmii(const struct scmi_protocol_handle *ph)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_ETH_RMII_MODE_ID, NULL, 0, NULL, 0);
@@ -94,7 +108,19 @@ static int scmi_hailo_send_swupdate_ind(const struct scmi_protocol_handle *ph)
 
 static int scmi_hailo_send_send_components_version(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_components_version_p2a *info)
 {
-	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SEND_COMPONENTS_VERSION, NULL, 0, info, sizeof(*info));
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SEND_COMPONENTS_VERSION_ID, NULL, 0, info, sizeof(*info));
+	return ret;
+}
+
+static int scmi_hailo_get_jtag_selector(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_jtag_p2a *info)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_JTAG_ID, NULL, 0, info, sizeof(*info));
+	return ret;
+}
+
+static int scmi_hailo_set_jtag_selector(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_jtag_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_JTAG_ID, params, sizeof(*params), NULL, 0);
 	return ret;
 }
 
@@ -110,6 +136,32 @@ static int scmi_hailo_set_spi_interrupt_forwarding(const struct scmi_protocol_ha
 	return ret;
 }
 
+static int scmi_hailo_set_throttling_mode(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_throttling_mode_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_THROTTLING_MODE_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
+
+static int scmi_hailo_get_throttling_mode(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_THROTTLING_MODE_ID, params, sizeof(*params), info, sizeof(*info));
+	dev_dbg(ph->dev, "scmi_hailo_get_throttling_mode: domain=%d control=%d, ret=%d\n", params->domain, info->ctrl, ret);
+	return ret;
+}
+
+static int scmi_hailo_set_source_clock(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_source_clock_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_SOURCE_CLK_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
+
+static int scmi_hailo_get_source_clock(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_SOURCE_CLK_ID, params, sizeof(*params), info, sizeof(*info));
+	dev_dbg(ph->dev, "scmi_hailo_get_source_clock: clock_id=%d parent=%d, ret=%d\n", params->clock_id, info->parent, ret);
+	return ret;
+}
+
 static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.get_boot_info = scmi_hailo_get_boot_info,
 	.get_fuse_info = scmi_hailo_get_fuse_info,
@@ -120,8 +172,16 @@ static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.send_boot_success_ind = scmi_hailo_send_boot_success_ind,
 	.send_swupdate_ind = scmi_hailo_send_swupdate_ind,
 	.send_components_version = scmi_hailo_send_send_components_version,
+	.get_jtag_selector = scmi_hailo_get_jtag_selector,
+	.set_jtag_selector = scmi_hailo_set_jtag_selector,
 	.set_i2s_source_clk = scmi_hailo_set_i2s_source_clk,
 	.set_spi_interrupt_forwarding = scmi_hailo_set_spi_interrupt_forwarding,
+	.set_throttling_mode = scmi_hailo_set_throttling_mode,
+	.get_throttling_mode = scmi_hailo_get_throttling_mode,
+	.set_source_clock = scmi_hailo_set_source_clock,
+	.get_source_clock = scmi_hailo_get_source_clock,
+	.get_identification_attributes = scmi_hailo_get_identification_attributes,
+	.get_sku_id = scmi_hailo_get_sku_id,
 };
 
 static int scmi_hailo_protocol_init(const struct scmi_protocol_handle *ph)

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Require success of commands
+set -eo pipefail
+
 SCRIPT_PATH=$(realpath $(dirname "$0"))
 
 if [ -f "${SCRIPT_PATH}/build.cfg" ]; then
@@ -10,7 +13,7 @@ fi
 
 source ${TOOLCHAIN}
 
-MAKE="make ARCH=arm64 CROSS_COMPILE=aarch64-poky-linux- -j16"
+MAKE="make ARCH=arm64 -j16"
 
 extract_machine() {
 	if [ -f "${DEPLOY_DIR}/machine_name.txt" ]; then
@@ -25,9 +28,6 @@ extract_machine() {
 if [ -z "$MACHINE" ]; then
 	MACHINE=$(extract_machine)
 fi
-
-# Require success of commands
-set -e
 
 # Function to align a file by adding padding to make its size a multiple of `pad_size`
 align_file() {
@@ -49,15 +49,43 @@ align_file() {
     dd if=/dev/zero bs=1 count="$padding_needed" >> "$binary_file"
 }
 
-make_install_module() {
+build_module() {
 	module_path=$1
 	$MAKE M=$module_path
-	if [ "${EXPORT_MODULES_TO_NFS}" = "yes" ]; then
-		sudo make M=$module_path INSTALL_MOD_PATH=${NFS_DIR} modules_install
+}
+
+deploy_module() {
+	module_path=$1
+	sudo $MAKE M=$module_path INSTALL_MOD_PATH=${NFS_DIR} modules_install
+}
+
+deploy_modules() {
+	echo "Deploying modules to ${NFS_DIR}..."
+
+    # Deploy standard modules to NFS directory
+	sudo INSTALL_MOD_PATH=${NFS_DIR} $MAKE modules_install
+
+    # Deploy extra modules to NFS directory
+	if [ -n "${HAILORT_DIR}" ]; then
+		deploy_module ${HAILORT_DIR}
+	fi
+	if [ -n "${ENCODER_DIR}" ]; then
+		deploy_module ${ENCODER_DIR}
 	fi
 }
 
+deploy_image() {
+	echo "Deploying images to ${DEPLOY_DIR}..."
+	cp fitImage ${DEPLOY_DIR}
+	cp vmlinux ${DEPLOY_DIR}
+	if [ "${EXPORT_MODULES_TO_NFS}" = "yes" ]; then
+		deploy_modules
+	fi
+    echo "Image deployment completed."
+}
+
 make_all(){
+    echo "Building kernel..."
 	if [ ! -f .config ]; then
 		if [ -f "${DEPLOY_DIR}/kernel.config" ]; then
 			cp "${DEPLOY_DIR}/kernel.config" ${SCRIPT_PATH}/.config
@@ -79,22 +107,29 @@ make_all(){
 	align_file arch/arm64/boot/dts/hailo/${MACHINE}.dtb 64
 	uboot-mkimage -f fit-image.its fitImage
 	uboot-mkimage -E -B 0x40 -F -k ${DEPLOY_DIR} -r fitImage
-	cp fitImage ${DEPLOY_DIR}
-	cp vmlinux ${DEPLOY_DIR}
-	if [ "${EXPORT_MODULES_TO_NFS}" = "yes" ]; then
-		sudo INSTALL_MOD_PATH=${NFS_DIR} $MAKE modules_install
+
+    # Build extra modules only if we are exporting modules to NFS
+    if [ "${EXPORT_MODULES_TO_NFS}" = "yes" ]; then
+		if [ -n "${HAILORT_DIR}" ]; then
+			build_module ${HAILORT_DIR}
+		fi
+		if [ -n "${ENCODER_DIR}" ]; then
+			build_module ${ENCODER_DIR}
+		fi
 	fi
-	if [ -n "${HAILORT_DIR}" ]; then
-		make_install_module ${HAILORT_DIR}
-	fi
-	if [ -n "${ENCODER_DIR}" ]; then
-		make_install_module ${ENCODER_DIR}
-	fi
+
+    echo "Build completed."
 }
 
-if [ $# -eq 0 ]
-	then
-		make_all
-	else
-		$MAKE $1
-fi
+usage() {
+    echo "Usage: $0 [build|deploy|all|clean-env|help] [extra make args...]";
+}
+
+case "${1-}" in
+  ""|"all"|"build-deploy"|"-a") make_all; deploy_image ;;  # Default action
+  "build"|"build-only"|"-b")    make_all ;;
+  "deploy"|"deploy-only"|"-d")  deploy_image ;;
+  "help"|"-h"|"--help")         usage ;;
+  "clean-env"|"-c")             $MAKE mrproper ;;
+  *)                            $MAKE "$@" ;;   # forward to make
+esac

@@ -17,7 +17,7 @@
             clock-names = "sys_clk", "p_clk",
                     "pixel_if0_clk", "pixel_if1_clk",
                     "pixel_if2_clk", "pixel_if3_clk";
-            interrupts = <GIC_SPI HW_INTERRUPTS__VISION_SUBSYS_ERR_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupts-extended = <&hailo_pixel_mux 1 >;
 
             ports {
                 #address-cells = <1>;
@@ -55,7 +55,7 @@
             clock-names = "sys_clk", "p_clk",
                     "pixel_if0_clk", "pixel_if1_clk",
                     "pixel_if2_clk", "pixel_if3_clk";
-            interrupts = <GIC_SPI HW_INTERRUPTS__CSI_RX1_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupts-extended = <&hailo_pixel_mux 2 >;
             ports {
                 port@0 {
                     reg = <0>;
@@ -215,7 +215,8 @@
             status = "disabled";
             id = <0>;
             reg = <0 0x7C000000 0 0x10000>, <0 0x7c01e000 0 0x1000>;
-            interrupts = <GIC_SPI HW_INTERRUPTS__ISP_FUNC_INTERRUPT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupts-extended = <&gic GIC_SPI HW_INTERRUPTS__ISP_FUNC_INTERRUPT_IRQ IRQ_TYPE_LEVEL_HIGH>,
+                                  <&hailo_pixel_mux 0 >;
             ranges;
             clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_ISP_WRAPPER_CLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_ISP_WRAPPER_PCLK>;
             clock-names = "ip_clk", "p_clk";
@@ -266,7 +267,10 @@
             // csi_rx0_xtal_clk + csi_rx1_xtal_clk - if someone should open this it should be the cdns csi driver, but it doesn't so it is here.
             clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_VISION_CLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_VISION_HCLK>;
             clock-names = "vision_clk", "vision_hclk";
-
+            interrupts = <GIC_SPI HW_INTERRUPTS__VISION_SUBSYS_ERR_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupt-names = "vision_subsys_err_int";
+            interrupt-controller;
+            #interrupt-cells = <1>;
             ports {
                 port@0 {
                     reg = <0>;
@@ -454,7 +458,7 @@
         status = "disabled";
         compatible = "vivante,vc8000e";
         reg = <0 0x7C030000 0 0x10000>;
-        memory-region = <&vc8000e_reserved>;
+        memory-region = <&cma>;
         interrupts = <GIC_SPI HW_INTERRUPTS__H265_INT_IRQ IRQ_TYPE_LEVEL_HIGH>;
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_H265_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_H265_CLK>;
         clock-names = "hclk", "clk";

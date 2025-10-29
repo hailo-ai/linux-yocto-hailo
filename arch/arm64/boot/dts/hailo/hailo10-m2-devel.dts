@@ -59,3 +59,11 @@
         drive-strength = <2>;
     };
 };
+
+/ {
+    chosen {
+        bootargs = "console=ttyS1,115200n8 quiet loglevel=3 rootwait root=/dev/ram0 ramdisk_size=0x80000";
+        linux,initrd-start = <0x90000000>;
+        linux,initrd-end = <0xB0000000>;
+    };
+};

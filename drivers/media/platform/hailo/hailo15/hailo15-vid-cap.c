@@ -65,7 +65,7 @@ static int hailo15_querycap(struct file *file, void *fh,
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 
-	strcpy(cap->driver, "hailo_video");
+	strcpy(cap->driver, HAILO_VID_NAME);
 	strcpy(cap->card, "HAILO");
 	cap->bus_info[0] = 0;
 	snprintf((char *)cap->bus_info, sizeof(cap->bus_info),
@@ -187,7 +187,7 @@ static int _hailo15_try_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
 
 	if (!V4L2_TYPE_IS_MULTIPLANAR(f->type)) {
 		pr_info("%s - only multiplanar formats are supported\n", __func__);
@@ -253,7 +253,7 @@ static int hailo15_s_fmt_vid_cap(struct file *file, void *priv,
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 
-	VALIDATE_STREAM_OFF(vid_node, return -EINVAL);
+	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
 
 	if (!vid_node->pipeline_init) {
 		ret = hailo15_video_create_pipeline(vid_node);
@@ -275,7 +275,7 @@ static int hailo15_s_fmt_vid_cap(struct file *file, void *priv,
 static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
 					   enum vb2_buffer_state state)
 {
-	struct hailo15_buffer *buf, *nbuf;
+	struct hailo15_buffer *buf, *nbuf, *tmp_buf;
 	struct hailo15_dma_ctx *ctx;
 
 	if (WARN_ON(!vid_node)) {
@@ -292,12 +292,13 @@ static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
 
 	mutex_lock(&vid_node->qlock);
 	list_for_each_entry_safe (buf, nbuf, &vid_node->buf_queue, irqlist) {
-		list_del(&buf->irqlist);
+		list_del_init(&buf->irqlist);
 		vb2_buffer_done(&buf->vb.vb2_buf, state);
 	}
 	if (vid_node->prev_buf) {
-		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf, state);
+		tmp_buf = vid_node->prev_buf;
 		vid_node->prev_buf = NULL;
+		vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
 	}
 	vid_node->skip_first_list_entry = false;
 	mutex_unlock(&vid_node->qlock);
@@ -340,6 +341,9 @@ static int hailo15_video_node_subdev_set_stream(
 
 	// set the grp_id of subdev to indicate from which pad the call came
 	vid_node->direct_sd->grp_id = vid_node->path;
+
+	// On stream start/stop, reset this boolean so that next stream will start with "false"
+	vid_node->is_first_buffer_processed = false;
 
 	dev_dbg(vid_node->dev, "before subdev call, stream %s\n", enable ? "on" : "off");
 	ret = hailo15_subdev_call(vid_node, video, s_stream, enable);
@@ -410,7 +414,7 @@ static int hailo15_s_parm(struct file *file, void *fh,
 
 	fi.interval = a->parm.capture.timeperframe;
 	fi.pad = 0;
-	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev);
+	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev, vid_node->path);
 	if (!sensor_sd) {
 		pr_warn("%s - failed to get sensor subdev\n", __func__);
 		return -EINVAL;
@@ -439,7 +443,7 @@ static int hailo15_g_parm(struct file *file, void *fh,
 	struct hailo15_video_node *vid_node = video_drvdata(file);
 	int ret = 0;
 
-	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev);
+	sensor_sd = hailo15_get_sensor_subdev(vid_node->mdev, vid_node->path);
 	if (!sensor_sd) {
 		pr_warn("%s - failed to get sensor subdev\n", __func__);
 		return -EINVAL;
@@ -841,6 +845,12 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 					 sizeof(vid_node->hdr_timestamp_mode));
 		mutex_unlock(&vid_node->ioctl_mutex);
 		break;
+	case VIDEO_PIPELINE_STATE_GET:
+		mutex_lock(&vid_node->ioctl_mutex);
+		ret = copy_to_user((void *)arg, &vid_node->pipeline_init,
+					sizeof(vid_node->pipeline_init));
+		mutex_unlock(&vid_node->ioctl_mutex);
+		break;
 	default:
 		/* video ioctls locks are handled by v4l2 framework */
 		ret = video_ioctl2(file, cmd, arg);
@@ -935,6 +945,7 @@ static int hailo15_video_node_mmap(struct file *file,
 
 	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
 
+	rmem.port = vid_node->path;
 	ret = hailo15_video_node_get_rmem(ctx, vid_node->path, &rmem);
 	if (!ret) {
 		if (rmem.addr && vma->vm_pgoff == (rmem.addr >> PAGE_SHIFT)) {
@@ -1112,7 +1123,10 @@ static int hailo15_video_device_queue_vb2_buffer(struct vb2_buffer *vb)
 	return hailo15_video_node_buffer_queue(ctx, vid_node->path, buf);
 }
 
-static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb)
+/* is_buf_time_synced - is whether this function is called from buffer_done (so timing are synced),
+	 or it's the first buffer processed 
+*/
+static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb, bool is_buf_time_synced)
 {
 	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf =
@@ -1130,7 +1144,7 @@ static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb)
 
 	buf->grp_id = vid_node->path;
 	ctx = v4l2_get_subdevdata(vid_node->direct_sd);
-	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf);
+	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf, is_buf_time_synced);
 }
 
 static void hailo15_buffer_queue(struct vb2_buffer *vb)
@@ -1138,6 +1152,7 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	struct hailo15_video_node *vid_node = queue_to_node(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf = container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
 	struct hailo15_buffer *buf = container_of(vbuf, struct hailo15_buffer, vb);
+	int ret;
 
 	if (WARN_ON(!vb) || WARN_ON(!vb->vb2_queue)) {
 		pr_err("%s - WARN_ON(!vb) || WARN_ON(!vb->vb2_queue), returning\n",
@@ -1159,20 +1174,51 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 		return;
 	}
 
-	/* Add given buffer to list of used buffers, and if it's empty - process immediately */
 	mutex_lock(&vid_node->qlock);
+	
+	/* 
+	Usually, buffer process (pass buffer to isp driver) is done only on buffer done.
+	The logic is to take a buffer out of the irqlist, and process it (give it to isp driver).
+	However, an edge case occurs when the list is empty (the last buffer done, if called, didn't process any buffer)
+	*/
 	if (list_empty(&vid_node->buf_queue)) {
-		if (hailo15_is_p2a_grp_id(vid_node->path)) {
-			vid_node->skip_first_list_entry = true;
+		/* If that's the first buffer of stream, we should process it on our own and exit function*/
+		if (!vid_node->is_first_buffer_processed) {
+			if (hailo15_video_device_process_vb2_buffer(vb, true)) {
+				pr_err("%s - Could not process first buffer\n", __func__);
+				goto buffer_queue_exit_bad;
+			}
+
+			vid_node->is_first_buffer_processed = true;
+			goto buffer_queue_exit_good;
 		}
 
-		if (hailo15_video_device_process_vb2_buffer(vb)) {
-			mutex_unlock(&vid_node->qlock);
-			vid_node->skip_first_list_entry = false;
-			return;
+		/* 
+		If the list got empty mid-stream:
+			- On SDR/HDR: save the buffer to the list (vid_node->buf_queue), and insert it after the next buffer done
+			    - this is important, as the only valid time to process the next buffer is after getting buffer_done on the previous.
+			- On injection mode: process the buffer immediately, as buffer_done will never be called again otherwise.
+
+			Injection tool forces us to treat it differently, and since this kernel module is not aware of it being in use or not,
+			we can only call hailo15_video_device_process_vb2_buffer with additional parameter, specifying whether it's a mid-stream
+			out-of-sync buffer, or first buffer being processed.
+		*/
+		ret = hailo15_video_device_process_vb2_buffer(vb, false);
+		if (ret != 0 && ret != -EAGAIN) {
+			/* EAGAIN means we are not in injection tool mode, and buf_done can later process the buffer again, in sync */
+			pr_err("%s - Could not process mid-stream buffer\n", __func__);
+			goto buffer_queue_exit_bad;
 		}
 	}
+	buf->grp_id = vid_node->path;
+
+buffer_queue_exit_good:
+	/* Add given buffer to list of queued buffers - this list is being emptied on buf_done
+	 * (we insert/process new buffer exactly after the previous one is done)
+	 */
 	list_add_tail(&buf->irqlist, &vid_node->buf_queue);
+
+buffer_queue_exit_bad:
 	mutex_unlock(&vid_node->qlock);
 }
 
@@ -1212,6 +1258,11 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	vid_node = NULL;
 	if (grp_id < 0 || grp_id >= HAILO15_VID_GRP_MAX)
 		return -EINVAL;
+	
+	if (!ctx) {
+		pr_err("%s - ctx is NULL, returning\n", __func__);
+		return -EINVAL;
+	}
 
 	ret = hailo15_video_node_get_private_data(ctx, grp_id,
 						  (void **)&vid_node);
@@ -1227,21 +1278,23 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		/* not isp flow, we can release buffer immediatly */
 		vid_node->prev_buf = buf;
 	}
-	if (vid_node->prev_buf) {
-		vid_node->prev_buf->vb.sequence = vid_node->sequence++;
-
-		if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF || hailo15_is_p2a_grp_id(vid_node->path))
-			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
-		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf,
-					VB2_BUF_STATE_DONE);
-
-		vid_node->prev_buf = NULL;
-	}
-
+	/* Delete buffer from irqlist.
+	   This must happen before the buffer is passed to vb2_buffer_done() and thus can be dequeued by the user
+	   and potentially re-inserted into the irqlist while it is still in the irqlist. */
 	if (buf) {
 		mutex_lock(&vid_node->qlock);
 		list_del(&buf->irqlist);
 		mutex_unlock(&vid_node->qlock);
+	}
+	if (vid_node->prev_buf) {
+		vid_node->prev_buf->vb.sequence = vid_node->sequence++;
+
+		if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF || hailo15_is_p2a_grp_id(vid_node->path)) {
+			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+		}
+
+		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		vid_node->prev_buf = NULL;
 	}
 
 	/* In P2A flow, the first time this function is called, `buf` will be null, and the next value (stored in the shadow register)
@@ -1267,8 +1320,9 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		if (hailo15_is_p2a_grp_id(vid_node->path)) {
 			vid_node->skip_first_list_entry = true;
 		}
+		// pr_info("%s - calling hailo15_video_device_process_vb2_buffer with next_buffer->vb.vb2_buf.index: %d\n", __func__, next_buffer->vb.vb2_buf.index);
 		hailo15_video_device_process_vb2_buffer(
-			&next_buffer->vb.vb2_buf);
+			&next_buffer->vb.vb2_buf, true);
 	} else {
 		vid_node->skip_first_list_entry = false;
 		hailo15_video_node_queue_empty(ctx, vid_node->path);
@@ -1318,7 +1372,7 @@ int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int count)
 		return -EINVAL;
 
 	dev_dbg(vid_node->dev, "start streaming on node %d\n", vid_node->id);
-
+	
 	if (!vid_node->streaming) {
 		ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
 		if (ret) {
@@ -1508,6 +1562,7 @@ hailo15_video_node_video_device_init(struct hailo15_video_node *vid_node)
 	vid_node->video_dev->minor = vid_node->id;
 	vid_node->video_dev->vfl_type = VFL_TYPE_VIDEO;
 	vid_node->video_dev->vfl_dir = VFL_DIR_RX;
+	vid_node->streaming = STREAM_OFF;
 	vid_node->video_dev->device_caps =
 		V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING | V4L2_CAP_EXT_PIX_FORMAT;
 

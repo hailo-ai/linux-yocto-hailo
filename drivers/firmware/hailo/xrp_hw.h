@@ -15,6 +15,7 @@
 struct xrp_hw_ops {
     void (*map_dsp_to_physical_address)(struct xvp *xvp, uint32_t dsp_address, phys_addr_t physical_address);
     void (*init_mem_ranges)(struct xvp *xvp);
+    void (*enable_jtag)(struct xvp *xvp);
     void (*disable_wwdt)(struct xvp *xvp);
     void (*open_interrupts)(struct xvp *xvp);
     void (*configure_reset_vector)(struct xvp *xvp);

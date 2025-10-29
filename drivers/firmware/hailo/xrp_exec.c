@@ -178,15 +178,17 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
         }
     }
 
-    mmap_read_lock(mm);
 
     // share in_data or copy it inline
     if (rq->ioctl_queue.in_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing in_data\n", __func__);
+
+        mmap_read_lock(mm);
         ret = xrp_share_block(filp, (void *)rq->ioctl_queue.in_data_addr,
-                rq->ioctl_queue.in_data_size, XRP_FLAG_READ, &rq->in_data_phys,
-                &rq->dsp_in_data_phys, &rq->in_data_mapping,
-                LUT_MAPPING_IN_DATA, true, true);
+        rq->ioctl_queue.in_data_size, XRP_FLAG_READ, &rq->in_data_phys,
+        &rq->dsp_in_data_phys, &rq->in_data_mapping,
+        LUT_MAPPING_IN_DATA, true, true);
+        mmap_read_unlock(mm);
         if(ret < 0) {
             dev_err(xvp->dev, "%s: in_data could not be shared\n",
                  __func__);
@@ -206,10 +208,12 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
     // share out_data or copy it inline
     if (rq->ioctl_queue.out_data_size > XRP_DSP_CMD_INLINE_DATA_SIZE) {
         dev_dbg(xvp->dev, "%s: sharing out_data\n", __func__);
+        mmap_read_lock(mm);
         ret = xrp_share_block(filp, (void *)rq->ioctl_queue.out_data_addr,
-                rq->ioctl_queue.out_data_size, XRP_FLAG_WRITE, 
-                &rq->out_data_phys, &rq->dsp_out_data_phys,
-                &rq->out_data_mapping, LUT_MAPPING_OUT_DATA, true, true);
+        rq->ioctl_queue.out_data_size, XRP_FLAG_WRITE, 
+        &rq->out_data_phys, &rq->dsp_out_data_phys,
+        &rq->out_data_mapping, LUT_MAPPING_OUT_DATA, true, true);
+        mmap_read_unlock(mm);
         if (ret < 0) {
             dev_err(xvp->dev, "%s: out_data could not be shared\n",
                  __func__);
@@ -234,13 +238,17 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
             dev_dbg(xvp->dev, "%s: sharing buffer %zd\n", __func__, i);
             if (ioctl_buffer.memory_type == XRP_MEMORY_TYPE_USERPTR) {
                 dev_dbg(xvp->dev, "%s: sharing buffer %zd (virtual address) \n", __func__, i);
+                mmap_read_lock(mm);
 		        ret = xrp_share_block(filp, (void *)ioctl_buffer.addr,
-					    ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys, NULL,
-					    rq->buffers_mapping + i, NO_LUT_MAPPING, true, false);
+                ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys, NULL,
+                rq->buffers_mapping + i, NO_LUT_MAPPING, true, false);
+                mmap_read_unlock(mm);
             } else {
                 dev_dbg(xvp->dev, "%s: sharing buffer %zd (dmabuf) \n", __func__, i);
+                mmap_read_lock(mm);
                 ret = xrp_share_dmabuf(filp, ioctl_buffer.fd, ioctl_buffer.size, ioctl_buffer.flags, &buffer_phys,
-                        rq->buffers_mapping + i);   
+                    rq->buffers_mapping + i);   
+                mmap_read_unlock(mm);
             }
             if (ret < 0) {
                 dev_err(xvp->dev, "%s: buffer %zd could not be shared\n", __func__, i);
@@ -274,10 +282,12 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
     // share buffers descriptors (if needed)
     if (n_buffers > XRP_DSP_CMD_INLINE_BUFFER_COUNT) {
         dev_dbg(xvp->dev, "%s: sharing buffers descriptors\n", __func__);
+        mmap_read_lock(mm);
         ret = xrp_share_kernel(xvp, rq->buffers_descriptors,
             n_buffers * sizeof(*rq->buffers_descriptors), XRP_FLAG_READ_WRITE,
             &rq->buffers_descriptors_phys, &rq->dsp_buffers_descriptors_phys, &rq->buffers_descriptors_mapping,
             LUT_MAPPING_BUFFER_METADATA, true);
+        mmap_read_unlock(mm);
         if(ret < 0) {
             dev_err(xvp->dev, "%s: buffers descriptors could not be shared\n",
                  __func__);
@@ -285,7 +295,6 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
         }
     }
 share_err:
-    mmap_read_unlock(mm);
     if (ret < 0)
         xrp_unmap_request(xvp, rq, false);
     return ret;

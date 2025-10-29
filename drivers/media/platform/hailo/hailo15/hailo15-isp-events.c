@@ -190,7 +190,7 @@ int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 	hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
 						 HAILO15_DAEMON_ISP_EVENT_REQBUFS };
 	return hailo15_isp_post_event(isp_dev->sd.devnode, meta,
-					&(isp_dev->event_resource), pad, NULL, 0);
+					&(isp_dev->event_resource), pad, &num_buffers, sizeof(num_buffers));
 }
 
 int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status)

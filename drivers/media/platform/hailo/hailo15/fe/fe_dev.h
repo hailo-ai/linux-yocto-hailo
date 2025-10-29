@@ -66,6 +66,7 @@
 #define ISP_FE_TBL_REG_MAX				(17)
 #define ISP_FE_VIRT_MAXCNT				(4)
 #define ISP_FE_SPECIAL_REG_NUM			(3)
+#define VIV_INVALID_VDID 0xAA
 //#define ISP_FE_SPECIAL_RGE_INDEX		(ISP_FE_FULL_BUFFER_NUM - ISP_FE_SPECIAL_RGE_NUM)
 
 enum isp_fe_state {
@@ -317,6 +318,12 @@ struct isp_fe_buff_t {
 	uint8_t isp_mi_enable;
 };
 
+enum isp_fe_post_offsets {
+	ISP_FE_POST_OFFSET_SP2_RAW_RDMA_START = 0,
+	ISP_FE_POST_OFFSET_MCM_RAW_RDMA_START = 1,
+	ISP_FE_POST_OFFSET_MAX
+};
+
 struct isp_fe_context {
 	bool enable;
 	enum fe_work_mode_e work_mode;
@@ -354,9 +361,8 @@ struct isp_fe_context {
 
 	u64 last_t_ns;
 	bool is_isp_processing;
-	int post_fe_modify_reg_offset;
-	int post_fe_modify_reg_value;
-
+	int post_fe_modify_reg_offset[ISP_FE_POST_OFFSET_MAX];
+	int post_fe_modify_reg_value[ISP_FE_POST_OFFSET_MAX];
 };
 
 struct vvcam_fe_dev {
@@ -376,7 +382,6 @@ struct vvcam_fe_dev {
 	int (*fe_read_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
 	int (*fe_write_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 	int (*fe_switch)(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch);
-	void (*fe_register_post_fe_write) (struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 };
 
 #endif //_FE_DEV_H_   

@@ -34,6 +34,7 @@ struct hailo15_af_kevent {
 	uint32_t lum_b;
 	uint32_t lum_c;
 	int ready;
+	int vdid;
 };
 
 extern struct hailo15_af_kevent af_kevent;

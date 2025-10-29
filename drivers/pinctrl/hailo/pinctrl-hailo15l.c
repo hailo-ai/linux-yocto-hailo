@@ -258,10 +258,10 @@ static int hailo15l_set_mux(struct pinctrl_dev *pctrl_dev,
 	}
 
 	if (!pin_data->is_muxable) {
-		dev_err(pinctrl->dev,
-			"Error applying group %s - pin is not muxable\n",
+		dev_dbg(pinctrl->dev,
+			"group %s - pin is not muxable, skipping\n",
 			grp->name);
-		return -ENOTSUPP;
+		return 0;
 	}
 
 	raw_spin_lock_irqsave(&pinctrl->set_mux_lock, flags);
@@ -818,11 +818,11 @@ static void hailo15l_initialize_current_state(struct device *dev, struct hailo15
 	const struct h15l_pin_group *active_groups[ARRAY_SIZE(hailo15l_pins)] = {NULL, };
 
 	struct h15l_pin_data *pin_data;
-
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(current_modes); i++) {
-		current_modes[i] = hailo15l_get_pads_pinmux_mode(pinctrl, i);
+		pin_data = (struct h15l_pin_data *)pinctrl->pins[i].drv_data;
+		current_modes[i] = hailo15l_get_pads_pinmux_mode(pinctrl, pin_data->mux_index);
 	}
 
 	/*
@@ -939,6 +939,7 @@ static int hailo15l_pinctrl_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pinctrl);
 
 	raw_spin_lock_init(&pinctrl->register_lock);
+	raw_spin_lock_init(&pinctrl->set_mux_lock);
 
 	ret = devm_pinctrl_register_and_init(dev, &pinctrl->pctl_desc, pinctrl,
 					     &pinctrl->pctl);

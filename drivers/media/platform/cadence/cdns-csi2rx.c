@@ -14,6 +14,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>
 #include <linux/of_platform.h>
 
 #include <media/v4l2-ctrls.h>
@@ -160,6 +161,7 @@ struct csi2rx_priv {
 
 	enum csi2rx_mode cur_mode;
     int irq;
+	bool pm_enabled;
 };
 
 static const struct csi2rx_fmt csi2rx_formats[] = {
@@ -329,13 +331,13 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 
 	if (!csi2rx->dphy) {
 		dev_err(csi2rx->dev, "Can't start without DPHY\n");
-		goto err_disable_pclk;
+		return ret;
 	}
 
 	ret = clk_prepare_enable(csi2rx->p_clk);
 	if (ret)
 		return ret;
-
+	enable_irq(csi2rx->irq);
 	csi2rx_reset(csi2rx);
 
 	ret = cdns_dphy_rx_init(csi2rx);
@@ -381,13 +383,18 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 		struct v4l2_mbus_framefmt *mfmt;
 		const struct csi2rx_fmt *fmt;
 		ret = clk_prepare_enable(csi2rx->pixel_clk[i]);
-		if (ret)
+		if (ret) {
+			dev_err(csi2rx->dev, "fail to enable pixel clock for stream %d, ret: %d\n", i, ret);
 			goto err_disable_pixclk;
+		}
 
 		mfmt = &csi2rx->pad_fmts[i];
 		fmt = csi2rx_get_fmt_by_code(mfmt->code);
-		if (!fmt)
+		if (!fmt) {
+			dev_err(csi2rx->dev, "fail to get fmt for stream %d\n", i);
+			ret = -EINVAL;
 			goto err_disable_pixclk;
+		}
 
 		writel(CSI2RX_STREAM_CTRL_SOFT_RESET,
 		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
@@ -428,7 +435,6 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 	if (ret)
 		goto err_disable_pixclk;
 
-	clk_disable_unprepare(csi2rx->p_clk);
 	return 0;
 
 err_disable_pixclk:
@@ -436,8 +442,10 @@ err_disable_pixclk:
 		clk_disable_unprepare(csi2rx->pixel_clk[i - 1]);
 
 err_disable_pclk:
+	disable_irq(csi2rx->irq);
 	clk_disable_unprepare(csi2rx->p_clk);
 
+	dev_err(csi2rx->dev, "csi2rx_start failed\n");
 	return ret;
 }
 
@@ -448,7 +456,6 @@ static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 	unsigned int ctrl_reg_val;
 	int retry;
 
-	clk_prepare_enable(csi2rx->p_clk);
 	clk_disable_unprepare(csi2rx->sys_clk);
 
 	for (i = 0; i < csi2rx->max_streams; i++) {
@@ -473,9 +480,7 @@ static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 
 		clk_disable_unprepare(csi2rx->pixel_clk[i]);
 	}
-
-	clk_disable_unprepare(csi2rx->p_clk);
-
+	
 	if (v4l2_subdev_call(csi2rx->source_subdev, video, s_stream, false))
 		dev_warn(csi2rx->dev, "Couldn't disable our subdev\n");
 
@@ -483,6 +488,8 @@ static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 	for (i = 0; i < csi2rx->max_streams; i++) {
 		writel((u32)0x0, csi2rx->base + CSI2RX_STREAM_CFG_REG(i));
 	}
+	disable_irq(csi2rx->irq);
+	clk_disable_unprepare(csi2rx->p_clk);
 }
 
 static int csi2rx_s_stream(struct v4l2_subdev *subdev, int enable)
@@ -529,13 +536,17 @@ static int csi2rx_get_fmt(struct v4l2_subdev *subdev,
 	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(subdev);
 	struct v4l2_mbus_framefmt *src_format;
 	struct v4l2_mbus_framefmt *dst_format;
-	if (!csi2rx || !fmt || fmt->pad >= CSI2RX_PAD_MAX)
+	if (!csi2rx || !fmt || fmt->pad >= CSI2RX_PAD_MAX) {
+		dev_err(csi2rx->dev, "get_fmt: fmt is NULL or pad is out of range\n");
 		return -EINVAL;
+	}
 	
 	src_format = &csi2rx->pad_fmts[fmt->pad];
 	dst_format = &fmt->format;
-	if (!src_format || !dst_format)
+	if (!src_format || !dst_format) {
+		dev_err(csi2rx->dev, "get_fmt: src_format or dst_format is NULL\n");
 		return -EINVAL;
+	}
 	
 	*dst_format = *src_format;
 	return 0;
@@ -556,8 +567,10 @@ static int csi2rx_set_fmt(struct v4l2_subdev *subdev,
 	}
 	
 	dst_format = &csi2rx->pad_fmts[fmt->pad];
-	if (!dst_format)
+	if (!dst_format) {
+		dev_err(csi2rx->dev, "set_fmt: dst_format is NULL\n");
 		return -EINVAL;
+	}
 
 	*dst_format = *src_format;
 	return 0;
@@ -662,6 +675,7 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 	pm_runtime_get_sync(csi2rx->dev);
 	pm_runtime_set_active(csi2rx->dev);
 	pm_runtime_enable(csi2rx->dev);
+	csi2rx->pm_enabled = true;
 
 	ret = clk_prepare_enable(csi2rx->p_clk);
 	if (ret) {
@@ -813,6 +827,10 @@ static int csi2rx_init_irq_handler(struct csi2rx_priv *csi2rx,
     int ret;
 
     ret = platform_get_irq(pdev, 0);
+    if (ret == -EPROBE_DEFER) {
+        dev_info(csi2rx->dev, "IRQ deferred\n");
+        return ret;
+    }
     if (ret < 0) {
         dev_err(csi2rx->dev, "Failed to get error IRQ. Error %d\n", ret);
         return ret;
@@ -820,7 +838,7 @@ static int csi2rx_init_irq_handler(struct csi2rx_priv *csi2rx,
     csi2rx->irq = ret;
 
     ret = devm_request_irq(&pdev->dev, csi2rx->irq, csi2rx_error_irq_handler,
-                           IRQF_SHARED, "csi2rx-error", csi2rx);
+                           IRQF_NO_AUTOEN, dev_name(&pdev->dev), csi2rx);
      if (ret) {
         dev_err(csi2rx->dev, "Failed to request error IRQ. Error %d\n", ret);
         return ret;
@@ -848,13 +866,13 @@ static int csi2rx_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_free_priv;
 
-	ret = csi2rx_parse_dt(csi2rx);
+	ret = csi2rx_init_irq_handler(csi2rx, pdev);
 	if (ret)
 		goto err_free_priv;
 
-	ret = csi2rx_init_irq_handler(csi2rx, pdev);
+	ret = csi2rx_parse_dt(csi2rx);
 	if (ret)
-		goto err_cleanup;
+		goto err_free_priv;
 
 	csi2rx->subdev.owner = THIS_MODULE;
 	csi2rx->subdev.dev = &pdev->dev;
@@ -898,8 +916,14 @@ static int csi2rx_probe(struct platform_device *pdev)
 	return 0;
 
 err_cleanup:
+	v4l2_async_notifier_unregister(&csi2rx->notifier);
 	v4l2_async_notifier_cleanup(&csi2rx->notifier);
 err_free_priv:
+	if (csi2rx->pm_enabled) {
+		pm_runtime_put_sync(csi2rx->dev);
+		pm_runtime_set_suspended(csi2rx->dev);
+		pm_runtime_disable(csi2rx->dev);
+	}
 	kfree(csi2rx);
 	return ret;
 }

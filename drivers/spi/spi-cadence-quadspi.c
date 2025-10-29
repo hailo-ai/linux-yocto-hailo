@@ -1910,13 +1910,13 @@ static int cqspi_probe(struct platform_device *pdev)
 
 	cqspi = spi_master_get_devdata(master);
 	cqspi->remaining_message_rx_bytes = 0;
-	cqspi->tx_buf = kmalloc(CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
+	cqspi->tx_buf = devm_kzalloc(&pdev->dev, CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
 	if (!cqspi->tx_buf) {
 		dev_err(&pdev->dev, "failed allocate tx fifo\n");
 		return -ENOMEM;
 	}
 
-	cqspi->rx_buf = kmalloc(CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
+	cqspi->rx_buf = devm_kzalloc(&pdev->dev, CQSPI_MAX_MESSAGE_LENGTH, GFP_KERNEL);
 	if (!cqspi->rx_buf) {
 		dev_err(&pdev->dev, "failed allocate rx fifo\n");
 		return -ENOMEM;

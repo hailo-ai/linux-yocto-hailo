@@ -45,13 +45,23 @@ static int hailo15_isp_general_s_ctrl(struct v4l2_ctrl *ctrl)
 static int hailo15_isp_general_g_ctrl(struct v4l2_ctrl *ctrl)
 {
 	int ret = 0;
+	int sink_pad;
 	struct hailo15_isp_device *isp_dev = container_of(
 		ctrl->handler, struct hailo15_isp_device, ctrl_handler);
+	sink_pad = HAILO15_ISP_SOURCE_PAD_TO_ISP_SINK_PAD(isp_dev->ctrl_pad);
+	if (sink_pad < 0) {
+		pr_err("%s - invalid sink pad: %d, isp_dev->ctrl_pad: %d\n", __func__, sink_pad, isp_dev->ctrl_pad);
+		return -EINVAL;
+	}
 
 	switch (ctrl->id) {
 	case HAILO15_ISP_CID_GENERAL_STREAMING:
 		pr_debug("%s - got g_ctrl with id: 0x%x\n", __func__, ctrl->id);
-		ctrl->val = atomic_read(&isp_dev->streaming_started);
+		ctrl->val = atomic_read(&isp_dev->streaming_started[sink_pad]);
+		break;
+
+	case HAILO15_ISP_CID_GENERAL_3A_UNIX_EPOCH:
+		ret = hailo15_isp_g_ctrl_event(isp_dev, sink_pad, ctrl);
 		break;
 
 	default:
@@ -79,6 +89,18 @@ const struct v4l2_ctrl_config hailo15_isp_general_ctrls[] = {
 		.min = 0,
 		.max = 1,
 	},
+    {
+        .ops = &hailo15_isp_general_ctrl_ops,
+        .id = HAILO15_ISP_CID_GENERAL_3A_UNIX_EPOCH,
+        .type = V4L2_CTRL_TYPE_U32,
+        .flags = V4L2_CTRL_FLAG_VOLATILE |
+                V4L2_CTRL_FLAG_READ_ONLY,
+        .name = "isp_general_3a_unix_epoch",
+        .step = 1,
+        .min = 0,
+        .max = 4294967295,
+        .dims = { 1 },
+    }
 };
 
 int hailo15_isp_general_ctrl_count(void)

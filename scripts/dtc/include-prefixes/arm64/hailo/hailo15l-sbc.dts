@@ -5,17 +5,22 @@
 
 /dts-v1/;
 #include "hailo15l-base.dtsi"
+#include "dt-bindings/net/mscc-phy-vsc8531.h"
 
 &i2c_0 {
     status = "okay";
     /* @note I2C-BUS-0 SCL,SDA pads are non-muxable pins */
     i2c-sda-falling-time-ns = <1000>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c0_scl>, <&pinctrl_i2c0_sda>;
 };
 
 &i2c_1 {
     status = "okay";
     i2c-sda-falling-time-ns = <1000>;
     /* @note I2C-BUS-1 SCL,SDA pads are non-muxable pins */
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;
     /* @todo - M.2 Ekey, clock buffer, DSI */
     codec_tlv320aic3104: tlv320aic3104@18 {
         #sound-dai-cells = <0>;
@@ -135,6 +140,20 @@
                 <&pinctrl_eth_txd_1>,
                 <&pinctrl_eth_txd_2>,
                 <&pinctrl_eth_txd_3>;
+    phy-handle = <&vsc8531_0>;
+    #address-cells = <1>;
+    #size-cells = <0>;
+    vsc8531_0: ethernet-phy@0 {
+        reg = <0>;
+        compatible = "ethernet-phy-id0007.0570";
+        // Set recommended edge-slowdown for vddmac 1.8V (from mscc-phy-vsc8531.txt)
+        vsc8531,vddmac = <1800>;
+        vsc8531,edge-slowdown = <16>;
+        vsc8531,rx-clk-skew = <VSC8531_RGMII_CLK_DELAY_1_7_NS>;
+        vsc8531,tx-clk-skew = <VSC8531_RGMII_CLK_DELAY_1_7_NS>;
+        vsc8531,led-0-mode = <VSC8531_LINK_1000_ACTIVITY>;
+        vsc8531,led-1-mode = <VSC8531_LINK_100_ACTIVITY>;
+    };
 };
 
 &sdio0_reserved {
@@ -309,10 +328,34 @@
 };
 
 &pinctrl {
-    /* IO_PAD_0  - I2C0_SCL - non-muxable */
-    /* IO_PAD_1  - I2C0_SDA - non-muxable */
-    /* IO_PAD_2  - I2C1_SCL - non-muxable */
-    /* IO_PAD_3  - I2C1_SDA - non-muxable */
+
+    /* IO_PAD_0 */
+    pinctrl_i2c0_scl: i2c0_scl {
+        function = "i2c0_scl";
+        groups = "i2c0_scl_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_1 */
+    pinctrl_i2c0_sda: i2c0_sda {
+        function = "i2c0_sda";
+        groups = "i2c0_sda_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_2 */
+    pinctrl_i2c1_scl: i2c1_scl {
+        function = "i2c1_scl";
+        groups = "i2c1_scl_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_3 */
+    pinctrl_i2c1_sda: i2c1_sda {
+        function = "i2c1_sda";
+        groups = "i2c1_sda_0_grp";
+        drive-strength = <8>;
+    };
 
     /* IO_PAD_4 */
     pinctrl_uart0_rxd: uart0_rxd {
@@ -749,12 +792,14 @@
     pinctrl_gpio_16: gpio_16 {
         function = "i2c2_scl";
         groups = "i2c2_scl_4_grp";
+        drive-strength = <8>;
     };
 
     /* IO_PAD_77 */
     pinctrl_gpio_17: gpio_17 {
         function = "i2c2_sda";
         groups = "i2c2_sda_3_grp";
+        drive-strength = <8>;
     };
 
     /* IO_PAD_78 - GPIO_18 - In SBC, gpio 18 pin is serving as gpio function, and connected to GP header for DSI interrupt function */
@@ -938,6 +983,3 @@
     status = "ok";
 };
 
-&vc8000e_reserved {
-    status = "ok";
-};

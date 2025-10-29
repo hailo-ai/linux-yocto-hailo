@@ -11,7 +11,7 @@
 enum hailo_machines {
 	HAILO15 = 0,
 	HAILO15L,
-	HAILO10H2,
+	HAILO12L,
 };
 
 static enum hailo_machines g_machine;
@@ -187,7 +187,7 @@ int hailo_noc_process_auxtrace_info(union perf_event *event,
 	/* remove the '/n' char*/
 	buffer[strcspn(buffer, "\n")] = 0;
 
-	if (strcmp(buffer, "Hailo-15") == 0) {
+	if (strcmp(buffer, "Hailo-15") == 0 || strcmp(buffer, "Hailo-10h") == 0) {
 		g_machine = HAILO15;
 	} else if (strcmp(buffer, "Hailo-15l") == 0) {
 		g_machine = HAILO15L;

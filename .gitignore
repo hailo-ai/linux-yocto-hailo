@@ -165,3 +165,8 @@ sphinx_*/
 
 # build configuration file
 build.cfg
+kernel.config
+
+# image files
+fit-image.its
+fitImage

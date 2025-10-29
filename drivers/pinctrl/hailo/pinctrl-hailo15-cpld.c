@@ -433,7 +433,7 @@ void hailo15_cpld_print_dip_switches(struct hailo15_cpld_registers *registers,
 }
 
 struct i2c_board_info cpld_board_info = {
-	I2C_BOARD_INFO("pinctrl-cpld-hailo15",
+	I2C_BOARD_INFO("cpld-hailo15",
 		       H15_PINCTRL_CPLD_I2C_CLIENT_ADDRESS),
 };
 

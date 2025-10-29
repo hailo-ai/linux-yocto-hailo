@@ -2,10 +2,12 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
+#include <linux/string.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/soc/hailo/scmi_hailo_ops.h>
 #include <dt-bindings/soc/hailo15_release_version.h>
+#include <linux/soc/hailo/scmi_hailo_protocol.h>
 
 #define	SCMI_HAILO_BOOT_SUCCESS_AP_SOFTWARE  1
 #define	SCMI_HAILO_BOOT_SUCCESS_SW_UPDATE 99
@@ -16,7 +18,7 @@ static const struct of_device_id hailo_soc_of_match[] = {
 	{ .compatible = "hailo,hailo15" },
 	{ .compatible = "hailo,hailo10h" },
 	{ .compatible = "hailo,hailo15l" },
-	{ .compatible = "hailo,hailo10h2" },
+	{ .compatible = "hailo,hailo12l" },
 	{}
 };
 
@@ -30,6 +32,14 @@ struct __attribute__((packed)) hailo_mbist_status_file {
 	u32 mbist_status;
 };
 
+struct __attribute__((packed)) hailo_identification_attributes_file {
+	u8 lcs;
+	u8 cryptocell_soc_id[CRYPTOCELL_SOC_ID_SIZE];
+	uint32_t lvt;
+	uint32_t svt;
+	uint32_t ulvt;
+};
+
 struct hailo_soc {
 	struct hailo_fuse_file fuse_file;
 	struct scmi_hailo_get_boot_info_p2a boot_info;
@@ -37,11 +47,19 @@ struct hailo_soc {
 	struct soc_device *soc_dev;
 	struct scmi_hailo_send_components_version_p2a components_version;
 	struct hailo_mbist_status_file mbist_status_file;
+	struct hailo_identification_attributes_file identification_attributes_file;
 };
 
 #define H15__SCU_BOOT_BIT_MASK (3)
-static const char *hailo15_boot_options[] = { "Flash", "UART", "PCIe", "EMMC",
-					      "N/A" };
+
+static const char *hailo15_boot_options[] = {
+    [BOOT_SOURCE_BOOTSTRAP] = "BOOTSTRAP",  
+    [BOOT_SOURCE_SPI_FLASH] = "Flash",      
+    [BOOT_SOURCE_UART] = "UART",            
+    [BOOT_SOURCE_PCIE] = "PCIe",            
+    [BOOT_SOURCE_EMMC0] = "EMMC0",          
+    [BOOT_SOURCE_EMMC1] = "EMMC1"           
+};			  
 
 static ssize_t boot_success_scu_bl_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -177,13 +195,23 @@ static ssize_t bootstrap_image_storage_show(struct device *dev, struct device_at
 }
 
 static ssize_t scu_to_ap_timer_offset_ns_show(struct device *dev, struct device_attribute *attr,
-	char *buf)
+			char *buf)
 {
-struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
 
-return sprintf(buf, "%llu\n",
-	  hailo_soc->boot_info.scu_to_ap_timer_offset_ns);
+	return sprintf(buf, "%llu\n",
+				hailo_soc->boot_info.scu_to_ap_timer_offset_ns);
 }
+
+static ssize_t identification_attributes_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+	memcpy(buf, &hailo_soc->identification_attributes_file, sizeof(hailo_soc->identification_attributes_file));
+	return sizeof(hailo_soc->identification_attributes_file);
+}
+
+static DEVICE_ATTR_RO(identification_attributes);
 static DEVICE_ATTR_RO(boot_success_scu_bl);
 static DEVICE_ATTR_RO(boot_success_scu_fw);
 static DEVICE_ATTR_RO(boot_success_ap_bootloader);
@@ -221,6 +249,40 @@ static ssize_t fuse_show(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR_RO(fuse);
+
+static ssize_t jtag_selector_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	u8 value;
+
+	int ret = hailo_ops->get_jtag_selector(&value);
+	if (ret) {
+		dev_err(dev, "Failed to get JTAG selector: %d\n", ret);
+		return ret;
+	}
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t jtag_selector_store(struct device *dev, struct device_attribute *attr,
+                       const char *buf, size_t count)
+{
+	int value;
+	int ret;
+
+	if (kstrtouint(buf, 0, &value))
+		return -EINVAL;
+
+	ret = hailo_ops->set_jtag_selector(value);
+	if (ret) {
+		dev_err(dev, "Failed to set JTAG selector: %d\n", ret);
+		return ret;
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(jtag_selector);
 
 static ssize_t mbist_status_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -277,7 +339,13 @@ static struct attribute *hailo_versions_attrs[] = {
 
 static const struct attribute_group hailo_versions_group = { .name = "hailo_versions", .attrs = hailo_versions_attrs, };
 
-static struct attribute *hailo_attrs[] = { &dev_attr_fuse.attr, &dev_attr_mbist_status.attr, NULL };
+static struct attribute *hailo_attrs[] = {
+	&dev_attr_fuse.attr,
+	&dev_attr_jtag_selector.attr,
+	&dev_attr_mbist_status.attr,
+	&dev_attr_identification_attributes.attr,
+	NULL
+};
 
 ATTRIBUTE_GROUPS(hailo);
 
@@ -312,6 +380,90 @@ static int hailo_soc_fill_mbist_status_file(struct hailo_mbist_status_file *mbis
 
 	return 0;
 }
+
+static ssize_t hailo_throttling_show(enum scmi_hailo_throttling_domain domain, struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct scmi_hailo_get_throttling_mode_a2p params;
+	struct scmi_hailo_get_throttling_mode_p2a info;
+	int rc;
+
+	params.domain = domain;
+	rc = hailo_ops->get_throttling_mode(&params, &info);
+	return sprintf(buf, "%s\n", info.ctrl ? "auto" : "manual");
+}
+
+static ssize_t ap_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return hailo_throttling_show(SCMI_HAILO_THROTTLING_DOMAIN_AP, dev, attr, buf);
+}
+
+static ssize_t nncore_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return hailo_throttling_show(SCMI_HAILO_THROTTLING_DOMAIN_NNCORE, dev, attr, buf);
+}
+
+static ssize_t dsp_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return hailo_throttling_show(SCMI_HAILO_THROTTLING_DOMAIN_DSP, dev, attr, buf);
+}
+
+static ssize_t available_modes_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "auto, manual\n");
+}
+
+static ssize_t hailo_throttling_store(enum scmi_hailo_throttling_domain domain, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct scmi_hailo_set_throttling_mode_a2p params;
+	int rc;
+
+	if (sysfs_streq(buf, "auto")) {
+		params.ctrl = true; // Enable auto mode
+	} else if (sysfs_streq(buf, "manual")) {
+		params.ctrl = false; // Disable auto mode
+	} else {
+		dev_err(dev, "invalid throttling mode (=%s), please read available_modes attribute \n", buf);
+		return -EINVAL;
+	}
+	params.domain = domain;
+	rc = hailo_ops->set_throttling_mode(&params);
+
+	return count;
+}
+
+static int hailo_soc_fill_identification_attributes_file(struct hailo_identification_attributes_file *identification_attributes_file)
+{
+	struct scmi_hailo_identification_attributes_p2a identification_attributes;
+	int ret;
+	ret = hailo_ops->get_identification_attributes(&identification_attributes);
+	if (ret) {
+		return ret;
+	}
+
+	memcpy(identification_attributes_file, &identification_attributes, sizeof(struct scmi_hailo_identification_attributes_p2a));
+
+	return 0;
+}
+
+static ssize_t nncore_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	return hailo_throttling_store(SCMI_HAILO_THROTTLING_DOMAIN_NNCORE, dev, attr, buf, count);
+}
+
+static DEVICE_ATTR_RO(ap);
+static DEVICE_ATTR_RW(nncore);
+static DEVICE_ATTR_RO(dsp);
+static DEVICE_ATTR_RO(available_modes);
+
+static struct attribute *hailo_throttling_mode_attrs[] = {
+	&dev_attr_ap.attr,
+	&dev_attr_nncore.attr,
+	&dev_attr_dsp.attr,
+	&dev_attr_available_modes.attr,
+	NULL,
+};
+
+static const struct attribute_group hailo_throttling_mode_group = { .name = "throttling_mode", .attrs = hailo_throttling_mode_attrs, };
 
 static int hailo_soc_probe(struct platform_device *pdev)
 {
@@ -349,8 +501,8 @@ static int hailo_soc_probe(struct platform_device *pdev)
 		soc_dev_attr->machine = "Hailo-10h";
 	else if (strcmp(compat, "hailo,hailo15l") == 0)
 		soc_dev_attr->machine = "Hailo-15l";
-	else if (strcmp(compat, "hailo,hailo10h2") == 0)
-		soc_dev_attr->machine = "Hailo-10h2";
+	else if (strcmp(compat, "hailo,hailo12l") == 0)
+		soc_dev_attr->machine = "Hailo-12L";
 	else {
 		dev_err(&pdev->dev, "Invalid compatible\n");
 		return -EINVAL;
@@ -367,6 +519,12 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	ret = hailo_soc_fill_mbist_status_file(&hailo_soc->mbist_status_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to mbist status\n");
+		return ret;
+	}
+
+	ret = hailo_soc_fill_identification_attributes_file(&hailo_soc->identification_attributes_file);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to fill identification attributes\n");
 		return ret;
 	}
 
@@ -409,6 +567,12 @@ static int hailo_soc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	// Create attribute group "hailo_throttling_mode" under hailo soc device
+	ret = sysfs_create_group(&dev->kobj, &hailo_throttling_mode_group);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to create hailo_throttling_mode group\n");
+		return ret;
+	}
 	hailo_soc->soc_dev = soc_dev;
 	dev_set_drvdata(dev, hailo_soc);
 

@@ -764,6 +764,7 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 	initialize_current_state(dev, pinctrl);
 
 	raw_spin_lock_init(&pinctrl->register_lock);
+	raw_spin_lock_init(&pinctrl->set_mux_lock);
 
 	pinctrl->groups = h15_pin_groups;
 	pinctrl->num_groups = ARRAY_SIZE(h15_pin_groups);

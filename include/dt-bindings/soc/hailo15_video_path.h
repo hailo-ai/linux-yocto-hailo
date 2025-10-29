@@ -25,14 +25,14 @@
  * | 2  | HAILO15_VID_GRP_SX_CSI0_P2A    | /dev/video2  | CSI-0 | Pixel2Axi     | SDR       | pipes-vc[{0    }] = All VCs  |
  * |    |                                |              |       |               | HDR       | pipes-vc[{0,1,2}] = {0,1,2}  |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
- * | 3  | HAILO15_VID_GRP_MCM_IN         | /dev/video3  | -     | MCM input     |           |                              |
+ * | 3  | HAILO15_VID_GRP_SX_CSI1_ISP_MP | /dev/video3  | CSI-1 | ISP Main-path | SDR, HDR  |                              |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
- * | 4  | HAILO15_VID_GRP_SX_CSI1_ISP_MP | /dev/video4  | CSI-1 | ISP Main-path | SDR, HDR  |                              |
+ * | 4  | HAILO15_VID_GRP_SX_CSI1_ISP_SP | /dev/video4  | CSI-1 | ISP Self-path | SDR, HDR  |                              |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
  * | 5  | HAILO15_VID_GRP_SX_CSI1_P2A    | /dev/video5  | CSI-1 | Pixel2Axi     | SDR       | pipes-vc[{0    }] = All VCs  |
  * |    |                                |              |       |               | HDR       | pipes-vc[{0,1,2}] = {0,1,2}  |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
- * | 6  | HAILO15_VID_GRP_SX_CSI1_ISP_SP | /dev/video6  | CSI-1 | ISP Self-path | SDR, HDR  |                              |
+ * | 10 | HAILO15_VID_GRP_MCM_IN         | /dev/video10 | -     | MCM input     |           |                              |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
  * | 20 | HAILO15_VID_GRP_S0_CSI0_P2A    | /dev/video20 | CSI-0 | Pixel2Axi     | SDR       | pipe-vc[0]=0                 |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
@@ -56,12 +56,13 @@
 #define HAILO15_VID_GRP_SX_CSI0_ISP_MP   (0)
 #define HAILO15_VID_GRP_SX_CSI0_ISP_SP   (1)
 #define HAILO15_VID_GRP_SX_CSI0_P2A      (2)
-#define HAILO15_VID_GRP_MCM_IN           (3)
-#define HAILO15_VID_GRP_SX_CSI1_ISP_MP   (4)
+#define HAILO15_VID_GRP_SX_CSI1_ISP_MP   (3)
+#define HAILO15_VID_GRP_SX_CSI1_ISP_SP   (4)
 #define HAILO15_VID_GRP_SX_CSI1_P2A      (5)
-#define HAILO15_VID_GRP_SX_CSI1_ISP_SP   (6)
 
-#define HAILO15_VID_GRP_SX_MAX           (HAILO15_VID_GRP_SX_CSI1_ISP_SP + 1)
+#define HAILO15_VID_GRP_MCM_IN           (10)
+
+#define HAILO15_VID_GRP_SX_MAX           (HAILO15_VID_GRP_MCM_IN + 1)
 
 #define HAILO15_VID_GRP_P2A(_base, _sensor) (_base*10 + _sensor)
 #define HAILO15_VID_GRP_S0_CSI0_P2A HAILO15_VID_GRP_P2A(HAILO15_VID_GRP_SX_CSI0_P2A,0)

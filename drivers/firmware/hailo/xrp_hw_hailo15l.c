@@ -23,7 +23,7 @@
 #define DSP_CONFIG__DSP_INT_NONFATAL_MASK (0x38)
 #define DSP_CONFIG__DSP_IP_SYSRAM_ERROR_INT_MASK (0x94)
 #define DSP_CONFIG__DSP_ERR_INTERRUPT_MASK (0xa4)
-
+#define DSP_CONFIG__DSP_DEBUG_CFG (0x54)
 #define DSP_CONFIG__RUNSTALL (0x40)
 #define DSP_CONFIG__DSP_FAULT_MASK(x) (0x4c + 4 * (x))
 
@@ -34,8 +34,10 @@
 #define DSP_CONFIG__PHYSICAL_ADDRESS_BITS(addr) (((uint64_t)(addr) >> 27) & 0x1ff)
 #define DSP_CONFIG__DSP_ADDRESS_BITS(addr) (((uint32_t)(addr) >> 27) & 0xf)
 
-/* DSP_CFG offsets */
+/* DSP_CFG bit offsets */
 #define DSP_CONFIG__WWDT_EXT_COUNTER_DIS__OFFSET (18)
+#define DSP_CONFIG__DSP_DEBUG_CFG__DBGEN__OFFSET (4)
+#define DSP_CONFIG__DSP_DEBUG_CFG__SPIDEN__OFFSET (6)
 
 #define DSP_CONFIG_BIT(name) (1 << DSP_CONFIG__##name##__OFFSET)
 
@@ -45,6 +47,14 @@ static void map_dsp_to_physical_address_hailo15l(struct xvp *xvp, uint32_t dsp_a
     int phys_offset = DSP_CONFIG__PHYSICAL_ADDRESS_BITS(physical_address);
     dev_dbg(xvp->dev, "Mapping dsp lut %d to address %x\n", offset, phys_offset);
     dsp_config_writel(xvp, DSP_AXI_MASTER(offset), phys_offset);
+}
+
+static void enable_jtag_hailo15l(struct xvp *xvp)
+{
+    uint32_t dsp_debug_cfg_value = dsp_config_readl(xvp, DSP_DEBUG_CFG);
+    dsp_config_writel(
+        xvp, DSP_DEBUG_CFG,
+        dsp_debug_cfg_value | DSP_CONFIG_BIT(DSP_DEBUG_CFG__DBGEN) | DSP_CONFIG_BIT(DSP_DEBUG_CFG__SPIDEN));
 }
 
 static void disable_wwdt_hailo15l(struct xvp *xvp)
@@ -94,6 +104,7 @@ static void xrp_release_dsp_hailo15l(struct xvp *xvp)
 static const struct xrp_hw_ops hw_ops = {
     .map_dsp_to_physical_address = map_dsp_to_physical_address_hailo15l,
     .init_mem_ranges = init_mem_ranges_hailo15l,
+    .enable_jtag = enable_jtag_hailo15l,
     .disable_wwdt = disable_wwdt_hailo15l,
     .open_interrupts = open_interrupts_hailo15l,
     .configure_reset_vector = configure_reset_vector_hailo15l,

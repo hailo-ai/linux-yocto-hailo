@@ -430,64 +430,6 @@ out_loop:
 }
 EXPORT_SYMBOL(hailo15_media_create_links);
 
-struct v4l2_async_notifier* hailo15_media_find_child_notifier(struct v4l2_async_notifier *notifier) {
-	struct v4l2_async_notifier *n;
-	struct list_head *notifiers_list = &notifier->list;
-
-	// Skip iteration if the list is empty, or even uninitialized
-	if (list_empty(notifiers_list) || !notifiers_list->next || !notifiers_list->prev)
-		return NULL;
-
-	list_for_each_entry(n, notifiers_list, list) {
-		if (n->parent == notifier)
-			return n;
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL(hailo15_media_find_child_notifier);
-
-/* Find the sub-device notifier registered by a sub-device driver,
- * in a give list of notifiers */
-static struct v4l2_async_notifier*
-hailo15_media_find_subdev_notifier(struct v4l2_subdev *sd, struct list_head *notifiers_list) {
-	struct v4l2_async_notifier *n;
-
-	list_for_each_entry(n, notifiers_list, list)
-		if (n->sd == sd)
-			return n;
-
-	return NULL;
-}
-
-/* Check if the given notifier has some pending notifiers under it,
- * either directly, or under some subdevice's notifiers.
- * This function mimics the logic of v4l2_async_notifier_can_complete (which is private) */
-bool hailo15_media_check_completion(struct v4l2_async_notifier *notifier) {
-	struct v4l2_subdev *sd;
-	struct list_head *notifiers_list = &notifier->list;
-
-	// If something is still waiting, completion is not possible
-	if (!list_empty(&notifier->waiting)) {
-		return false;
-	}
-
-	list_for_each_entry(sd, &notifier->done, async_list) {
-		struct v4l2_async_notifier *subdev_notifier =
-			hailo15_media_find_subdev_notifier(sd, notifiers_list);
-
-		if (!subdev_notifier)
-			continue;
-
-		// Check the completion of the done subdev notifiers recursively
-		if (!hailo15_media_check_completion(subdev_notifier))
-			return false;
-	}
-
-	return true;
-}
-EXPORT_SYMBOL(hailo15_media_check_completion);
-
 int hailo15_media_register_video_subdev_nodes(struct v4l2_device *video_dev) {
 	return v4l2_device_register_subdev_nodes(video_dev);
 }

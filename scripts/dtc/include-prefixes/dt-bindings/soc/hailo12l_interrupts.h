@@ -1,5 +1,5 @@
-#ifndef _DT_BINDINGS_HAILO10H2_INTERRUPTS
-#define _DT_BINDINGS_HAILO10H2_INTERRUPTS
+#ifndef _DT_BINDINGS_HAILO12L_INTERRUPTS
+#define _DT_BINDINGS_HAILO12L_INTERRUPTS
 
 #define  HW_INTERRUPTS__A53_WATCHDOG_INT_IRQ                                             	( 40)
 #define  HW_INTERRUPTS__A53_WATCHDOG_RST_IRQ                                             	( 49)
@@ -96,4 +96,4 @@
 #define  HW_INTERRUPTS__WATCHDOG1_IRQ                                                    	(108)
 #define  HW_INTERRUPTS__XSPI_IRQ                                                         	(119)
 
-#endif /* _DT_BINDINGS_HAILO10H2_INTERRUPTS */
+#endif /* _DT_BINDINGS_HAILO12L_INTERRUPTS */

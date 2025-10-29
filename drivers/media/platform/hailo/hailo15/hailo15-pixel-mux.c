@@ -12,6 +12,9 @@
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/phy/phy.h>
+#include <linux/of_irq.h>
+#include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -23,10 +26,13 @@
 #include <media/v4l2-subdev.h>
 
 #define RES_MIN
+#define NUM_OF_VIRQ 3
 
 #include "common.h"
 #include "hailo15-media.h"
 #include "hailo15-pixel-mux.h"
+
+#define HAILO_PIXEL_MUX_NAME "hailo-pixel-mux"
 
 struct pm_config {
     uint16_t hailo15_buffer_ready_ap_int_mask_offset;
@@ -47,9 +53,20 @@ struct pm_config {
     uint16_t vision_asf_int_nonfatal_mask_offset;
     uint16_t vision_subsys_err_int_mask_offset;
     uint16_t vision_subsys_err_int_agg_mask_offset;
+    uint16_t vision_subsys_err_int_agg_status_offset;
     uint16_t vision_buffer_ready_ap_int_mask_offset;
     uint16_t hailo15_pixel_mux_vsync_mask_offset;
+    uint16_t vision_subsys_err_int_status_offset;
+    uint16_t vision_subsys_err_int_w1c_offset;
 
+    /* masks for the vision_subsys_err_int_agg regs */
+    u32 vision_subsys_err_int_bit_mask;
+    u32 isp_err_interrupt_bit_mask;
+    u32 csi_rx0_err_irq_bit_mask;
+    u32 csi_rx1_err_irq_bit_mask;
+    u32 csi_tx0_err_irq_bit_mask;
+
+    struct err_status_reg vision_subsys_err_int_reg;
     uint8_t vc_width;
 };
 
@@ -71,8 +88,26 @@ static const struct pm_config hailo15_pm_config = {
     .vision_asf_int_nonfatal_mask_offset = 0x88,
     .vision_subsys_err_int_mask_offset = 0x90,
     .vision_subsys_err_int_agg_mask_offset = 0xc4,
+    .vision_subsys_err_int_agg_status_offset = 0xc8,
     .vision_buffer_ready_ap_int_mask_offset = 0x60,
     .hailo15_pixel_mux_vsync_mask_offset = 0x48,
+    .vision_subsys_err_int_status_offset = 0x94,
+    .vision_subsys_err_int_w1c_offset = 0x98,
+    .vision_subsys_err_int_bit_mask = BIT(0),
+    .isp_err_interrupt_bit_mask = BIT(1),
+    .csi_rx0_err_irq_bit_mask = BIT(2),
+    .csi_rx1_err_irq_bit_mask = BIT(3),
+    .csi_tx0_err_irq_bit_mask = BIT(4),
+    .vision_subsys_err_int_reg = {
+        .name = "vision_subsys_err_int",
+        .num_errors = 2,
+        .errors = (struct error_message[]) {
+            { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7) | BIT(8) | BIT(9))),
+              .message = "sync_pulse_src_overflow" },
+            { .mask = BIT(10), 
+              .message = "pixel_mux_illegal_config" },
+        }
+        },
     .vc_width = 2,
 };
 
@@ -94,8 +129,40 @@ static const struct pm_config hailo15l_pm_config = {
     .vision_asf_int_nonfatal_mask_offset = 0x80,
     .vision_subsys_err_int_mask_offset = 0x88,
     .vision_subsys_err_int_agg_mask_offset = 0xc0,
+    .vision_subsys_err_int_agg_status_offset = 0xc4,
     .vision_buffer_ready_ap_int_mask_offset = 0x58,
     .hailo15_pixel_mux_vsync_mask_offset = 0x40,
+    .vision_subsys_err_int_status_offset = 0x8c,
+    .vision_subsys_err_int_w1c_offset = 0x90,
+    .vision_subsys_err_int_bit_mask = BIT(0),
+    .isp_err_interrupt_bit_mask = BIT(1),
+    .csi_rx0_err_irq_bit_mask = BIT(2),
+    .csi_rx1_err_irq_bit_mask = BIT(3),
+    .csi_tx0_err_irq_bit_mask = BIT(4),
+    .vision_subsys_err_int_reg = {
+        .name = "vision_subsys_err_int",
+        .num_errors = 9,
+        .errors = (struct error_message[]) {
+            { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7))),
+              .message = "sync_pulse_src_overflow" },
+            { .mask = BIT(8),
+              .message = "pixel_mux_illegal_config" },
+            { .mask = BIT(9),
+              .message = "dwe_axi_len_err ,Indicates dewarp AXI length > 15; which is not supported" },
+            { .mask = BIT(10), 
+              .message = "isp_end_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
+            { .mask = BIT(11),
+              .message = "isp_base_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
+            { .mask = BIT(12), 
+              .message = "dwe_end_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
+            { .mask = BIT(13),
+              .message = "dwe_base_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
+            { .mask = BIT(14), 
+              .message = "dwe_bresp ,Received error response on DeWarp Write AXI interface" },
+            { .mask = BIT(15), 
+              .message = "dwe_rresp ,Received error response on DeWarp Read AXI interface" },
+        }
+    },
     .vc_width = 4,
 };
 
@@ -107,14 +174,6 @@ static const struct of_device_id hailo_pixel_mux_of_table[] = {
 
 MODULE_DEVICE_TABLE(of, hailo_pixel_mux_of_table);
 
-enum pixel_mux_pads {
-	PIXEL_MUX_SINK_PAD_0,
-	PIXEL_MUX_SINK_PAD_1,
-	PIXEL_MUX_SINK_PAD_MAX,
-	PIXEL_MUX_SOURCE_PAD_0 = PIXEL_MUX_SINK_PAD_MAX,
-	PIXEL_MUX_SOURCE_PAD_1,
-	PIXEL_MUX_PAD_MAX,
-};
 
 struct pixel_mux_priv {
 	struct device *dev;
@@ -130,6 +189,7 @@ struct pixel_mux_priv {
 	struct clk *vision_clk;
 	struct clk *vision_hclk;
 	int irq;
+	struct irq_domain *irq_domain;	
 
 	u8 num_lanes;
 	u8 max_lanes;
@@ -143,6 +203,7 @@ struct pixel_mux_priv {
 	int num_exposures;
 
 	bool enabled;
+	bool isp_configured;
 
 	/* Remote source */
 	struct {
@@ -221,8 +282,78 @@ static const struct hailo15_mux_interrupt_cfg int_cfg = {
 	.vision_asf_int_fatal_mask = 0xff,
 	.vision_asf_int_nonfatal_mask = 0xff,
 	.vision_subsys_err_int_mask = 0x7ff,
-	.vision_subsys_err_int_agg_mask = 0x1f
+	.vision_subsys_err_int_agg_mask = 0x1
 };
+
+static irqreturn_t vision_subsys_err_int_irq_handler(int irq, void *data)
+{
+	struct pixel_mux_priv *pixel_mux = data;
+	u32 errors;
+	u32 mask;
+
+	if (!pixel_mux) {
+		pr_err("pixel_mux is null\n");
+		return IRQ_NONE;
+	}
+	if (!pixel_mux->pm_cfg) {
+		pr_err("pm_cfg is null\n");
+		return IRQ_NONE;
+	}
+	errors = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_status_offset);
+	/* Ignore if there are no vision_subsys errors */
+	if (!errors) {
+		return IRQ_NONE;
+	}
+	mask = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_mask_offset);
+	hailo15_print_irq_error_message((struct err_status_reg *)&pixel_mux->pm_cfg->vision_subsys_err_int_reg, errors & mask, irq);
+
+	/* Clear the error IRQs */
+	writel(errors, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_w1c_offset);
+
+	/* Turn off current error bits in the mask */
+	writel(mask & ~errors, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_mask_offset);
+	pr_debug("cleared vision_subsys_err_int and added mask: 0x%x\n", mask & ~errors);
+
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t pixel_mux_error_irq_handler(int irq, void *data)
+{
+	struct pixel_mux_priv *pixel_mux = data;
+	uint32_t status;
+	int virq;
+
+	status = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_status_offset);
+		if (status & pixel_mux->pm_cfg->vision_subsys_err_int_bit_mask) {
+		return vision_subsys_err_int_irq_handler(irq, data);
+	}
+
+    if (status & pixel_mux->pm_cfg->isp_err_interrupt_bit_mask) {
+        virq = irq_find_mapping(pixel_mux->irq_domain, 0);
+        generic_handle_irq(virq);
+    }
+
+    if (status & pixel_mux->pm_cfg->csi_rx0_err_irq_bit_mask) {
+        virq = irq_find_mapping(pixel_mux->irq_domain, 1);
+        generic_handle_irq(virq);
+    }
+
+	if (status & pixel_mux->pm_cfg->csi_rx1_err_irq_bit_mask) {
+		virq = irq_find_mapping(pixel_mux->irq_domain, 2);
+		generic_handle_irq(virq);
+	}
+
+    return IRQ_HANDLED;
+}
+
+static int pixel_mux_querycap(struct pixel_mux_priv *pixel_mux,
+    struct v4l2_capability *cap)
+{
+    strlcpy((char *)cap->driver, HAILO_PIXEL_MUX_NAME, sizeof(cap->driver));
+    strlcpy((char *)cap->card, "HAILO", sizeof(cap->card));
+    memset(cap->bus_info, 0, sizeof(cap->bus_info));
+    return 0;
+}
 
 static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 				 void *arg)
@@ -251,9 +382,12 @@ static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		break;
 
 	case VIDIOC_QUERYCAP:
-		pr_debug("pixel_mux does't supports querycap\n");
-		ret = -ENOENT;
-		break;
+        ret = pixel_mux_querycap(pixel_mux, arg);
+        if (ret) {
+            pr_err("pixel_mux: failed to query capabilities, ret: %d\n", ret);
+            return ret;
+        }
+        break;
 
 	default:
 		pr_debug("pixel_mux: got unsupported ioctl 0x%x, Context(process: %s, PID: %d)\n", cmd, current->comm, current->pid);
@@ -364,32 +498,9 @@ hailo_pixel_mux_configure_dest(const struct pixel_mux_priv *pixel_mux,
 		pixel_mux->base + pm_cfg->vision_asf_int_nonfatal_mask_offset);
 	writel(int_cfg.vision_subsys_err_int_mask,
 		pixel_mux->base + pm_cfg->vision_subsys_err_int_mask_offset);
-	writel(int_cfg.vision_subsys_err_int_agg_mask,
+	mask = readl(pixel_mux->base + pm_cfg->vision_subsys_err_int_agg_mask_offset);
+	writel(mask | int_cfg.vision_subsys_err_int_agg_mask,
 		pixel_mux->base + pm_cfg->vision_subsys_err_int_agg_mask_offset);
-}
-
-static int pixel_mux_grp_id_to_pad_index(int grp_id)
-{
-	switch (grp_id) {
-		case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
-		case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
-		case HAILO15_VID_GRP_SX_CSI0_P2A:
-		case HAILO15_VID_GRP_S0_CSI0_P2A:
-		case HAILO15_VID_GRP_S1_CSI0_P2A:
-		case HAILO15_VID_GRP_S2_CSI0_P2A:
-		case HAILO15_VID_GRP_S3_CSI0_P2A:
-			return PIXEL_MUX_SINK_PAD_0;
-		case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
-		case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
-		case HAILO15_VID_GRP_SX_CSI1_P2A:
-		case HAILO15_VID_GRP_S0_CSI1_P2A:
-		case HAILO15_VID_GRP_S1_CSI1_P2A:
-		case HAILO15_VID_GRP_S2_CSI1_P2A:
-		case HAILO15_VID_GRP_S3_CSI1_P2A:
-			return PIXEL_MUX_SINK_PAD_1;
-		default:
-			return -EINVAL;
-	}
 }
 
 static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
@@ -404,7 +515,7 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 	if (!pixel_mux)
 		return -EINVAL;
 
-	if (pixel_mux_grp_id_to_pad_index(sd->grp_id) < 0)
+	if (pixel_mux_grp_id_to_sink_pad_index(sd->grp_id) < 0)
 		return -EINVAL;
 
 	if (enable && !pixel_mux->enabled) {
@@ -423,10 +534,16 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 		pixel_mux->enabled = 1;
 	}
 
-	if (enable && !pixel_mux->remote_sources[sd->grp_id].configured) {
+	if (enable && !pixel_mux->remote_sources[pixel_mux_grp_id_to_sink_pad_index(sd->grp_id)].configured) {
 		if (hailo15_is_isp_grp_id(sd->grp_id)) {
-			hailo_pixel_mux_configure_dest(pixel_mux, &isp_cfg);
+			/* only configure isp dest once - for 2 sensors stream */
+			if (!pixel_mux->isp_configured) {
+				hailo_pixel_mux_configure_dest(pixel_mux, &isp_cfg);
+				pixel_mux->isp_configured = true;
+			}
 		} else if (hailo15_is_p2a_grp_id(sd->grp_id)) {
+			/* reset isp configured flag when using p2a */
+			pixel_mux->isp_configured = false;
 			switch (pixel_mux->num_exposures) {
 				case 1:
 					dev_dbg(pixel_mux->dev, "Configuring P2A for 1 exposure\n");
@@ -455,9 +572,9 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 	}
 
-	pixel_mux->remote_sources[sd->grp_id].configured = enable;
+	pixel_mux->remote_sources[pixel_mux_grp_id_to_sink_pad_index(sd->grp_id)].configured = enable;
 
-	pad = &pixel_mux->pads[pixel_mux_grp_id_to_pad_index(sd->grp_id)];
+	pad = &pixel_mux->pads[pixel_mux_grp_id_to_sink_pad_index(sd->grp_id)];
 	if (pad)
 		pad = media_entity_remote_pad(pad);
 
@@ -558,7 +675,7 @@ static int pixel_mux_set_fmt(struct v4l2_subdev *sd,
 	}
 
 	/* Propagate fake format to sink */
-	sink_pad_idx = pixel_mux_grp_id_to_pad_index(sd->grp_id);
+	sink_pad_idx = pixel_mux_grp_id_to_sink_pad_index(sd->grp_id);
 	pad = &pixel_mux->pads[sink_pad_idx];
 	if (pad)
 		pad = media_entity_remote_pad(pad);
@@ -581,37 +698,12 @@ finish:
 	return ret;
 }
 
-static bool hailo_pixel_mux_async_check_subdev_notifier_completion(struct v4l2_async_notifier *video_notifier)
-{
-	// The pixel mux subdevice notifier is the child of the video notifier
-	struct v4l2_async_notifier *subdev_notifier = hailo15_media_find_child_notifier(video_notifier);
-	bool result;
-
-	pr_debug("hailo15_pixel_mux: checking subdev notifier completion\n");
-
-	if (!subdev_notifier) {
-		// If the subdevice notifier could not be found, we cannot complete the registration
-		dev_info(video_notifier->v4l2_dev->dev, "Could not find child notifier in the list");
-		return false;
-	}
-
-	result = hailo15_media_check_completion(subdev_notifier);
-	pr_debug("hailo15_pixel_mux: subdev notifier completion is %d\n", result);
-
-	return result;
-}
-
 static int hailo15_pixel_mux_async_complete(struct v4l2_async_notifier *video_notifier)
 {
 	struct v4l2_device *video_dev = video_notifier->v4l2_dev;
 	int ret = 0;
 
 	pr_debug("hailo15_pixel_mux: complete function invoked\n");
-
-	/* Since Linux invokes the complete function on the root notifier (which doesnt hold the subdevice),
-	 * we need to check if the subdevice notifier is ready */
-	if (!hailo_pixel_mux_async_check_subdev_notifier_completion(video_notifier))
-		return 0;
 
 	if (!video_dev) {
 		dev_err(video_dev->dev, "Complete function was invoked, but the notifier does not hold a v4l2 video device!");
@@ -749,6 +841,115 @@ static int hailo15_init_dma_ctx(struct hailo15_dma_ctx *ctx,
 	return 0;
 }
 
+static u32 hailo_pixel_mux_hwirq_to_mask(irq_hw_number_t hwirq, const struct pm_config *pm_cfg)
+{
+    switch (hwirq) {
+    case 0: /* ISP error interrupt */
+        return pm_cfg->isp_err_interrupt_bit_mask;
+    case 1: /* CSI RX0 error interrupt */
+        return pm_cfg->csi_rx0_err_irq_bit_mask;
+    case 2: /* CSI RX1 error interrupt */
+        return pm_cfg->csi_rx1_err_irq_bit_mask;
+    default:
+        return 0;
+    }
+}
+
+static void hailo_pixel_mux_irq_enable(struct irq_data *data)
+{
+    struct irq_domain *domain = data->domain;
+    struct pixel_mux_priv *pixel_mux = domain->host_data;
+    u32 mask_bit = hailo_pixel_mux_hwirq_to_mask(data->hwirq, pixel_mux->pm_cfg);
+    u32 current_mask;
+
+    if (!mask_bit) {
+        dev_err(pixel_mux->dev, "Invalid hwirq %lu for enable\n", data->hwirq);
+        return;
+    }
+
+    /* Read current mask, set the bit, write back */
+    current_mask = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
+    current_mask |= mask_bit;
+    writel(current_mask, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
+    
+    dev_dbg(pixel_mux->dev, "Enabled virq %u (hwirq %lu), mask bit 0x%x, new mask 0x%x\n", 
+            data->irq, data->hwirq, mask_bit, current_mask);
+}
+
+static void hailo_pixel_mux_irq_disable(struct irq_data *data)
+{
+    struct irq_domain *domain = data->domain;
+    struct pixel_mux_priv *pixel_mux = domain->host_data;
+    u32 mask_bit = hailo_pixel_mux_hwirq_to_mask(data->hwirq, pixel_mux->pm_cfg);
+    u32 current_mask;
+
+    if (!mask_bit) {
+        dev_err(pixel_mux->dev, "Invalid hwirq %lu for disable\n", data->hwirq);
+        return;
+    }
+
+    /* Read current mask, clear the bit, write back */
+    current_mask = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
+    current_mask &= ~mask_bit;
+    writel(current_mask, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
+    
+    dev_dbg(pixel_mux->dev, "Disabled virq %u (hwirq %lu), mask bit 0x%x, new mask 0x%x\n", 
+            data->irq, data->hwirq, mask_bit, current_mask);
+}
+
+static struct irq_chip hailo_pixel_mux_irq_chip = {
+    .name = "hailo-pixel-mux",
+    .irq_enable = hailo_pixel_mux_irq_enable,
+    .irq_disable = hailo_pixel_mux_irq_disable,
+};
+
+static int hailo_pixel_mux_irq_domain_map(struct irq_domain *d, unsigned int irq, irq_hw_number_t hwirq)
+{
+    irq_set_chip_and_handler(irq, &hailo_pixel_mux_irq_chip, handle_level_irq);
+    irq_set_chip_data(irq, d->host_data);
+    return 0;
+}
+
+static const struct irq_domain_ops hailo_pixel_mux_irq_domain_ops = {
+    .map = hailo_pixel_mux_irq_domain_map,
+    .xlate = irq_domain_xlate_onecell,
+};
+
+static int pixel_mux_init_irq_handler(struct pixel_mux_priv *pixel_mux,
+				struct platform_device *pdev)
+{
+	struct device_node *node = pdev->dev.of_node;
+	struct device *dev = &pdev->dev;
+	int ret, loop_index,virq;
+
+	pixel_mux->irq_domain = irq_domain_add_linear(node, NUM_OF_VIRQ, &hailo_pixel_mux_irq_domain_ops, pixel_mux);
+	if (!pixel_mux->irq_domain) {
+		dev_err(&pdev->dev, "Failed to add IRQ domain\n");
+		return -ENOMEM;
+	}
+	pixel_mux->irq = platform_get_irq_byname(pdev, "vision_subsys_err_int");
+	if (pixel_mux->irq < 0) {
+		return pixel_mux->irq;
+	}
+	for (loop_index = 0; loop_index < NUM_OF_VIRQ; loop_index++) {
+		virq = irq_create_mapping(pixel_mux->irq_domain, loop_index);
+		if (!virq) {
+			dev_err(dev, "Failed to map sub-interrupt %d\n", loop_index);
+		} else {
+			dev_dbg(dev, "Mapped sub-interrupt %d to virtual IRQ %d\n", loop_index, virq);
+		}
+	}
+
+	ret = devm_request_irq(&pdev->dev, pixel_mux->irq, pixel_mux_error_irq_handler,
+						   0, dev_name(&pdev->dev), pixel_mux);
+	if (ret) {
+		dev_err(pixel_mux->dev, "Failed to request error IRQ. Error %d\n", ret);
+		return ret;
+	}
+
+    return 0;
+}
+
 static int pixel_mux_probe(struct platform_device *pdev)
 {
 	struct pixel_mux_priv *pixel_mux;
@@ -786,6 +987,8 @@ static int pixel_mux_probe(struct platform_device *pdev)
         dev_err(&pdev->dev, "Failed to remap IO memory %pR, err = (%pe)\n", res, pixel_mux->base);
         return PTR_ERR(pixel_mux->base);
 	}
+
+	ret = pixel_mux_init_irq_handler(pixel_mux, pdev);
 
 	pixel_mux->vision_clk = devm_clk_get(&pdev->dev, "vision_clk");
 	if (IS_ERR(pixel_mux->vision_clk)) {
@@ -897,7 +1100,7 @@ static struct platform_driver pixel_mux_driver = {
 	.probe	= pixel_mux_probe,
 	.remove	= pixel_mux_remove,
 	.driver	= {
-		.name = "hailo-pixel-mux",
+		.name = HAILO_PIXEL_MUX_NAME,
 		.of_match_table	= hailo_pixel_mux_of_table,
 	},
 };

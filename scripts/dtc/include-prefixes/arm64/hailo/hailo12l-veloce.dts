@@ -1,6 +1,6 @@
 /dts-v1/;
 
-#include "hailo10h2-base.dtsi"
+#include "hailo12l-base.dtsi"
 
 / {
     memory {

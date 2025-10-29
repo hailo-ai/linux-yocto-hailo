@@ -45,10 +45,10 @@ void monitor_af_statistics(struct work_struct *work) {
 		pr_debug("%s - af event ready\n", __func__);
 		mutex_lock(&af_kevent.data_lock);
 		pr_debug(
-			"%s - af data: sum_a = %u, sum_b = %u, sum_c = %u, lum_a = %u, lum_b = %u, lum_c = %u\n",
+			"%s - af data: sum_a = %u, sum_b = %u, sum_c = %u, lum_a = %u, lum_b = %u, lum_c = %u, vdid = %d\n",
 			__func__, af_kevent.sum_a, af_kevent.sum_b,
 			af_kevent.sum_c, af_kevent.lum_a, af_kevent.lum_b,
-			af_kevent.lum_c);
+			af_kevent.lum_c, af_kevent.vdid);
 		af_kevent.ready = 0;
 		mutex_unlock(&af_kevent.data_lock);
 	}

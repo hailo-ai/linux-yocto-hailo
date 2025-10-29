@@ -1075,8 +1075,8 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 	else if (strcmp(compat, "hailo,hailo15l-noc-pmu") == 0) {
 		hailo_pmu->sample_size = sizeof(struct noc_sample_h15l);
 	}
-	else if (strcmp(compat, "hailo,hailo10h2") == 0) {
-		dev_err(&pdev->dev, "noc tools doesn't work for hailo10h2\n");
+	else if (strcmp(compat, "hailo,hailo12l") == 0) {
+		dev_err(&pdev->dev, "noc tools doesn't work for hailo12l\n");
 		return -EINVAL;
 	}
 	else {
@@ -1114,7 +1114,7 @@ static int hailo_pmu_remove(struct platform_device *pdev)
 static const struct of_device_id hailo_noc_pmu_dt_ids[] = {
 	{ .compatible = "hailo,hailo15-noc-pmu"},
 	{ .compatible = "hailo,hailo15l-noc-pmu"},
-	{ .compatible = "hailo,hailo10h2-noc-pmu"},
+	{ .compatible = "hailo,hailo12l-noc-pmu"},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, hailo_noc_pmu_dt_ids);

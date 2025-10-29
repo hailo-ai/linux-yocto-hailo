@@ -19,9 +19,30 @@
 #include "hailo15-isp.h"
 #include "hailo15-video-events.h"
 
+#include "hailo15-rxw-traces.h"
+
 #define MAX_WAIT_ITERATIONS 200000
 #define WAIT_MICRO_SEC_BOTTOM_RANGE 5
 #define WAIT_MICRO_SEC_TOP_RANGE 10
+
+
+static void trace_hailo_video_event_fmt(struct video_device *vdev, char* fmt, ...)
+{
+	char msg[128];
+
+	int len = 128;
+	va_list args;
+	va_start(args, fmt);
+	len = vsnprintf(msg, len, fmt, args);
+	if(len > 126) {
+		len = 126;
+		msg[len++] = '*';
+	}
+
+	msg[len] = '\0';
+	va_end(args);
+	trace_hailo_video_event(vdev, msg);
+}
 
 static int hailo15_video_event_subscribed(struct video_device *vdev,
 					  uint32_t type, uint32_t id)
@@ -31,12 +52,18 @@ static int hailo15_video_event_subscribed(struct video_device *vdev,
 	struct v4l2_subscribed_event *sev;
 	int subscribed = 0;
 
+	trace_hailo_video_event_fmt(vdev,
+						 	"entering 0x%x 0x%x",
+						 	type, id);
 	spin_lock_irqsave(&vdev->fh_lock, flags);
 
 	list_for_each_entry (fh, &vdev->fh_list, list) {
 		list_for_each_entry (sev, &fh->subscribed, list) {
 			if (sev->type == type && sev->id == id) {
 				subscribed = 1;
+				trace_hailo_video_event_fmt(vdev,
+										"subscribed 0x%x 0x%x",
+									 	type, id);
 				break;
 			}
 		}
@@ -87,12 +114,16 @@ int hailo15_video_post_event(struct video_device *vdev,
 	}
 
 	if (event_meta.event_type != HAILO15_DEAMON_VIDEO_EVENT) {
+		trace_hailo_video_event_fmt(vdev,
+								"event type 0x%x 0x%x is not video",
+							 	event_meta.event_type, event_meta.event_id);
+
 		pr_err("%s - event type is %d, not video\n", __func__, event_meta.event_type);
 		return -EINVAL;
 	}
 
 	if (hailo15_video_event_subscribed(vdev, event_meta.event_type,
-					   event_meta.event_id)) {
+									   event_meta.event_id)) {
 		event.type = event_meta.event_type;
 		event.id = event_meta.event_id;
 		event_data = (struct hailo15_video_event_pkg_head *)event.u.data;
@@ -115,6 +146,9 @@ int hailo15_video_post_event(struct video_device *vdev,
 			} else {
 				pr_err("%s - got data with bad data size: %ld\n", __func__, data_size);
 				mutex_unlock(&event_resource->event_lock);
+				trace_hailo_video_event_fmt(vdev,
+									    "posting event 0x%2x 0x%2x",
+									     event.type, event.id);
 				return -EINVAL;
 			}
 		}
@@ -130,15 +164,18 @@ int hailo15_video_post_event(struct video_device *vdev,
 		}
 
 		mutex_unlock(&event_resource->event_lock);
+		trace_hailo_video_event_fmt(vdev,
+								"pad %d posted event_type 0x%x event_id=0x%x",
+							 	pad, event_meta.event_type, event_meta.event_id);
 	} else {
 		pr_warn("%s: event id: %d not subscribed\n", __func__,
 			event_meta.event_id);
+
 		ret = -EINVAL;
 	}
 
 	return ret;
 }
-
 
 int hailo15_video_post_event_create_pipeline(struct hailo15_video_node *vid_node)
 {
@@ -147,8 +184,8 @@ int hailo15_video_post_event_create_pipeline(struct hailo15_video_node *vid_node
 		HAILO15_DAEMON_VIDEO_EVENT_CREATE_PIPELINE
 	};
 	return hailo15_video_post_event(vid_node->video_dev, meta,
-					&(vid_node->event_resource),
-					vid_node->pad.index, NULL, 0);
+									&(vid_node->event_resource),
+									vid_node->pad.index, NULL, 0);
 }
 
 int hailo15_video_post_event_release_pipeline(

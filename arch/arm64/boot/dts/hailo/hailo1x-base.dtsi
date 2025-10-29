@@ -14,8 +14,10 @@
 #include <dt-bindings/phy/phy-cadence.h>
 #include <dt-bindings/phy/phy-hailo-torrent.h>
 
-/* Fist 2MB are reserve memory for the platform (currently only TrustedFirmware-A) */
+/* First 2MB are reserved memory for the platform (TrustedFirmware-A) */
 /memreserve/ 0x80000000 0x200000;
+/* reserved for u-boot / tfa boot logs and pcie boot communication page */
+/memreserve/ 0x802f0000 0x10000;
 
 / {
     model = "Hailo - Hailo15";
@@ -361,35 +363,25 @@
         ranges;
 
         /* ******* DDR 1'st GiB ******* */
-        /* Hailo nn-core firmware: static reserve 32MiB area: [0x82000000 - 0x84000000)
-           - must be at 0xCXXXXXXX for main2fast LUT to work (accessing 0x3XXXXXXX->0xCXXXXXXX in the NNM firmware) */
+        /* Hailo nn-core firmware: static reserve 2MiB area: [0x80500000 - 0x80700000)
+           - must be at 0x8XXXXXXX for main2fast LUT to work (accessing 0x3XXXXXXX->0x8XXXXXXX in the NNM firmware) */
         hailo_nnc_fw_cma: hailo_nnc_fw_cma@0 {
-            reg = <0 0x82000000 0 0x2000000>;
+            reg = <0 0x80500000 0 0x200000>;
             no-map;
         };
-        // XRP(DSP): static reserve 2MiB for DSP Firmware code: [0x84000000 - 0x84200000).
+        // XRP(DSP): static reserve 2MiB for DSP Firmware code: [0x80300000 - 0x80500000).
         xrp_reserved: xrp@0 {
             status = "disabled";
-            reg = <0 0x84000000 0 0x200000>;
+            reg = <0 0x80300000 0 0x200000>;
         };
-        // Media buffer: reserve 896 Mib: [0x86000000 - 0xBE000000)
+        // Media buffer: reserve 896 Mib: [0x88000000 - 0xC0000000)
         hailo_media_buf_cma: hailo_media_buf,cma {
             compatible = "shared-dma-pool";
             reusable;
-            size = <0x0 0x38000000>;
             linux,cma-hailo;
-            alloc-ranges = <0 0x86000000 0 0x38000000>;
+            reg = <0 0x88000000 0 0x38000000>;
         };
 
-        /* ******* DDR 2'nd GiB ******* */
-        // Encoder(vc8000e): reserve 128MiB: [0xC0000000 - 0xC8000000)
-        vc8000e_reserved: vc8000e_buffer@0 {
-            status = "disabled";
-            no-map;
-            alignment = <0x0 0x4000>;
-            size = <0x0 0x8000000>;
-            alloc-ranges = <0 0xC0000000 0 0x8000000>;
-        };
         // SDIO-0: static reserve 64MiB for DMA bounce buffer: [0xC8000000 - 0xCC000000).
         sdio0_reserved: buffer@0 {
             status = "disabled";
@@ -400,9 +392,19 @@
         cma: linux,cma {
             compatible = "shared-dma-pool";
             reusable;
-            size = <0x0 0x20000000>;
             linux,cma-default;
-            alloc-ranges = <0 0xCC000000 0 0x20000000>;
+            reg = <0 0xCC000000 0 0x20000000>;
+        };
+        // Log messages and errors to RAM: reserve 960 KiB: [0x80200000 - 0x802f0000)
+        ramoops: ramoops@85F00000 {
+            compatible = "ramoops";
+            reg = <0 0x80200000 0 0x000f0000>;
+            record-size = <0x00040000>;       /* 256 KB per record */
+            console-size = <0x00040000>;      /* 256 KB for printk logs */
+            ftrace-size = <0x00020000>;       /* 128 KB for ftrace */
+            pmsg-size = <0x00010000>;         /* 128 KB for pmsg */
+            max-reason = <3>;                 /* KMSG_DUMP_EMERG */
+            no-map;
         };
     };
 

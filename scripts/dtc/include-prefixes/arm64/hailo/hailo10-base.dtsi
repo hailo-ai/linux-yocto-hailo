@@ -10,3 +10,51 @@
         compatible = "hailo,hailo10h";
     };
 };
+
+&pvt_ts_0_trip_point_0 {
+    temperature = <95000>;
+    hysteresis = <4999>;
+};
+&pvt_ts_0_trip_point_1 {
+    temperature = <105000>;
+    hysteresis = <4999>;
+};
+&pvt_ts_0_trip_point_2 {
+    temperature = <110000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_0_trip_point_3 {
+    temperature = <115000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_0_trip_point_4 {
+    temperature = <119000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_0_trip_point_crit {
+    temperature = <122000>;
+};
+
+&pvt_ts_1_trip_point_0 {
+    temperature = <95000>;
+    hysteresis = <4999>;
+};
+&pvt_ts_1_trip_point_1 {
+    temperature = <105000>;
+    hysteresis = <4999>;
+};
+&pvt_ts_1_trip_point_2 {
+    temperature = <110000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_1_trip_point_3 {
+    temperature = <115000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_1_trip_point_4 {
+    temperature = <119000>;
+    hysteresis = <2999>;
+};
+&pvt_ts_1_trip_point_crit {
+    temperature = <122000>;
+};

@@ -1,12 +1,26 @@
 #ifndef __HAILO15_ISP_HW_H
 #define __HAILO15_ISP_HW_H
 
+/* Register operation struct for unified register access with vdid support */
+struct hailo15_reg_op {
+	uint32_t reg;    /* register offset */
+	uint32_t value;  /* register value */
+	int vdid;        /* vdid (-1 means get from FE if enabled) */
+};
+
+/* Convenience macros for register operations */
+#define HAILO15_REG_OP_DEFAULT(register, val) { .reg = (register), .value = (val), .vdid = -1 }
+#define HAILO15_REG_OP_WITH_VDID(register, val, vid) { .reg = (register), .value = (val), .vdid = (vid) }
+#define HAILO15_REG_READ_DEFAULT(register) { .reg = (register), .value = 0, .vdid = -1 }
+#define HAILO15_REG_READ_WITH_VDID(register, vid) { .reg = (register), .value = 0, .vdid = (vid) }
+
 #define INPUT_WIDTH 3840
 #define INPUT_HEIGHT 2160
 #define ISP_MP_Y_RING_FRAMES 2
 
 /* ISP specific registers */
 #define VI_IRCL 0x14
+#define VI_DPCL 0x18
 #define VI_IRCL_RESET_ISP 0xffffffff
 #define VI_IRCL_RESET_ISP_CLEAR 0
 #define ISP_ACQ_PROP 0x00000404
@@ -15,6 +29,7 @@
 #define MIV2_SP2_YCBCR_FRAME_END_MASK BIT(4)
 #define MIV2_MCM_DMA_RAW_READY_MASK BIT(24)
 #define MIV2_MCM_RAW0_FRAME_END BIT(6)
+#define MIV2_MCM_RAW1_FRAME_END BIT(7)
 #define ISP_MIS 0x000005c4
 #define ISP_MIS_DATA_LOSS BIT(2)
 #define ISP_MIS_SENSORS_COUNT 4
@@ -24,6 +39,8 @@
 #define MIV2_ICR1 0x000016dc
 #define MIV2_ICR2 0x000016f4
 #define MIV2_ICR3 0x000056dc
+#define MIV2_IMSC 0x000016c0
+#define MIV2_RIS 0x000016c8
 #define MIV2_MIS 0x000016d0
 #define MIV2_MIS1 0x000016d4
 #define MIV2_MIS2 0x000016f0
@@ -108,12 +125,31 @@
 #define MIV2_MCM_DMA_RAW_PIC_START_AD 0x166c
 #define MI_MCM_CTRL 0x1600
 #define MCM_RD_CFG_UPD BIT(6)
+#define MCM_WR_AUTO_UPDATE BIT(0)
+#define MI_MCM_RAW0_BASE_AD_INIT 0x1614
+#define MI_MCM_RAW0_SIZE_INIT 0x1618
+#define MI_MCM_RAW0_OFFS_CNT_INIT 0x161c
+#define MI_MCM_RAW0_LLENGTH 0x1620
+#define MI_MCM_RAW0_PIC_WIDTH 0x1624
+#define MI_MCM_RAW0_PIC_HEIGHT 0x1628
+#define MI_MCM_RAW0_PIC_SIZE 0x162c
+#define MI_MCM_RAW0_OFFS_CNT_START 0x1630
+#define MI_MCM_RAW1_BASE_AD_INIT 0x1640
+#define MI_MCM_RAW1_SIZE_INIT 0x1644
+#define MI_MCM_RAW1_OFFS_CNT_INIT 0x1648
+#define MI_MCM_RAW1_LLENGTH 0x164c
+#define MI_MCM_RAW1_PIC_WIDTH 0x1650
+#define MI_MCM_RAW1_PIC_HEIGHT 0x1654
+#define MI_MCM_RAW1_PIC_SIZE 0x1658
+#define MI_MCM_RAW1_OFFS_CNT_START 0x165c
 #define MI_MCM_DMA_RAW_PIC_WIDTH 0x1670
 #define MI_MCM_DMA_RAW_PIC_LLENGTH 0x1674
 #define MI_MCM_DMA_RAW_PIC_LVAL 0x1690
 #define MI_MCM_DMA_RAW_PIC_SIZE 0x1678
 #define MCM_RD_CFG 0x1280
 #define MI_MCM_FMT 0X1604
+#define MCM_WR0_RAW_BIT BIT(5) /* raw12 */
+#define MCM_WR1_RAW_BIT BIT(9) /* raw12 */
 #define MCM_RD_RAW12_BIT 2
 #define MCM_RD_RAW16_BIT 4
 #define MI_IMSC 0x16C0
@@ -134,6 +170,7 @@ enum isp_mcm_mode {
     ISP_MCM_MODE_STITCHING,
     ISP_MCM_MODE_INJECTION,
     ISP_MCM_MODE_RAW12_PACKED,
+    ISP_MCM_MODE_MULTI_SENSOR,
     ISP_MCM_MODE_MAX
 };
 

@@ -362,6 +362,8 @@ struct vsc85xx_hw_stat {
 struct vsc8531_private {
 	int rate_magic;
 	u16 supp_led_modes;
+	u32 rx_clk_skew;
+	u32 tx_clk_skew;
 	u32 leds_mode[MAX_LEDS];
 	u8 nleds;
 	const struct vsc85xx_hw_stat *hw_stats;

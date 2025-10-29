@@ -6,7 +6,7 @@
 &reserved_memory {
     // Override linux CMA - decrease it to 32MiB and move (no media library)
     cma: linux,cma {
-        reg = <0 0x86000000 0 0x02000000>;
+        reg = <0 0xB0000000 0 0x02000000>;
     };
 
     // Reserve memory only for integrated nnc dma.

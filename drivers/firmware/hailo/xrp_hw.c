@@ -77,6 +77,12 @@ static void configure_axi_master_lut(struct xvp *xvp)
     map_dsp_to_physical_address(xvp, xvp->comm.dsp_paddr, xvp->comm.paddr);
 }
 
+static void enable_jtag(struct xvp *xvp)
+{
+    dev_dbg(xvp->dev, "Enable JTAG\n");
+    xvp->hw_ops->enable_jtag(xvp);
+}
+
 static void disable_wwdt(struct xvp *xvp)
 {
     dev_dbg(xvp->dev, "Disable WWDT\n");
@@ -287,6 +293,7 @@ int xrp_enable_dsp(struct xvp *xvp)
     disable_wwdt(xvp);
     open_interrupts(xvp);
     configure_reset_vector(xvp);
+    enable_jtag(xvp);
 
     ret = dsp_poweron(xvp);
     if (ret < 0) {

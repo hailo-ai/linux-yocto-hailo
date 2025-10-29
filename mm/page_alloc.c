@@ -341,6 +341,8 @@ int user_min_free_kbytes = -1;
 int watermark_boost_factor __read_mostly = 15000;
 int watermark_scale_factor = 10;
 
+int cma_non_reusable __read_mostly = IS_ENABLED(CONFIG_CMA_NON_REUSABLE);
+
 static unsigned long nr_kernel_pages __initdata;
 static unsigned long nr_all_pages __initdata;
 static unsigned long dma_reserve __initdata;
@@ -4024,10 +4026,8 @@ alloc_flags_nofragment(struct zone *zone, gfp_t gfp_mask)
 static inline unsigned int gfp_to_alloc_flags_cma(gfp_t gfp_mask,
 						  unsigned int alloc_flags)
 {
-#if defined(CONFIG_CMA) && !defined(CONFIG_CMA_NON_REUSABLE)
-	if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
-		alloc_flags |= ALLOC_CMA;
-#endif
+       if (IS_ENABLED(CONFIG_CMA) && !cma_non_reusable && gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
+	       alloc_flags |= ALLOC_CMA;
 	return alloc_flags;
 }
 
