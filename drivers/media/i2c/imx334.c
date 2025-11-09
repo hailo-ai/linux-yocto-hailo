@@ -50,7 +50,7 @@
 #define IMX334_INCLK_RATE	24000000
 
 /* CSI2 HW configuration */
-#define IMX334_LINK_FREQ	891000000
+#define IMX334_LINK_FREQ	1782000000
 #define IMX334_NUM_DATA_LANES	4
 
 #define IMX334_REG_MIN		0x00
@@ -356,8 +356,8 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank = 2340,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
-	.pclk = 594000000,
 	.link_freq_idx = 0,
+	.pclk = link_freq[0],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -375,8 +375,8 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank = 90,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
-	.pclk = 594000000,
 	.link_freq_idx = 0,
+	.pclk = link_freq[0],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -394,8 +394,8 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank = 6840,
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
-	.pclk = 594000000,
 	.link_freq_idx = 0,
+	.pclk = link_freq[0],
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -784,6 +784,10 @@ static int imx334_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = imx334_set_vflip(imx334, ctrl->val);
 
 		pm_runtime_put(imx334->dev);
+		break;
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
 		break;
 	default:
 		dev_err(imx334->dev, "Invalid control %d", ctrl->id);
@@ -1396,10 +1400,14 @@ static int imx334_init_controls(struct imx334 *imx334)
 	
 	/* Read only controls */
 	imx334->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
-					      &imx334_ctrl_ops,
-					      V4L2_CID_PIXEL_RATE,
-					      mode->pclk, mode->pclk,
-					      1, mode->pclk);
+						&imx334_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx334->pclk_ctrl)
+		imx334->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx334->link_freq_ctrl = v4l2_ctrl_new_int_menu(ctrl_hdlr,
 							&imx334_ctrl_ops,

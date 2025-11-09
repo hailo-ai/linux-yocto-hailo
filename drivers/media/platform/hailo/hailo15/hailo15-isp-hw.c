@@ -8,6 +8,17 @@
 #define MSRZ_SCALE_CALC(in, out)                                               \
 	((uint32_t)((((out)-1) * SCALE_FACTOR) / ((in)-1)) + 1)
 
+MODULE_PARM_DESC(afm_delay_frames, "AFM delay frames");
+int afm_delay_frames = 0;
+module_param(afm_delay_frames, int, 0644);
+
+#define MAX_AF_DELAY_FRAMES (50)
+#define AF_CHANNELS (6) /* sum_a, sum_b, sum_c, lum_a, lum_b, lum_c */
+
+struct af_measurement {
+    uint32_t values[AF_CHANNELS];
+};
+
 /* @TODO get real vdid when calling read/write reg */
 uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 {
@@ -25,18 +36,20 @@ uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 }
 EXPORT_SYMBOL(hailo15_isp_read_reg);
 
-void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
+int hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
 			   uint32_t val)
 {
 	int ret;
-	if(isp_dev->fe_enable && isp_dev->fe_dev) {
+
+	if (isp_dev->fe_enable && isp_dev->fe_dev) {
 		ret = isp_dev->fe_dev->fe_write_reg(isp_dev->fe_dev, 0, reg, val);
-		if(!ret)
-			return;
+		if (!ret)
+			return ret;
 		isp_dev->fe_enable = 0;
 	}
 
 	writel(val, isp_dev->base + reg);
+	return 0;
 }
 EXPORT_SYMBOL(hailo15_isp_write_reg);
 
@@ -196,19 +209,23 @@ static inline void
 hailo15_isp_configure_rdma_frame_base(struct hailo15_isp_device *isp_dev,
 				    dma_addr_t addr[FMT_MAX_PLANES])
 {
-	int mi_ctrl;
 	int mi_mcm_ctrl;
 	struct isp_fe_switch_t fe_switch;
+
+	trace_printk("y shadow: %x\n", readl(isp_dev->base + 0x1370));
+
 	memset(&fe_switch, 0, sizeof(fe_switch));
 	fe_switch.vd_mode = 1;
 	hailo15_isp_write_reg(isp_dev, MIV2_MCM_DMA_RAW_PIC_START_AD, addr[PLANE_Y]);
 	mi_mcm_ctrl = hailo15_isp_read_reg(isp_dev, MI_MCM_CTRL);
 	mi_mcm_ctrl |= MCM_RD_CFG_UPD;
 	hailo15_isp_write_reg(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl);
-	mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
-	mi_ctrl |= MI_CTRL_MCM_RAW_RDMA_START;
-	hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
-	if(isp_dev->fe_enable)
+	memset(&fe_switch, 0, sizeof(fe_switch));
+	fe_switch.vd_mode = 1;
+
+	// FE switch will write to MI_CTRL with MI_CTRL_MCM_RAW_RDMA_START to trigger MCM RDMA start
+	// It will do so after the FE is finished (fe_switch wait for completion, and then executes this write)
+	if (isp_dev->fe_enable)
 		isp_dev->fe_dev->fe_switch(isp_dev->fe_dev, &fe_switch);
 }
 
@@ -216,6 +233,10 @@ static inline void
 hailo15_isp_configure_mp_frame_base(struct hailo15_isp_device *isp_dev,
 				    dma_addr_t addr[FMT_MAX_PLANES])
 {
+	trace_printk("Configuring MP frame base with addr: Y: 0x%llx, CB: 0x%llx, CR: 0x%llx\n",
+		   (unsigned long long)addr[PLANE_Y],
+		   (unsigned long long)addr[PLANE_CB],
+		   (unsigned long long)addr[PLANE_CR]);
 	hailo15_isp_write_reg(isp_dev, MIV2_MP_Y_BASE_AD_INIT, addr[PLANE_Y]);
 	hailo15_isp_write_reg(isp_dev, MIV2_MP_CB_BASE_AD_INIT, addr[PLANE_CB]);
 	hailo15_isp_write_reg(isp_dev, MIV2_MP_CR_BASE_AD_INIT, addr[PLANE_CR]);
@@ -341,6 +362,11 @@ static int hailo15_isp_process_delta(int delta)
 	return delta;
 }
 
+static inline int __hailo15_isp_frame_rx_sp2_raw_3dnr(struct hailo15_isp_device *isp_dev, int miv2_mis)
+{
+	return !!(miv2_mis & MIV2_SP2_RAW_FRAME_END) && !!(isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END);
+}
+
 static inline int __hailo15_isp_frame_rx_mp(int miv2_mis)
 {
 	return !!(miv2_mis & MIV2_MP_YCBCR_FRAME_END_MASK);
@@ -364,6 +390,8 @@ static void hailo15_isp_handle_frame_rx_rdma(struct hailo15_isp_device *isp_dev,
 	
 	if(__hailo15_isp_frame_rx_rdma_ready(irq_status)){
 		isp_dev->dma_ready = 1;
+		trace_printk("MCM RDMA ready!\n");
+
 	}
 	if(__hailo15_isp_frame_rx_mp(irq_status) || __hailo15_isp_frame_rx_sp2(irq_status)){
 		isp_dev->frame_end = 1;
@@ -391,6 +419,20 @@ static void hailo15_isp_handle_frame_rx_rdma(struct hailo15_isp_device *isp_dev,
 			hailo15_isp_buffer_done(isp_dev, ISP_MCM_IN);
 		}
 	}
+}
+
+static void hailo15_isp_handle_frame_rx_sp2_raw_3dnr(struct hailo15_isp_device *isp_dev,
+					   int irq_status)
+{
+	int mi_ctrl;
+
+	if (!__hailo15_isp_frame_rx_sp2_raw_3dnr(isp_dev, irq_status))
+		return;
+
+	mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
+	mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
+	hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
+	isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
 }
 
 static void hailo15_isp_handle_frame_rx_mp(struct hailo15_isp_device *isp_dev,
@@ -436,31 +478,47 @@ void hailo15_isp_handle_frame_rx(struct work_struct *work)
 	spin_lock_irqsave(&isp_dev->miv2_mis_lock, flags);
 	while((miv2_mis = list_first_entry_or_null(&isp_dev->miv2_mis_queue, struct hailo15_miv2_mis, list))){
 		list_del(&miv2_mis->list);
-		list_add(&miv2_mis->list, &miv2_tmp_list);
+		list_add_tail(&miv2_mis->list, &miv2_tmp_list);
 	}
 	spin_unlock_irqrestore(&isp_dev->miv2_mis_lock, flags);
 
 	list_for_each_entry_safe(miv2_pos, miv2_npos, &miv2_tmp_list, list){
+		trace_printk("handling frame rx with %x\n", miv2_pos->miv2_mis);
+		hailo15_isp_handle_frame_rx_sp2_raw_3dnr(isp_dev, miv2_pos->miv2_mis);
 		hailo15_isp_handle_frame_rx_mp(isp_dev, miv2_pos->miv2_mis);
 		hailo15_isp_handle_frame_rx_sp2(isp_dev, miv2_pos->miv2_mis);
 		hailo15_isp_handle_frame_rx_rdma(isp_dev, miv2_pos->miv2_mis);
 		list_del(&miv2_pos->list);
 		kfree(miv2_pos);
+		trace_printk("Handled frame rx!\n");
 	}
 }
 
+static struct af_measurement af_values[MAX_AF_DELAY_FRAMES];
+static uint32_t head = 0;
+
 void hailo15_isp_handle_afm_int(struct work_struct *work)
 {
+	int32_t read_location;
+	struct af_measurement *delayed;
 	struct hailo15_isp_device *isp_dev =
 		(struct hailo15_isp_device *)container_of(
 			work, struct hailo15_isp_device, af_w);
-	uint32_t sum_a, sum_b, sum_c, lum_a, lum_b, lum_c;
-	sum_a = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_A);
-	sum_b = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_B);
-	sum_c = hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_C);
-	lum_a = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_A);
-	lum_b = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_B);
-	lum_c = hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_C);
+
+	struct af_measurement meas = {
+        .values = {
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_A),
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_B),
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_SUM_C),
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_A),
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_B),
+            hailo15_isp_read_reg(isp_dev, ISP_AFM_LUM_C),
+        }
+    };
+
+	/* Store measurement in circular buffer */
+    af_values[head] = meas;
+    head = (head + 1) % MAX_AF_DELAY_FRAMES;
 
 	mutex_lock(&isp_dev->af_kevent->data_lock);
 	if (isp_dev->af_kevent->ready == 1) {
@@ -470,13 +528,22 @@ void hailo15_isp_handle_afm_int(struct work_struct *work)
 		return;
 	}
 
-	isp_dev->af_kevent->sum_a = sum_a;
-	isp_dev->af_kevent->sum_b = sum_b;
-	isp_dev->af_kevent->sum_c = sum_c;
-	isp_dev->af_kevent->lum_a = lum_a;
-	isp_dev->af_kevent->lum_b = lum_b;
-	isp_dev->af_kevent->lum_c = lum_c;
-	isp_dev->af_kevent->ready = 1;
+	/* Compute delayed read location */
+	read_location = (int32_t)head - (int32_t)afm_delay_frames - 1;
+	if (read_location < 0) {
+		read_location += MAX_AF_DELAY_FRAMES;
+	}
+
+	delayed = &af_values[read_location];
+
+    isp_dev->af_kevent->sum_a = delayed->values[0];
+    isp_dev->af_kevent->sum_b = delayed->values[1];
+    isp_dev->af_kevent->sum_c = delayed->values[2];
+    isp_dev->af_kevent->lum_a = delayed->values[3];
+    isp_dev->af_kevent->lum_b = delayed->values[4];
+    isp_dev->af_kevent->lum_c = delayed->values[5];
+    isp_dev->af_kevent->ready = 1;
+
 	mutex_unlock(&isp_dev->af_kevent->data_lock);
 
 	wake_up_interruptible_all(&isp_dev->af_kevent->wait_q);
@@ -506,6 +573,8 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		}
 	}
 
+	trace_printk("irq status: 0x%x\n", isp_dev->irq_status.isp_mis);
+
 	if (isp_dev->irq_status.isp_mis & (ISP_MIS_VSM_DONE)) {
 		isp_dev->current_vsm.dx = hailo15_isp_process_delta(
 			hailo15_isp_read_reg(isp_dev, ISP_VSM_DELTA_H));
@@ -522,17 +591,34 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	}
 
     hailo15_process_irq_stats_events(isp_dev, HAILO15_ISP_IRQ_EVENT_ISP_MIS, isp_dev->irq_status.isp_mis);
-	isp_dev->irq_status.isp_miv2_mis =
-		hailo15_isp_read_reg(isp_dev, MIV2_MIS);
+	isp_dev->irq_status.isp_miv2_mis = hailo15_isp_read_reg(isp_dev, MIV2_MIS);
+	hailo15_isp_write_reg(isp_dev, MIV2_ICR, isp_dev->irq_status.isp_miv2_mis);
 
+	trace_printk("irq status miv2mis: 0x%x\n", isp_dev->irq_status.isp_miv2_mis);
 
-	hailo15_isp_write_reg(isp_dev, MIV2_ICR,
-			      isp_dev->irq_status.isp_miv2_mis);
-	masked_mis = isp_dev->irq_status.isp_miv2_mis & (MIV2_MP_YCBCR_FRAME_END_MASK | MIV2_SP2_YCBCR_FRAME_END_MASK | MIV2_MCM_DMA_RAW_READY_MASK);
+	/* Handle raw frame from 3dnr */
+	if (isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END) {
+		mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
+		mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
+		
+		/* Handling might fail if FE is currently running.
+		 * In that case, don't delete MIV2_SP2_RAW_FRAME_END from irq status, deferring the handling (miv2_mis_w workqueue).
+		 * The deferred work comes at the expense of the risk of handling too-late (low probability).
+		 * So that's why we should be greedy here, i.e. try to handle in irq context first, and use workqueue when having no other choice.
+		 */
+		if (hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl) == 0) {
+			isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
+		}
+	}
+
+	/* Handle YCBCR MP/SP2 frame end, RDMA ready, raw 3dnr frame end - do that using deferred work */
+	masked_mis = isp_dev->irq_status.isp_miv2_mis & (MIV2_MP_YCBCR_FRAME_END_MASK | MIV2_SP2_YCBCR_FRAME_END_MASK | MIV2_MCM_DMA_RAW_READY_MASK | MIV2_SP2_RAW_FRAME_END);
 	if (masked_mis != 0) {
 		miv2_mis = kzalloc(sizeof(struct hailo15_miv2_mis), 	GFP_ATOMIC);
-		if(miv2_mis){
+		if (miv2_mis){
 			miv2_mis->miv2_mis = masked_mis;
+
+			/* Since queue_work won't queue if isp_dev->miv2_mis_w is already queued, we use a list of miv2_mis to handle */
 			spin_lock_irqsave(&isp_dev->miv2_mis_lock, flags);
 			list_add_tail(&miv2_mis->list, &isp_dev->miv2_mis_queue);
 			spin_unlock_irqrestore(&isp_dev->miv2_mis_lock, flags);
@@ -540,14 +626,6 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		}
 		raised_irq_count++;
 	}
-
-	if (isp_dev->irq_status.isp_miv2_mis & MIV2_SP2_RAW_FRAME_END) {
-		mi_ctrl = hailo15_isp_read_reg(isp_dev, MI_CTRL);
-		mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
-		hailo15_isp_write_reg(isp_dev, MI_CTRL, mi_ctrl);
-		isp_dev->irq_status.isp_miv2_mis &= ~MIV2_SP2_RAW_FRAME_END;
-	}
-
 	
 	hailo15_process_irq_stats_events(isp_dev, HAILO15_ISP_IRQ_EVENT_MI_MIS, isp_dev->irq_status.isp_miv2_mis);
  	
@@ -576,6 +654,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 
 		if(isp_dev->irq_status.isp_fe & 1){
 			isp_dev->fe_ready = 1;
+			trace_printk("y shadow: %x\n", readl(isp_dev->base + 0x1370));
 		}
 	}
 
