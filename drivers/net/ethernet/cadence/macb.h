@@ -1188,6 +1188,7 @@ struct macb_config {
 	unsigned int queue_mask;
 	bool disable_queues_at_init;
 	bool allocate_segments_equally;
+	bool force_pm_runtime_disable;
 };
 
 struct tsu_incr {
@@ -1322,6 +1323,7 @@ struct macb {
 	const struct macb_usrio_config *usrio;
 	bool disable_queues_at_init;
 	bool allocate_segments_equally;
+	bool force_pm_runtime_disable;
 	int duplex;
 };
 

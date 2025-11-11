@@ -60,7 +60,7 @@ static const struct of_device_id hailo15_isp_of_match[] = {
 MODULE_DEVICE_TABLE(of, hailo15_isp_of_match);
 
 extern uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *, uint32_t);
-extern void hailo15_isp_write_reg(struct hailo15_isp_device *, uint32_t,
+extern int hailo15_isp_write_reg(struct hailo15_isp_device *, uint32_t,
 				  uint32_t);
 extern void hailo15_isp_configure_frame_base(struct hailo15_isp_device *,
 						dma_addr_t *, unsigned int);
@@ -131,6 +131,8 @@ hailo15_isp_configure_buffer(struct hailo15_isp_device *isp_dev,
 	}else{
 		isp_dev->cur_buf[isp_path] = buf;
 	}
+	if (ISP_MP == isp_path)
+		trace_printk("calling configure_frame_base mp\n");
 	hailo15_isp_configure_frame_base(isp_dev, buf->dma, isp_path);
 }
 
@@ -962,6 +964,7 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 	++isp_dev->frame_count[path];
 
 	if(path == ISP_MCM_IN){
+		trace_printk("MCM IN isp_buffer done start\n");
 		mutex_lock(&isp_dev->mcm_lock);
 		buf = isp_dev->cur_buf[path];
 		isp_dev->cur_buf[path] = list_first_entry_or_null(&isp_dev->mcm_queue, struct hailo15_buffer, irqlist);
@@ -979,8 +982,10 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 			hailo15_isp_configure_frame_base(isp_dev, next_buf->dma, path);
 		}
 
-	} else{
+		trace_printk("MCM IN isp_buffer done end - calling buffer_done now\n");
 
+	} else{
+		trace_printk("MP/SP isp_buffer done start\n");
 		buf = isp_dev->cur_buf[path];
 		isp_dev->cur_buf[path] = NULL;
 
@@ -1002,6 +1007,7 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 			isp_dev->current_vsm_index[path] = -1;
 		}
 
+		trace_printk("MP/SP isp_buffer done end - calling buffer_done now\n");
 	}
 
 	if (buf) {
@@ -1154,6 +1160,8 @@ static int hailo15_isp_queue_empty(struct hailo15_dma_ctx *ctx, int path)
 		fakebuf_arr[i] = isp_dev->fakebuf_phys;
 	}
 
+	if (ISP_MP == path)
+		trace_printk("calling configure_frame_base mp\n");
 	hailo15_isp_configure_frame_base(isp_dev, fakebuf_arr, path);
 	hailo15_isp_dma_set_enable(isp_dev, path, 0);
 	isp_dev->queue_empty[path] = 1;

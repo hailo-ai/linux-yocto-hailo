@@ -791,7 +791,13 @@ int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 							(offset >= 0x1600 && offset <= 0x160c) ||
 							(offset >= 0x5000 && offset <= 0x5008) ||
 							offset == fe->general_ctrl.mi_ctrl)) {
-			//block the write when FE is running, add completion for FE
+
+			/* On interrupt context, fail we can't wait, to mark timeout so that caller will be able to defer this call */
+			if (in_interrupt()) {
+				return -ETIMEDOUT;
+			}
+
+			/* Block the write when FE is running, add completion for FE */
 			if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
 				isp_err("%s error:vdid %d, offset 0x%04x, val 0x%08x wait FE DMA time out!", __func__ ,vdid, offset,val);
 				return -ETIMEDOUT;
@@ -1047,8 +1053,9 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 	uint32_t part_cmd_num;
 	unsigned long flags, full_buff_flags;
 	struct isp_fe_context *fe = &dev->fe;
-	isp_info("enter %s\n", __func__);
+	int mi_ctrl;
 
+	isp_info("enter %s\n", __func__);
 	//wait fe dma
 	if (fe->state == ISP_FE_STATE_RUNNING) {
 		//block the write when FE is running, add completion for FE
@@ -1136,6 +1143,16 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 		spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
 	}
 
+	// Wait for completion before returning...
+	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
+		pr_err("fe switch timeout! FE is stuck\n");
+		return -ETIMEDOUT;
+	}	
+
+	mi_ctrl = isp_fe_raw_read_reg(dev, 0x1300);
+	mi_ctrl |= (1 << 15);
+	isp_fe_raw_write_reg(dev, 0x1300, mi_ctrl);
+
 	return ret;
 }
 
@@ -1217,7 +1234,7 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		fe->fe_buff[vdid].refresh_part_regs.cmd_num_max = ISP_FE_REG_PART_REFRESH_NUM;
 		fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
 		fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = (union isp_fe_cmd_u *)dma_alloc_coherent(dev->dev,
-								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max,
+								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max + 1,
 								&fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr, GFP_KERNEL);
 		isp_info("%s:%d refresh_part_regs.cmd_num_max=0x%08x\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_num_max);
 		isp_info("%s:%d refresh_part_regs.cmd_buffer=%p\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_buffer);
@@ -1312,7 +1329,7 @@ alloc_full_err:
 alloc_part_err:
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
 		if (fe->fe_buff[vdid].refresh_part_regs.cmd_buffer) {
-			dma_free_coherent(dev->dev, sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max,
+			dma_free_coherent(dev->dev, sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max + 1,
 					fe->fe_buff[vdid].refresh_part_regs.cmd_buffer, fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr);
 			fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = NULL;
 		}

@@ -519,6 +519,7 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		buf->vb.vb2_buf.timestamp = ktime_get_ns();
 		vb2_buffer_done(&buf->vb.vb2_buf,
 				vid_node->streaming ? VB2_BUF_STATE_DONE : VB2_BUF_STATE_ERROR);
+		trace_printk("vid-out retrived buf to user\n");
 	}
 
 	return 0;

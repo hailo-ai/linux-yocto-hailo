@@ -102,7 +102,6 @@
 #define IMX715_INCLK_RATE 37125000
 
 /* CSI2 HW configuration */
-#define IMX715_LINK_FREQ 1782000000
 #define IMX715_NUM_DATA_LANES 4
 
 #define IMX715_REG_MIN 0x00
@@ -326,7 +325,7 @@ struct imx715 {
 };
 
 static const s64 link_freq[] = {
-	IMX715_LINK_FREQ,
+	720000000, 1782000000,
 };
 
 /* Sensor mode registers -- Tested OK */
@@ -722,8 +721,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 2340,
 	.vblank_min = 90,
 	.vblank_max = IMX715_SDR_4K_VBLANK_MAX,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -742,8 +741,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 90,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -762,8 +761,8 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank = 3420,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -787,8 +786,8 @@ static const struct imx715_mode supported_hdr_modes[] = {
     .vblank_min = 90,
     .vblank_max = 132840,
 	.rhs1 = IMX715_DEFAULT_2DOL_RHS1,
-    .pclk = 594000000,
-    .link_freq_idx = 0,
+    .link_freq_idx = 1,
+    .pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_2X12,
 	.dol = 2,
     .reg_list = {
@@ -807,8 +806,8 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank = 1170,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
 	.link_freq_idx = 0,
+	.pclk = link_freq[0],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -827,8 +826,8 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank = 1170,
 	.vblank_min = 90,
 	.vblank_max = 132840,
-	.pclk = 594000000,
-	.link_freq_idx = 0,
+	.link_freq_idx = 1,
+	.pclk = link_freq[1],
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -1408,8 +1407,21 @@ static void imx715_set_exp_activity(struct imx715 *imx715)
 
 static void imx715_set_mode(struct imx715 *imx715, const struct imx715_mode *mode)
 {
+	int ret;
 	imx715->cur_mode = mode;
 	imx715->vblank = mode->vblank;
+
+	/* set the link freq index and the pixel rate controls */
+	if (imx715->link_freq_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl(imx715->link_freq_ctrl, mode->link_freq_idx);
+		if (ret)
+			dev_err(imx715->dev, "Failed to set link freq index to %d.", mode->link_freq_idx);
+	}
+	if (imx715->pclk_ctrl) {
+		ret = __v4l2_ctrl_s_ctrl_int64(imx715->pclk_ctrl, mode->pclk);
+		if (ret)
+			dev_err(imx715->dev, "Failed to set pixel rate to %lld.", mode->pclk);
+	}
 
 	if (imx715->hdr_enabled) {
 		if (mode->dol <= 1)
@@ -1623,6 +1635,10 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
 		}
 
 		ret = imx715_set_hdr_mode(imx715, ctrl->val);
+		break;
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+		ret = 0;
 		break;
 	default:
 		dev_err(imx715->dev, "Invalid control %d", ctrl->id);
@@ -2128,7 +2144,7 @@ static int imx715_parse_hw_config(struct imx715 *imx715)
 	struct fwnode_handle *ep;
 	unsigned long rate;
 	int ret;
-	int i;
+	int i, j;
 
 	if (!fwnode)
 		return -ENXIO;
@@ -2179,11 +2195,24 @@ static int imx715_parse_hw_config(struct imx715 *imx715)
 		goto done_endpoint_free;
 	}
 
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
-		if (bus_cfg.link_frequencies[i] == IMX715_LINK_FREQ)
+	/* check if all the required frequencies are provided in the device tree */
+	for (i = 0; i < ARRAY_SIZE(link_freq); i++) {
+		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+			if (bus_cfg.link_frequencies[j] ==
+			    link_freq[i]) {
+				break;
+			}
+		}
+		if (j == bus_cfg.nr_of_link_frequencies) {
+			dev_err(imx715->dev,
+				"required link frequency %lld not supported in device tree",
+				link_freq[i]);
+			ret = -EINVAL;
 			goto done_endpoint_free;
+		}
+	}
 
-	ret = -EINVAL;
+	ret = 0;
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -2340,9 +2369,15 @@ static int imx715_init_controls(struct imx715 *imx715)
 				IMX715_WDR_DEFAULT);
 	
 	/* Read only controls */
-	imx715->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx715_ctrl_ops,
-					      V4L2_CID_PIXEL_RATE, mode->pclk,
-					      mode->pclk, 1, mode->pclk);
+	imx715->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
+						&imx715_ctrl_ops,
+						V4L2_CID_PIXEL_RATE,
+						link_freq[0],
+						link_freq[ARRAY_SIZE(link_freq) - 1],
+						1,
+						mode->pclk);
+	if (imx715->pclk_ctrl)
+		imx715->pclk_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx715->link_freq_ctrl = v4l2_ctrl_new_int_menu(
 		ctrl_hdlr, &imx715_ctrl_ops, V4L2_CID_LINK_FREQ,
@@ -2504,5 +2539,4 @@ static struct i2c_driver imx715_driver = {
 module_i2c_driver(imx715_driver);
 
 MODULE_DESCRIPTION("Sony imx715 sensor driver");
-MODULE_AUTHOR("Eran Gur, <erang@hailo.ai>");
 MODULE_LICENSE("GPL");

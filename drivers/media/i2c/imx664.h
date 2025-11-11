@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Sony IMX664 sensor driver
+ *
+ * Copyright (C) 2024 Hailo Technologies
+ */
+
+#ifndef __IMX664_H__
+#define __IMX664_H__
+
+#include <linux/v4l2-controls.h>
+
+#define IMX664_CID_BASE (V4L2_CID_USER_BASE + 0x2000)
+#define IMX664_CID_EXPOSURE_SHORT (IMX664_CID_BASE + 1)
+#define IMX664_CID_EXPOSURE_VERY_SHORT	(IMX664_CID_BASE + 2)
+#define IMX664_CID_ANALOGUE_GAIN_SHORT (IMX664_CID_BASE + 3)
+#define IMX664_CID_ANALOGUE_GAIN_VERY_SHORT (IMX664_CID_BASE + 4)
+#define IMX664_CID_RHS1 (IMX664_CID_BASE + 5)
+#define IMX664_CID_RHS2 (IMX664_CID_BASE + 6)
+#define IMX664_CID_SHR0 (IMX664_CID_BASE + 7)
+#define IMX664_CID_SHR1 (IMX664_CID_BASE + 8)
+#define IMX664_CID_SHR2 (IMX664_CID_BASE + 9)
+#define IMX664_CID_VMAX (IMX664_CID_BASE + 10)
+#define IMX664_CID_HMAX (IMX664_CID_BASE + 11)
+#define IMX664_CID_HCG (IMX664_CID_BASE + 12)
+
+#endif

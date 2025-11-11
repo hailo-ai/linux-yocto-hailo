@@ -61,6 +61,7 @@ struct hailo15_video_node {
 	int pipeline_init;
 	int hdr_timestamp_mode;
 	bool tuning_state;
+	bool processed_first_buffer; /* If false, vid-cap didn't pass (enqueued) any buf to subdev yet */
 	wait_queue_head_t stream_wait;
 };
 
