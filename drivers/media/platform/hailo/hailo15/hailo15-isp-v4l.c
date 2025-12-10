@@ -46,6 +46,7 @@ static const struct isp_wrapper_config hailo15_isp_wrapper_config = {
     .err_int_mask_value = 0x3ffff,
     .err_int_status_offset = 0x44,
     .err_int_w1c_offset = 0x48,
+    .err_int_w1c_value = 0x1fffffff,
 
     .shifter_cfg = {
         .first_shifter_offset = 0,
@@ -76,9 +77,10 @@ static const struct isp_wrapper_config hailo15l_isp_wrapper_config = {
     .func_int_mask_offset = 0x4c,
     .func_int_mask_value = 0x7,
     .err_int_mask_offset = 0x54,
-    .err_int_mask_value = 0xFFFFFFFF,
+    .err_int_mask_value = 0x1fffffff,
     .err_int_status_offset = 0x58,
     .err_int_w1c_offset = 0x5c,
+    .err_int_w1c_value = 0x1fffffff,
 
     .shifter_cfg = {
         .first_shifter_offset = 0x24C,
@@ -581,7 +583,7 @@ static int hailo15l_isp_set_enable_sp2_err(struct v4l2_subdev *sd, void *arg)
 		}
 		mask |= HAILO15L_ISP_SP2_ERR_MASK;
 		write_mask = true;
-		
+
 	} else if (!enable && (mask & HAILO15L_ISP_SP2_ERR_MASK)) {
 		mask &= ~HAILO15L_ISP_SP2_ERR_MASK;
 		write_mask = true;
@@ -673,6 +675,8 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 			!isp_dev->mi_stopped[path])
 			isp_dev->mi_stopped[path] = 1;
 		mutex_unlock(&isp_dev->mlock);
+		// clear error interrupts before closing
+		writel(isp_dev->wrapper_cfg->err_int_w1c_value, isp_dev->wrapper_base + isp_dev->wrapper_cfg->err_int_w1c_offset);
 		ret = 0;
 		break;
 	case ISPIOC_V4L2_SET_MCM_MODE:

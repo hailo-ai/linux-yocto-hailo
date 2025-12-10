@@ -198,6 +198,7 @@ struct isp_wrapper_config {
     uint32_t err_int_mask_value;
     uint32_t err_int_status_offset;
     uint32_t err_int_w1c_offset;
+    uint32_t err_int_w1c_value;
     struct hailo15_hw_shifter_config shifter_cfg;
     struct hailo15_isp_line_buf_config line_buf_cfg;
     struct err_status_reg isp_err_interrupt_reg;

@@ -163,6 +163,10 @@ void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
 	hailo15_isp_wrapper_write_reg(isp_dev,
 		wrapper_cfg->func_int_mask_offset,
 		wrapper_cfg->func_int_mask_value);
+	// clear error interrupts that might have been left from previous runs
+	hailo15_isp_wrapper_write_reg(isp_dev,
+		wrapper_cfg->err_int_w1c_offset,
+		wrapper_cfg->err_int_w1c_value);
 	hailo15_isp_wrapper_write_reg(isp_dev,
 		wrapper_cfg->err_int_mask_offset,
 		wrapper_cfg->err_int_mask_value);
