@@ -33,6 +33,10 @@ static char * __initdata root_device_name;
 static char __initdata saved_root_name[64];
 static int root_wait;
 
+#ifdef CONFIG_WAIT_INITRD_IMAGE
+int wait_initrd_image = 0; /* Flag to indicate if we should wait for /initrd.image */
+#endif
+
 dev_t ROOT_DEV;
 
 static int __init load_ramdisk(char *str)
@@ -312,6 +316,18 @@ static int __init rootwait_setup(char *str)
 }
 
 __setup("rootwait", rootwait_setup);
+
+static int __init wait_initrd_image_setup(char *str)
+{
+	if (*str)
+		return 0;
+#ifdef CONFIG_WAIT_INITRD_IMAGE
+	wait_initrd_image = 1;
+#endif
+	return 1;
+}
+
+__setup("wait_initrd_image", wait_initrd_image_setup);
 
 static char * __initdata root_mount_data;
 static int __init root_data_setup(char *str)

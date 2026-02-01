@@ -9,6 +9,17 @@
 #include <dt-bindings/soc/hailo15_release_version.h>
 #include <linux/soc/hailo/scmi_hailo_protocol.h>
 
+/* Hailo product ID definitions */
+#define HAILO_SCMI_PRODUCT_ID__INVALID 0
+#define HAILO_SCMI_PRODUCT_ID__15H 1
+#define HAILO_SCMI_PRODUCT_ID__15M 2
+#define HAILO_SCMI_PRODUCT_ID__15L 3
+#define HAILO_SCMI_PRODUCT_ID__10H 4
+#define HAILO_SCMI_PRODUCT_ID__12L 5
+
+#define HAILO10_SCMI_BOARD_SKU_ID__INVALID (0xFFFF)
+
+#define MAX_BOARD_ID_STR_LEN (100)
 #define	SCMI_HAILO_BOOT_SUCCESS_AP_SOFTWARE  1
 #define	SCMI_HAILO_BOOT_SUCCESS_SW_UPDATE 99
 
@@ -27,7 +38,11 @@ struct __attribute__((packed)) hailo_fuse_file {
 	u32 active_clusters;
 };
 
-/* BIST mask at linux file is a failure indication: 0 for success and 1 for failure */
+/* BIST mask at linux file is a failure indication:
+   00 - success
+   01 - BIHR failed
+   10 - BIST failed
+   11 - BISR failed */
 struct __attribute__((packed)) hailo_mbist_status_file {
 	u32 mbist_status;
 };
@@ -43,23 +58,25 @@ struct __attribute__((packed)) hailo_identification_attributes_file {
 struct hailo_soc {
 	struct hailo_fuse_file fuse_file;
 	struct scmi_hailo_get_boot_info_p2a boot_info;
+	u32 product_id;
 	struct kernfs_node *fuse_kn;
 	struct soc_device *soc_dev;
 	struct scmi_hailo_send_components_version_p2a components_version;
 	struct hailo_mbist_status_file mbist_status_file;
 	struct hailo_identification_attributes_file identification_attributes_file;
+	char board_id_str[MAX_BOARD_ID_STR_LEN];
 };
 
 #define H15__SCU_BOOT_BIT_MASK (3)
 
 static const char *hailo15_boot_options[] = {
-    [BOOT_SOURCE_BOOTSTRAP] = "BOOTSTRAP",  
-    [BOOT_SOURCE_SPI_FLASH] = "Flash",      
-    [BOOT_SOURCE_UART] = "UART",            
-    [BOOT_SOURCE_PCIE] = "PCIe",            
-    [BOOT_SOURCE_EMMC0] = "EMMC0",          
-    [BOOT_SOURCE_EMMC1] = "EMMC1"           
-};			  
+    [BOOT_SOURCE_BOOTSTRAP] = "BOOTSTRAP",
+    [BOOT_SOURCE_SPI_FLASH] = "Flash",
+    [BOOT_SOURCE_UART] = "UART",
+    [BOOT_SOURCE_PCIE] = "PCIe",
+    [BOOT_SOURCE_EMMC0] = "EMMC0",
+    [BOOT_SOURCE_EMMC1] = "EMMC1"
+};
 
 static ssize_t boot_success_scu_bl_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -250,6 +267,56 @@ static ssize_t fuse_show(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_RO(fuse);
 
+static ssize_t product_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+	size_t i;
+
+	static const struct {
+		u32 id;
+		const char *name;
+	} sku_id_map[] = {
+		{ .id = HAILO_SCMI_PRODUCT_ID__15H, .name = "Hailo-15H" },
+		{ .id = HAILO_SCMI_PRODUCT_ID__15M, .name = "Hailo-15M" },
+		{ .id = HAILO_SCMI_PRODUCT_ID__15L, .name = "Hailo-15L" },
+		{ .id = HAILO_SCMI_PRODUCT_ID__12L, .name = "Hailo-12L" },
+		{ .id = HAILO_SCMI_PRODUCT_ID__10H, .name = "Hailo-10H" },
+	};
+
+
+	for (i = 0; i < ARRAY_SIZE(sku_id_map); i++) {
+		if (hailo_soc->product_id == sku_id_map[i].id) {
+			return sprintf(buf, "%s\n", sku_id_map[i].name);
+		}
+	}
+
+	dev_err(dev, "Unknown SKU ID: %u\n", hailo_soc->product_id);
+	return -EINVAL;
+}
+
+static DEVICE_ATTR_RO(product);
+
+void board_sku_id_to_str(u32 board_sku_id, char *name, size_t name_size)
+{
+	if (board_sku_id == HAILO10_SCMI_BOARD_SKU_ID__INVALID) {
+		snprintf(name, name_size, "NA");
+	} else {
+		snprintf(name, name_size, "%u", board_sku_id);
+	}
+}
+EXPORT_SYMBOL_GPL(board_sku_id_to_str);
+
+static ssize_t board_id_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%s\n", hailo_soc->board_id_str);
+}
+
+static DEVICE_ATTR_RO(board_id);
+
+
 static ssize_t jtag_selector_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
@@ -344,10 +411,39 @@ static struct attribute *hailo_attrs[] = {
 	&dev_attr_jtag_selector.attr,
 	&dev_attr_mbist_status.attr,
 	&dev_attr_identification_attributes.attr,
+	&dev_attr_product.attr,
+	&dev_attr_board_id.attr,
 	NULL
 };
 
 ATTRIBUTE_GROUPS(hailo);
+
+static int hailo_soc_fill_sku_ids(struct hailo_soc *hailo_soc, const char *compat)
+{
+	struct scmi_hailo_get_sku_id_p2a sku_id;
+	const char *model;
+	int ret;
+
+	ret = hailo_ops->get_sku_id(&sku_id);
+	if (ret) {
+		return ret;
+	}
+
+	hailo_soc->product_id = sku_id.product;
+
+	if (strcmp(compat, "hailo,hailo10h") == 0) {
+		board_sku_id_to_str(sku_id.board, hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN);
+		snprintf(hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN, "%s", hailo_soc->board_id_str);
+	} else {
+		if (of_property_read_string(of_root, "model", &model) == 0) {
+			snprintf(hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN, "%s", model);
+		} else {
+			snprintf(hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN, "Failed to read model property");
+		}
+	}
+
+	return 0;
+}
 
 static int hailo_soc_fill_fuse_file(struct hailo_fuse_file *fuse_file)
 {
@@ -465,6 +561,53 @@ static struct attribute *hailo_throttling_mode_attrs[] = {
 
 static const struct attribute_group hailo_throttling_mode_group = { .name = "throttling_mode", .attrs = hailo_throttling_mode_attrs, };
 
+static int hailo_soc_validate_product_id(struct hailo_soc *hailo_soc, const char *machine)
+{
+	static u32 hailo15_product_ids[] = {
+		HAILO_SCMI_PRODUCT_ID__15H,
+		HAILO_SCMI_PRODUCT_ID__15M,
+	};
+
+	static u32 hailo15l_product_ids[] = {
+		HAILO_SCMI_PRODUCT_ID__15L,
+	};
+
+	static u32 hailo10h_product_ids[] = {
+		HAILO_SCMI_PRODUCT_ID__15H,
+		HAILO_SCMI_PRODUCT_ID__10H,
+	};
+
+	static u32 hailo12l_product_ids[] = {
+		HAILO_SCMI_PRODUCT_ID__12L,
+	};
+
+	static const struct {
+		const char *machine;
+		u32 const *valid_product_ids;
+		size_t num_valid_ids;
+	} matches[] = {
+		{ .machine = "Hailo-15", .valid_product_ids = hailo15_product_ids, .num_valid_ids = ARRAY_SIZE(hailo15_product_ids) },
+		{ .machine = "Hailo-15l", .valid_product_ids = hailo15l_product_ids, .num_valid_ids = ARRAY_SIZE(hailo15l_product_ids) },
+		{ .machine = "Hailo-10h", .valid_product_ids = hailo10h_product_ids, .num_valid_ids = ARRAY_SIZE(hailo10h_product_ids) },
+		{ .machine = "Hailo-12L", .valid_product_ids = hailo12l_product_ids, .num_valid_ids = ARRAY_SIZE(hailo12l_product_ids) },
+	};
+
+	size_t i, j;
+
+	for (i = 0; i < ARRAY_SIZE(matches); i++) {
+		if (strcmp(matches[i].machine, machine) == 0) {
+			for (j = 0; j < matches[i].num_valid_ids; j++) {
+				if (hailo_soc->product_id == matches[i].valid_product_ids[j]) {
+					return 0; // Valid product ID
+				}
+			}
+			return -EINVAL; // Invalid product ID for this machine
+		}
+	}
+
+	return -EINVAL; // Machine not found
+}
+
 static int hailo_soc_probe(struct platform_device *pdev)
 {
 	struct soc_device *soc_dev;
@@ -525,6 +668,19 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	ret = hailo_soc_fill_identification_attributes_file(&hailo_soc->identification_attributes_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to fill identification attributes\n");
+		return ret;
+	}
+
+	ret = hailo_soc_fill_sku_ids(hailo_soc, compat);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to fill product id\n");
+		return ret;
+	}
+
+	ret = hailo_soc_validate_product_id(hailo_soc, soc_dev_attr->machine);
+	if (ret) {
+		dev_err(&pdev->dev, "Machine %s does not support product id %u\n",
+			soc_dev_attr->machine, hailo_soc->product_id);
 		return ret;
 	}
 

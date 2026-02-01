@@ -115,7 +115,7 @@ static const struct v4l2_ctrl_ops hailo15_isp_wb_ctrl_ops = {
 	.g_volatile_ctrl = hailo15_isp_wb_g_ctrl,
 };
 
-const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
+static const struct v4l2_ctrl_config hailo15_isp_wb_ctrls[] = {
 	{
 		/* float 1.0 ~ 3.999 */
 		.ops = &hailo15_isp_wb_ctrl_ops,

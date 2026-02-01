@@ -216,6 +216,12 @@ config USB_F_PRINTER
 config USB_F_TCM
 	tristate
 
+config USB_F_HAILO_RFS_LOAD
+	tristate
+
+config USB_F_HAILO_SWU_LOAD
+	tristate
+
 # this first set of drivers all depend on bulk-capable hardware.
 
 config USB_CONFIGFS

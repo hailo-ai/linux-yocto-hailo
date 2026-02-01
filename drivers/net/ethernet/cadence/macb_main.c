@@ -38,6 +38,12 @@
 #include <linux/log2.h>
 #include "macb.h"
 #include <linux/soc/hailo/scmi_hailo_ops.h>
+#include <linux/reset.h>
+#include <linux/netdevice.h>
+
+static int macb_fast_open(struct net_device *dev);
+static int macb_fast_close(struct net_device *dev);
+static int hailo15_init(struct platform_device *pdev);
 
 /* This structure is only used for MACB on SiFive FU540 devices */
 struct sifive_fu540_macb_mgmt {
@@ -94,7 +100,7 @@ struct sifive_fu540_macb_mgmt {
  */
 #define MACB_HALT_TIMEOUT	1230
 
-/* moving to halt in half duplex may take more time since 
+/* moving to halt in half duplex may take more time since
  * the controller rgmii line might need to wait for his "turn"
  */
 #define MACB_HALT_HALF_DUPLEX_TIMEOUT	(MACB_HALT_TIMEOUT * 1000)
@@ -1671,6 +1677,164 @@ static int macb_poll(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
+static void macb_halt(struct macb *macb)
+{
+	u32 ncr, tsr;
+	int q;
+	/* Halt the controller and wait for any ongoing transmission to end. */
+	ncr = macb_readl(macb, NCR);
+	ncr |= MACB_BIT(THALT);
+	macb_writel(macb, NCR, ncr);
+	do {
+		tsr = macb_readl(macb, TSR);
+	} while (tsr & MACB_BIT(TGO));
+	/* Disable TX and RX, and clear statistics */
+	macb_writel(macb, NCR, MACB_BIT(CLRSTAT));
+	/* disable queues */
+	if (macb->disable_queues_at_init) {
+		macb_writel(macb, RBQP, 1);
+		macb_writel(macb, TBQP, 1);
+		/* disable all queues first */
+		for (q = 1; q < MACB_MAX_QUEUES; q++){
+			gem_writel(macb, TBQP(q - 1), 1);
+			gem_writel(macb, RBQP(q - 1), 1);
+		}
+	}
+}
+
+static int macb_hard_reset(struct macb *bp)
+{
+	int ret;
+	struct macb_queue *queue;
+	unsigned int q;
+	unsigned int hw_q;
+
+	netdev_dbg(bp->dev, "Performing MACB/GEM hard reset\n");
+
+	/* Mask ethernet related interrupts */
+	for (hw_q = 0, q = 0; hw_q < MACB_MAX_QUEUES; ++hw_q) {
+		if (!(bp->queue_mask & (1 << hw_q)))
+			continue;
+		queue = &bp->queues[q];
+		disable_irq(queue->irq);
+		q++;
+	}
+
+	netdev_dbg(bp->dev, "MACB/GEM interrupts masked\n");
+
+	/* Gate eth aclk*/
+	clk_disable_unprepare(bp->hclk);
+	netdev_dbg(bp->dev, "MACB/GEM aclk gated\n");
+	/* Gate eth pclk */
+	clk_disable_unprepare(bp->pclk);
+	netdev_dbg(bp->dev, "MACB/GEM pclk gated\n");
+
+	/* Reset eth hard reset */
+	ret = reset_control_reset(bp->reset);
+	if (ret < 0) {
+		netdev_err(bp->dev, "Unable to assert reset (ret=%d)\n", ret);
+		return ret;
+	}
+	netdev_dbg(bp->dev, "MACB/GEM full reset\n");
+
+	/* Open pclk */
+	ret = clk_prepare_enable(bp->pclk);
+	if (ret) {
+		netdev_err(bp->dev, "Unable to enable pclk (ret=%d)\n", ret);
+		return ret;
+	}
+	netdev_dbg(bp->dev, "MACB/GEM pclk enabled\n");
+
+	/* Open aclk */
+	ret = clk_prepare_enable(bp->hclk);
+	if (ret) {
+		netdev_err(bp->dev, "Unable to enable hclk (ret=%d)\n", ret);
+		return ret;
+	}
+	netdev_dbg(bp->dev, "MACB/GEM aclk enabled\n");
+
+	/* Unmask interrupts */
+	for (hw_q = 0, q = 0; hw_q < MACB_MAX_QUEUES; ++hw_q) {
+		if (!(bp->queue_mask & (1 << hw_q)))
+			continue;
+		queue = &bp->queues[q];
+		enable_irq(queue->irq);
+		q++;
+	}
+	netdev_dbg(bp->dev, "MACB/GEM interrupts unmasked\n");
+
+	return 0;
+}
+
+static int macb_isolate_phy_enable(struct macb *bp)
+{
+	u32 mode_control;
+
+	mode_control = macb_mdio_read(bp->mii_bus, 0, MII_BMCR);
+	mode_control |= BMCR_ISOLATE;
+	return macb_mdio_write(bp->mii_bus, 0, MII_BMCR, mode_control);
+}
+
+static int macb_isolate_phy_disable(struct macb *bp)
+{
+	u32 mode_control;
+
+	mode_control = macb_mdio_read(bp->mii_bus, 0, MII_BMCR);
+	mode_control &= ~BMCR_ISOLATE;
+	return macb_mdio_write(bp->mii_bus, 0, MII_BMCR, mode_control);
+}
+
+static void macb_hard_reset_task(struct work_struct *work)
+{
+	struct macb *bp = container_of(work, struct macb, hard_reset_work);
+	int hw_q, q;
+	struct macb_queue *queue;
+
+	netdev_info(bp->dev, "Starting MACB/GEM hard reset task\n");
+
+	rtnl_lock();
+	macb_fast_close(bp->dev);
+	rtnl_unlock();
+
+	macb_halt(bp);
+
+	BUG_ON(macb_isolate_phy_enable(bp));
+
+	rtnl_lock();
+	linkwatch_forget_dev(bp->dev);
+	phy_stop_machine(bp->dev->phydev);
+	rtnl_unlock();
+
+	/* Set flag BEFORE closing to prevent register access */
+	atomic_set(&bp->hard_reset_in_progress, 1);
+	/* Ensure flag is visible to all CPUs before closing */
+	smp_mb();
+	BUG_ON(macb_hard_reset(bp));
+	atomic_set(&bp->hard_reset_in_progress, 0);
+	msleep(20);
+
+	BUG_ON(macb_isolate_phy_disable(bp));
+
+	/* Enable management port */
+	macb_writel(bp, NCR, MACB_BIT(MPE));
+
+	for (hw_q = 0, q = 0; hw_q < MACB_MAX_QUEUES; ++hw_q) {
+		if (!(bp->queue_mask & (1 << hw_q)))
+			continue;
+
+		queue = &bp->queues[q];
+		netif_napi_del(&queue->napi);
+	}
+
+	hailo15_init(bp->pdev);
+
+	rtnl_lock();
+	BUG_ON(macb_fast_open(bp->dev));
+	rtnl_unlock();
+
+	netdev_info(bp->dev, "MACB/GEM hard reset task completed\n");
+}
+
 static void macb_hresp_error_task(struct tasklet_struct *t)
 {
 	struct macb *bp = from_tasklet(bp, t, hresp_err_tasklet);
@@ -1715,11 +1879,19 @@ static void macb_tx_restart(struct macb_queue *queue)
 	unsigned int head = queue->tx_head;
 	unsigned int tail = queue->tx_tail;
 	struct macb *bp = queue->bp;
+	unsigned int head_idx, tbqp;
 
 	if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
 		queue_writel(queue, ISR, MACB_BIT(TXUBR));
 
 	if (head == tail)
+		return;
+
+	tbqp = queue_readl(queue, TBQP) / macb_dma_desc_get_size(bp);
+	tbqp = macb_adj_dma_desc_idx(bp, macb_tx_ring_wrap(bp, tbqp));
+	head_idx = macb_adj_dma_desc_idx(bp, macb_tx_ring_wrap(bp, head));
+
+	if (tbqp == head_idx)
 		return;
 
 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
@@ -1783,14 +1955,32 @@ static irqreturn_t gem_wol_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+#define MACB_ERROR_INTERRUPT_FLAGS (MACB_BIT(TXERR) | MACB_BIT(HRESP) | MACB_BIT(ISR_TUND) | MACB_BIT(ISR_RLE) | MACB_BIT(ISR_ROVR) | (1 << 15))
+
+static void macb_schedule_invalid_interrupt_handling(struct macb *bp, int count, int status)
+{
+	unsigned int q;
+	// disable all interrupts to avoid interrupt storm
+	for (q = 0; q < bp->num_queues; ++q) {
+		struct macb_queue *queue = &bp->queues[q];
+		queue_writel(queue, IDR, -1);
+	}
+
+	netdev_err(bp->dev, "Invalid interrupt [%d]: status = 0x%08x\n", count, status);
+	schedule_work(&bp->hard_reset_work);
+}
+
 static irqreturn_t macb_interrupt(int irq, void *dev_id)
 {
 	struct macb_queue *queue = dev_id;
 	struct macb *bp = queue->bp;
 	struct net_device *dev = bp->dev;
 	u32 status, ctrl;
+	static int interrupt_count = 0;
+	bool error_detected = false;
 
 	status = queue_readl(queue, ISR);
+	interrupt_count++;
 
 	if (unlikely(!status))
 		return IRQ_NONE;
@@ -1809,6 +1999,13 @@ static irqreturn_t macb_interrupt(int irq, void *dev_id)
 		netdev_vdbg(bp->dev, "queue = %u, isr = 0x%08lx\n",
 			    (unsigned int)(queue - bp->queues),
 			    (unsigned long)status);
+		if (unlikely(status & MACB_ERROR_INTERRUPT_FLAGS)) {
+			error_detected = true;
+			macb_schedule_invalid_interrupt_handling(bp, interrupt_count, status);
+			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
+				queue_writel(queue, ISR, MACB_ERROR_INTERRUPT_FLAGS);
+			break;
+		}
 
 		if (status & bp->rx_intr_mask) {
 			/* There's no point taking any more interrupts
@@ -1866,10 +2063,12 @@ static irqreturn_t macb_interrupt(int irq, void *dev_id)
 
 		if (status & MACB_BIT(ISR_ROVR)) {
 			/* We missed at least one packet */
+			spin_lock(&bp->stats_lock);
 			if (macb_is_gem(bp))
 				bp->hw_stats.gem.rx_overruns++;
 			else
 				bp->hw_stats.macb.rx_overruns++;
+			spin_unlock(&bp->stats_lock);
 
 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
 				queue_writel(queue, ISR, MACB_BIT(ISR_ROVR));
@@ -1883,6 +2082,7 @@ static irqreturn_t macb_interrupt(int irq, void *dev_id)
 				queue_writel(queue, ISR, MACB_BIT(HRESP));
 		}
 		status = queue_readl(queue, ISR);
+		interrupt_count++;
 	}
 
 	spin_unlock(&bp->lock);
@@ -2792,6 +2992,51 @@ static void macb_set_rx_mode(struct net_device *dev)
 	macb_writel(bp, NCFGR, cfg);
 }
 
+static int macb_fast_open(struct net_device *dev)
+{
+	size_t bufsz = dev->mtu + ETH_HLEN + ETH_FCS_LEN + NET_IP_ALIGN;
+	struct macb *bp = netdev_priv(dev);
+	struct macb_queue *queue;
+	unsigned int q;
+	int err;
+
+	netdev_dbg(bp->dev, "open\n");
+
+	if (pm_runtime_enabled(&bp->pdev->dev)) {
+		err = pm_runtime_get_sync(&bp->pdev->dev);
+		if (err < 0)
+			goto pm_exit;
+	}
+	/* RX buffers initialization */
+	macb_init_rx_buffer_size(bp, bufsz);
+
+	err = macb_alloc_consistent(bp);
+	if (err) {
+		netdev_err(dev, "Unable to allocate DMA memory (error %d)\n",
+			   err);
+		goto pm_exit;
+	}
+
+	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue)
+		napi_enable(&queue->napi);
+
+	macb_init_hw(bp);
+
+	phylink_mac_change(bp->phylink, true);
+
+	netif_tx_start_all_queues(dev);
+
+	if (bp->ptp_info)
+		bp->ptp_info->ptp_init(dev);
+
+	return 0;
+
+pm_exit:
+	if (pm_runtime_enabled(&bp->pdev->dev))
+		pm_runtime_put_sync(&bp->pdev->dev);
+	return err;
+}
+
 static int macb_open(struct net_device *dev)
 {
 	size_t bufsz = dev->mtu + ETH_HLEN + ETH_FCS_LEN + NET_IP_ALIGN;
@@ -2842,6 +3087,35 @@ pm_exit:
 	if (pm_runtime_enabled(&bp->pdev->dev))
 		pm_runtime_put_sync(&bp->pdev->dev);
 	return err;
+}
+
+static int macb_fast_close(struct net_device *dev)
+{
+	struct macb *bp = netdev_priv(dev);
+	struct macb_queue *queue;
+	unsigned long flags;
+	unsigned int q;
+
+	netif_tx_stop_all_queues(dev);
+
+	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue)
+		napi_disable(&queue->napi);
+
+	//phylink_stop(bp->phylink);
+
+	spin_lock_irqsave(&bp->lock, flags);
+	macb_reset_hw(bp);
+	netif_carrier_off(dev);
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	macb_free_consistent(bp);
+
+	if (bp->ptp_info)
+		bp->ptp_info->ptp_remove(dev);
+
+	pm_runtime_put(&bp->pdev->dev);
+
+	return 0;
 }
 
 static int macb_close(struct net_device *dev)
@@ -2921,6 +3195,11 @@ static struct net_device_stats *gem_get_stats(struct macb *bp)
 	if (!netif_running(bp->dev))
 		return nstat;
 
+	/* Don't access registers during hard reset */
+	if (atomic_read(&bp->hard_reset_in_progress))
+		return nstat;
+
+	spin_lock_irq(&bp->stats_lock);
 	gem_update_stats(bp);
 
 	nstat->rx_errors = (hwstat->rx_frame_check_sequence_errors +
@@ -2950,6 +3229,7 @@ static struct net_device_stats *gem_get_stats(struct macb *bp)
 	nstat->tx_aborted_errors = hwstat->tx_excessive_collisions;
 	nstat->tx_carrier_errors = hwstat->tx_carrier_sense_errors;
 	nstat->tx_fifo_errors = hwstat->tx_underrun;
+	spin_unlock_irq(&bp->stats_lock);
 
 	return nstat;
 }
@@ -2957,12 +3237,13 @@ static struct net_device_stats *gem_get_stats(struct macb *bp)
 static void gem_get_ethtool_stats(struct net_device *dev,
 				  struct ethtool_stats *stats, u64 *data)
 {
-	struct macb *bp;
+	struct macb *bp = netdev_priv(dev);
 
-	bp = netdev_priv(dev);
+	spin_lock_irq(&bp->stats_lock);
 	gem_update_stats(bp);
 	memcpy(data, &bp->ethtool_stats, sizeof(u64)
 			* (GEM_STATS_LEN + QUEUE_STATS_LEN * MACB_MAX_QUEUES));
+	spin_unlock_irq(&bp->stats_lock);
 }
 
 static int gem_get_sset_count(struct net_device *dev, int sset)
@@ -3011,7 +3292,12 @@ static struct net_device_stats *macb_get_stats(struct net_device *dev)
 	if (macb_is_gem(bp))
 		return gem_get_stats(bp);
 
+	/* Don't access registers during hard reset */
+	if (atomic_read(&bp->hard_reset_in_progress))
+		return nstat;
+
 	/* read stats from hardware */
+	spin_lock_irq(&bp->stats_lock);
 	macb_update_stats(bp);
 
 	/* Convert HW stats into netdevice stats */
@@ -3045,6 +3331,7 @@ static struct net_device_stats *macb_get_stats(struct net_device *dev)
 	nstat->tx_carrier_errors = hwstat->tx_carrier_errors;
 	nstat->tx_fifo_errors = hwstat->tx_underruns;
 	/* Don't know about heartbeat or window errors... */
+	spin_unlock_irq(&bp->stats_lock);
 
 	return nstat;
 }
@@ -4854,6 +5141,7 @@ static int macb_probe(struct platform_device *pdev)
 	bp->usrio = macb_config->usrio;
 
 	spin_lock_init(&bp->lock);
+	spin_lock_init(&bp->stats_lock);
 
 	/* setup capabilities */
 	macb_configure_caps(bp, macb_config);
@@ -4864,6 +5152,14 @@ static int macb_probe(struct platform_device *pdev)
 		bp->hw_dma_cap |= HW_DMA_CAP_64B;
 	}
 #endif
+
+	bp->reset = of_reset_control_get_exclusive(np, "ethernet-rst");
+	if(IS_ERR(bp->reset)) {
+		err = PTR_ERR(bp->reset);
+		dev_err(&pdev->dev, "failed to get reset control: %d\n", err);
+		goto err_out_free_netdev;
+	}
+
 	platform_set_drvdata(pdev, dev);
 
 	dev->irq = platform_get_irq(pdev, 0);
@@ -4926,18 +5222,20 @@ static int macb_probe(struct platform_device *pdev)
 	}
 
 	tasklet_setup(&bp->hresp_err_tasklet, macb_hresp_error_task);
+	INIT_WORK(&bp->hard_reset_work, macb_hard_reset_task);
 
 	netdev_info(dev, "Cadence %s rev 0x%08x at 0x%08lx irq %d (%pM)\n",
 		    macb_is_gem(bp) ? "GEM" : "MACB", macb_readl(bp, MID),
 		    dev->base_addr, dev->irq, dev->dev_addr);
 
-		
 	if (bp->force_pm_runtime_disable) {
 		pm_runtime_disable(&pdev->dev);
 	} else {
 		pm_runtime_mark_last_busy(&bp->pdev->dev);
 		pm_runtime_put_autosuspend(&bp->pdev->dev);
 	}
+
+	atomic_set(&bp->hard_reset_in_progress, 0);
 
 	return 0;
 
@@ -4971,6 +5269,7 @@ static int macb_remove(struct platform_device *pdev)
 
 		unregister_netdev(dev);
 		tasklet_kill(&bp->hresp_err_tasklet);
+		cancel_work_sync(&bp->hard_reset_work);
 		pm_runtime_disable(&pdev->dev);
 		pm_runtime_dont_use_autosuspend(&pdev->dev);
 		if (!pm_runtime_suspended(&pdev->dev)) {

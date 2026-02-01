@@ -15,7 +15,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
-#include "sensor_id.h"
+#include "hailo_shared_sensor_data.h"
 
 #define DEFAULT_MODE_IDX 0
 
@@ -1267,6 +1267,36 @@ done_endpoint_free:
 	return ret;
 }
 
+static int imx334_fast_toggle_set_state(struct imx334 *imx334, int toggle_state)
+{
+	// currently not implemented - no hdr support so nothing to do here...
+	return 0;
+}
+
+static long imx334_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx334 *imx334 = to_imx334(sd);
+	int toggle_state;
+	long ret;
+
+	mutex_lock(&imx334->mutex);
+	switch (cmd) {
+	case HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS:
+		if (arg == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		toggle_state = *((int*)arg);
+		ret = imx334_fast_toggle_set_state(imx334, toggle_state);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+	mutex_unlock(&imx334->mutex);
+	return ret;
+}
+
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx334_video_ops = {
 	.s_stream = imx334_set_stream,
@@ -1282,7 +1312,12 @@ static const struct v4l2_subdev_pad_ops imx334_pad_ops = {
 	.set_fmt = imx334_set_pad_format,
 };
 
+static const struct v4l2_subdev_core_ops imx334_core_ops = {
+	.ioctl = imx334_ioctl,
+};
+
 static const struct v4l2_subdev_ops imx334_subdev_ops = {
+	.core = &imx334_core_ops,
 	.video = &imx334_video_ops,
 	.pad = &imx334_pad_ops,
 };

@@ -17,8 +17,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <linux/kernel.h>
-#include "sensor_id.h"
-
+#include "hailo_shared_sensor_data.h"
 
 #define DEFAULT_MODE_IDX 0
 
@@ -91,6 +90,8 @@
 
 /* Hcg control */
 #define IMX715_REG_HCG 0x3030
+#define IMX715_REG_HCG_SEF1 0x3031
+#define IMX715_REG_HCG_SEF2 0x3032
 #define IMX715_HCG_MIN 0
 #define IMX715_HCG_MAX 1
 #define IMX715_HCG_STEP 1
@@ -273,6 +274,7 @@ struct exp_gain_ctrl_cluster {
  * @test_pattern_ctrl: pointer to test pattern control
  * @mode_sel_ctrl: pointer to mode select control
  * @exp_ctrl: Pointer to exposure control
+ * @wdr_priming_ctrl: pointer to WDR priming control - wdr (true/false) to apply on fast toggle
  * @again_ctrl: Pointer to analog gain control
  * @vblank: Vertical blanking in lines
  * @cur_mode: Pointer to current selected sensor mode
@@ -301,15 +303,21 @@ struct imx715 {
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
 	struct exp_gain_ctrl_cluster sef2;
 	u32 vblank;
 	const struct imx715_mode *cur_mode;
+	u32 mode_idx;
+	char mode_string[SENSOR_MODE_STRING_LENGTH];
 	struct mutex mutex;
 	bool streaming;
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
+	int wdr_priming_val;
+	enum fast_toggle_state fast_toggle_state;
 };
 
 static const s64 link_freq[] = {
@@ -882,14 +890,36 @@ struct v4l2_ctrl_config imx715_custom_ctrls[] = {
 	},
 	{
 	.ops = &imx715_ctrl_ops,
-	.id = IMX715_CID_HCG,
-	.type = V4L2_CTRL_TYPE_BOOLEAN,
-	.flags = V4L2_CTRL_FLAG_UPDATE,
-	.name = "hcg",
-	.step = IMX715_HCG_STEP,
-	.min = IMX715_HCG_MIN,
-	.max = IMX715_HCG_MAX,
-	.def = IMX715_HCG_DEFAULT,
+		.id = IMX715_CID_HCG,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg",
+		.step = IMX715_HCG_STEP,
+		.min = IMX715_HCG_MIN,
+		.max = IMX715_HCG_MAX,
+		.def = IMX715_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx715_ctrl_ops,
+		.id = IMX715_CID_CUSTOM_RHS1,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "custom_rhs1",
+		.step = IMX715_INTEGER_STEP,
+		.min = 0,
+		.max = 65535,
+		.def = 0,
+	},
+	{
+		.ops = &imx715_ctrl_ops,
+		.id = IMX715_CID_WDR_PRIMING,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "wdr_priming",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+		.def = 0,
 	},
 	{
 		.ops = &imx715_get_ctrl_ops,
@@ -1102,12 +1132,31 @@ static int imx715_set_hcg_mode(struct imx715 *imx715, u32 hcg)
 	int ret;
 	ret = imx715_write_reg(imx715, IMX715_REG_HCG, 1, hcg);
 	if (ret) {
-        dev_err(imx715->dev, "Failed to write HCG register: %d\n", ret);
-        return ret;
-    }
+		dev_err(imx715->dev, "Failed to write HCG register: %d\n", ret);
+		return ret;
+	}
 
-    dev_dbg(imx715->dev, "HCG mode set to %s\n", hcg ? "enabled" : "disabled");
-    
+	if (imx715->cur_mode->dol >= 2) {
+		ret = imx715_write_reg(imx715, IMX715_REG_HCG_SEF1, 1, hcg);
+		if (ret) {
+			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
+			dev_err(imx715->dev, "Failed to write HCG SEF1 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (imx715->cur_mode->dol >= 3) {
+		ret = imx715_write_reg(imx715, IMX715_REG_HCG_SEF2, 1, hcg);
+		if (ret) {
+			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
+			imx715_write_reg(imx715, IMX715_REG_HCG_SEF1, 1, !hcg);
+			dev_err(imx715->dev, "Failed to write HCG SEF2 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	dev_dbg(imx715->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx715->cur_mode->dol);
+
 	return 0;
 }
 
@@ -1408,11 +1457,66 @@ static void imx715_set_exp_activity(struct imx715 *imx715)
 	v4l2_ctrl_activate(imx715->sef2.exp_ctrl, sef2);
 }
 
+/*
+ * search_mode - Function to search for mode index
+ * @mode: Pointer to mode structure
+ * @o_hdr: Pointer to bool to indicate if mode is HDR, or NULL if not needed.
+ *
+ * Return: mode index if found, -1 otherwise
+*/
+static int search_mode(const struct imx715_mode *mode, bool *o_hdr)
+{
+	// First search in HDR modes, then SDR modes
+	if (mode >= supported_hdr_modes && mode < supported_hdr_modes + ARRAY_SIZE(supported_hdr_modes)) {
+		if (o_hdr) *o_hdr = true;
+		return mode - supported_hdr_modes;
+	} else if (mode >= supported_sdr_modes && mode < supported_sdr_modes + ARRAY_SIZE(supported_sdr_modes)) {
+		if (o_hdr) *o_hdr = false;
+		return mode - supported_sdr_modes;
+	}
+
+	pr_err("Error. selected mode was not found!\n");
+	return -1;
+}
+
+static void imx715_set_mode_string(struct imx715 *imx715)
+{
+	int fps;
+
+	fps = imx715->cur_mode->frame_interval.denominator / 
+		imx715->cur_mode->frame_interval.numerator;
+
+	switch (imx715->cur_mode->dol) {
+	case 1:
+		if (imx715->hdr_enabled) {
+			dev_err(imx715->dev, "Invalid HDR mode with dol=%d\n", imx715->cur_mode->dol);
+			return;
+		}
+		snprintf(imx715->mode_string, SENSOR_MODE_STRING_LENGTH, "SDR #%d %dfps", imx715->mode_idx, fps);
+		break;
+	case 2:
+	case 3:
+		if (!imx715->hdr_enabled) {
+			dev_err(imx715->dev, "Invalid SDR mode with dol=%d\n", imx715->cur_mode->dol);
+			return;
+		}
+		snprintf(imx715->mode_string, SENSOR_MODE_STRING_LENGTH, "HDR #%d, %dDOL %dfps", 
+			imx715->mode_idx, imx715->cur_mode->dol, fps);
+		break;
+	default:
+		dev_err(imx715->dev, "Invalid mode with dol=%d\n", imx715->cur_mode->dol);
+		break;
+	}
+}
+
 static void imx715_set_mode(struct imx715 *imx715, const struct imx715_mode *mode)
 {
 	int ret;
 	imx715->cur_mode = mode;
 	imx715->vblank = mode->vblank;
+
+	imx715->mode_idx = search_mode(mode, NULL);
+	imx715_set_mode_string(imx715);
 
 	/* set the link freq index and the pixel rate controls */
 	if (imx715->link_freq_ctrl) {
@@ -1497,8 +1601,12 @@ static int imx715_get_ctrl(struct v4l2_ctrl *ctrl)
 		len = 3;
 		break;
 	case IMX715_CID_VMAX:
-		reg = IMX715_REG_LPFR;
-		len = 3;
+		if (imx715->streaming) {
+			reg = IMX715_REG_LPFR;
+			len = 3;
+		} else {
+			ctrl->val = (imx715->vblank + imx715->cur_mode->height);
+		}
 		break;
 	case IMX715_CID_HMAX:
 		reg = IMX715_REG_HMAX;
@@ -1631,7 +1739,20 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		pm_runtime_put(imx715->dev);
     	break;
+	case IMX715_CID_WDR_PRIMING:
+		imx715->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
+	case IMX715_CID_CUSTOM_RHS1:
+		/* Stub: control accepted but not implemented for this sensor */
+		ret = 0;
+		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+		if (imx715->fast_toggle_state > FAST_TOGGLE_NONE && imx715->fast_toggle_state < FAST_TOGGLE_STATE_MAX) {
+			// if currently toggling, ignore this v4l control
+			return 0;
+		}
+
 		if (imx715->streaming) {
 			dev_warn(imx715->dev, "Cannot set WDR mode while streaming\n");
 			return -EBUSY;
@@ -1867,9 +1988,14 @@ out:
 static int imx715_init_pad_cfg(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *sd_state)
 {
+	static bool initialized = false;
 	struct imx715_mode *supported_modes;
 	struct imx715 *imx715 = to_imx715(sd);
 	struct v4l2_subdev_format fmt = { 0 };
+
+	/* Return immediately if pad has already been initialized */
+	if (initialized)
+		return 0;
 
 	if(imx715->hdr_enabled)
 		supported_modes = (struct imx715_mode *)supported_hdr_modes;
@@ -1880,6 +2006,8 @@ static int imx715_init_pad_cfg(struct v4l2_subdev *sd,
 		sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	imx715_fill_pad_format(imx715, &supported_modes[DEFAULT_MODE_IDX],
 			       &fmt);
+
+	initialized = true;
 
 	return imx715_set_pad_format(sd, sd_state, &fmt);
 }
@@ -1924,7 +2052,10 @@ static int imx715_start_streaming(struct imx715 *imx715)
 		dev_err(imx715->dev, "fail to start streaming");
 		return ret;
 	}
-	pr_info("imx715: start_streaming successful\n");
+	imx715->wdr_priming_val = -1;
+
+	dev_info(imx715->dev, "imx715: start_streaming successful (%s)", imx715->mode_string);
+
 	return 0;
 }
 
@@ -2067,7 +2198,7 @@ static int imx715_s_frame_interval(struct v4l2_subdev *sd,
 
 	if (ret == 0) {
 		fi->interval = mode->frame_interval;
-		imx715->cur_mode = mode;
+		imx715_set_mode(imx715, mode);
 		ret = __v4l2_ctrl_s_ctrl(imx715->vblank_ctrl, mode->vblank);
 	}
 
@@ -2223,6 +2354,64 @@ done_endpoint_free:
 	return ret;
 }
 
+// toggle_type param might be useful in the future, we don't need it now though
+static int imx715_priming_apply(struct imx715 *imx715, int toggle_type)
+{
+	int ret;
+	
+	ret = imx715_set_hdr_mode(imx715, imx715->wdr_priming_val);
+	if (ret) {
+		dev_err(imx715->dev, "Failed to set HDR mode (%d) for priming: %d", imx715->wdr_priming_val, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int imx715_fast_toggle_set_state(struct imx715 *imx715, int toggle_state)
+{
+	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
+		dev_err(imx715->dev, "Invalid fast toggle state %d\n", toggle_state);
+		return -EINVAL;
+	}
+
+	imx715->fast_toggle_state = toggle_state;
+
+	switch (toggle_state) {
+	case FAST_TOGGLE_APPLY_PRIMING:
+		return imx715_priming_apply(imx715, toggle_state);
+	default:
+		// No action needed for other states
+		break;
+	}
+	
+	return 0;
+}
+
+static long imx715_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx715 *imx715 = to_imx715(sd);
+	int toggle_state;
+	long ret;
+
+	mutex_lock(&imx715->mutex);
+	switch (cmd) {
+	case HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS:
+		if (arg == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		toggle_state = *((int*)arg);
+		ret = imx715_fast_toggle_set_state(imx715, toggle_state);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+	mutex_unlock(&imx715->mutex);
+	return ret;
+}
+
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx715_video_ops = {
 	.s_stream = imx715_set_stream,
@@ -2238,7 +2427,12 @@ static const struct v4l2_subdev_pad_ops imx715_pad_ops = {
 	.set_fmt = imx715_set_pad_format,
 };
 
+static const struct v4l2_subdev_core_ops imx715_core_ops = {
+	.ioctl = imx715_ioctl,
+};
+
 static const struct v4l2_subdev_ops imx715_subdev_ops = {
+	.core = &imx715_core_ops,
 	.video = &imx715_video_ops,
 	.pad = &imx715_pad_ops,
 };
@@ -2305,7 +2499,7 @@ static int imx715_init_controls(struct imx715 *imx715)
 	struct ExposureLimits_t limits;
 	int ret;
 
-	const int num_ctrls = 12;
+	const int num_ctrls = 13;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
 		return ret;
@@ -2356,6 +2550,13 @@ static int imx715_init_controls(struct imx715 *imx715)
 	/* Initialize HCG control */
 	imx715_setup_custom_ctrl(imx715, &imx715->hcg_ctrl, IMX715_CID_HCG);
 
+	/* Custom RHS1 stub (not implemented for this sensor) */
+	imx715_setup_custom_ctrl_limits(imx715, &imx715->custom_rhs1_ctrl, IMX715_CID_CUSTOM_RHS1,
+		0, 65535, 0);
+
+	/* Initialize priming ctrls */
+	imx715_setup_custom_ctrl(imx715, &imx715->wdr_priming_ctrl, IMX715_CID_WDR_PRIMING);
+
 	imx715->vblank_ctrl =
 		v4l2_ctrl_new_std(ctrl_hdlr, &imx715_ctrl_ops, V4L2_CID_VBLANK,
 				  mode->vblank_min, mode->vblank_max, 1,
@@ -2370,6 +2571,12 @@ static int imx715_init_controls(struct imx715 *imx715)
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX715_WDR_MIN,
 				IMX715_WDR_MAX, IMX715_WDR_STEP,
 				IMX715_WDR_DEFAULT);
+	
+	if (imx715->mode_sel_ctrl) {
+		// Always call callback, even if called with same value
+		// (this is important for fast toggle - which changes WDR mode outside of control framework)
+		imx715->mode_sel_ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
+	}
 	
 	/* Read only controls */
 	imx715->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
@@ -2462,6 +2669,9 @@ static int imx715_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	imx715->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	imx715->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+
+	imx715->wdr_priming_val = -1;
+	imx715->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	/* Initialize source pad */
 	imx715->pad.flags = MEDIA_PAD_FL_SOURCE;

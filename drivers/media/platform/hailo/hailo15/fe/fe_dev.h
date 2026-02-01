@@ -332,6 +332,7 @@ struct isp_fe_context {
 	struct completion fe_completion;
 	struct completion isp_completion;
 	spinlock_t full_buff_lock;
+	struct rw_semaphore cpu_rw_sem;
 #endif
 	enum isp_fe_state state;
 	bool fst_wr_flag;	//first write
@@ -363,6 +364,10 @@ struct isp_fe_context {
 	bool is_isp_processing;
 	int post_fe_modify_reg_offset[ISP_FE_POST_OFFSET_MAX];
 	int post_fe_modify_reg_value[ISP_FE_POST_OFFSET_MAX];
+	u32 saved_mi_imsc;
+	u32 saved_isp_imsc;
+	bool cpu_rw_sem_write_held;	// track if write lock is held
+	int isp_irq;
 };
 
 struct vvcam_fe_dev {

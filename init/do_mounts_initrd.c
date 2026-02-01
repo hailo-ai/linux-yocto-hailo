@@ -8,6 +8,8 @@
 #include <linux/sched.h>
 #include <linux/freezer.h>
 #include <linux/kmod.h>
+#include <linux/delay.h>
+#include <linux/stat.h>
 #include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
@@ -121,10 +123,68 @@ static void __init handle_initrd(void)
 	}
 }
 
+#ifdef CONFIG_WAIT_INITRD_IMAGE
+/* Wait for /initrd.image to be available */
+static int __init wait_for_initrd_image(void)
+{
+	struct file *file;
+	struct kstat stat;
+	int timeout = 0;
+	int ret;
+	const int check_interval = 500; /* 500 milliseconds */
+	const int max_timeout = CONFIG_WAIT_INITRD_IMAGE_TIMEOUT;
+
+	// TODO: maybe use .gz
+	printk(KERN_INFO "Waiting max %d sec for /initrd.image to be available...\n", max_timeout);
+
+	/* Remove any existing /initrd.image to ensure we get a fresh upload (caused by initramfs::do_populate_rootfs())*/
+	init_unlink("/initrd.image");
+
+	while (timeout < max_timeout) {
+		/* Check if initrd image file exists and has reasonable size */
+		file = filp_open("/initrd.image", O_RDONLY, 0);
+		if (!IS_ERR(file)) {
+			ret = vfs_getattr(&file->f_path, &stat, STATX_SIZE, AT_STATX_SYNC_AS_STAT);
+			filp_close(file, NULL);
+			
+			if (!ret && stat.size > 0) {
+				printk(KERN_INFO "Found /initrd.image image (%llu bytes)\n", stat.size);
+				return 0;
+			}
+		}
+		
+		/* Wait and check again */
+		msleep(check_interval);
+		timeout++;
+		
+		/* Print progress every 5 seconds */
+		if (timeout % 10 == 0) {
+			printk(KERN_INFO "Still waiting for /initrd.image to be available... (%d/%d seconds)\n",
+			       timeout / 2, max_timeout);
+		}
+	}
+
+	printk(KERN_WARNING "Waiting for /initrd.image timeout, continuing without initrd\n");
+	return -ETIMEDOUT;
+}
+#endif
+
 bool __init initrd_load(void)
 {
 	if (mount_initrd) {
 		create_dev("/dev/ram", Root_RAM0);
+
+#ifdef CONFIG_WAIT_INITRD_IMAGE
+		if (wait_initrd_image && ROOT_DEV == Root_RAM0) {
+			/* Wait for /initrd.image to be available */
+			if (wait_for_initrd_image() < 0) {
+				/* Timeout occurred, continue without initrd */
+				init_unlink("/initrd.image");
+				return false;
+			}
+		}
+#endif
+
 		/*
 		 * Load the initrd data into /dev/ram0. Execute it as initrd
 		 * unless /dev/ram0 is supposed to be our actual root device,

@@ -18,8 +18,9 @@
 #include "hailo15-vid-cap.h"
 #include "hailo15-isp.h"
 #include "hailo15-video-events.h"
+#define CREATE_TRACE_POINTS
+#include <trace/events/hailo15-video-events-traces.h>
 
-#include "hailo15-rxw-traces.h"
 
 #define MAX_WAIT_ITERATIONS 200000
 #define WAIT_MICRO_SEC_BOTTOM_RANGE 5

@@ -23,6 +23,7 @@
 #include <media/v4l2-subdev.h>
 
 #include <hailo15/hailo15-dphy.h>
+#include <hailo15/common.h>
 
 #define RES_MIN
 
@@ -85,6 +86,7 @@ enum csi2rx_fifo_mode {
 #define CSI2RX_STREAMS_MAX 4
 
 #define CSI2RX_CID_MODE_SEL (V4L2_CID_USER_BASE + 0x2000)
+#define CSI2RX_CID_MODE_SEL_PRIMING (V4L2_CID_USER_BASE + 0x2001)
 
 static int csi2rx_set_ctrl(struct v4l2_ctrl *ctrl);
 
@@ -117,8 +119,20 @@ const struct v4l2_ctrl_config csi2rx_mode_sel_ctrl_cfg = {
 	.ops = &csi2rx_ctrl_ops,
 	.id = CSI2RX_CID_MODE_SEL,
 	.type = V4L2_CTRL_TYPE_INTEGER,
-	.flags = V4L2_CTRL_FLAG_UPDATE,
+	.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 	.name = "mode_sel",
+	.step = 1,
+	.min = 0,
+	.max = CSI2RX_MODE_MAX - 1,
+	.def = 0,
+};
+
+const struct v4l2_ctrl_config csi2rx_mode_sel_priming_ctrl_cfg = {
+	.ops = &csi2rx_ctrl_ops,
+	.id = CSI2RX_CID_MODE_SEL_PRIMING,
+	.type = V4L2_CTRL_TYPE_INTEGER,
+	.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+	.name = "mode_sel_priming",
 	.step = 1,
 	.min = 0,
 	.max = CSI2RX_MODE_MAX - 1,
@@ -154,12 +168,15 @@ struct csi2rx_priv {
 	struct v4l2_mbus_framefmt pad_fmts[CSI2RX_PAD_MAX];
 	struct v4l2_ctrl_handler ctrl_handler;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	struct v4l2_ctrl *mode_sel_priming_ctrl;
 
 	/* Remote source */
 	struct v4l2_subdev *source_subdev;
 	int source_pad;
 
 	enum csi2rx_mode cur_mode;
+	enum csi2rx_mode priming_mode; // next mode to be applied on fast toggle
+	enum fast_toggle_state toggle_state;
     int irq;
 	bool pm_enabled;
 };
@@ -232,6 +249,9 @@ static int csi2rx_set_ctrl(struct v4l2_ctrl *ctrl)
 	case CSI2RX_CID_MODE_SEL:
 		csi2rx->cur_mode = ctrl->val;
 		break;
+	case CSI2RX_CID_MODE_SEL_PRIMING:
+		csi2rx->priming_mode = ctrl->val;
+		break;
 	default:
 		dev_err(csi2rx->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -244,6 +264,40 @@ static inline struct csi2rx_priv *
 v4l2_subdev_to_csi2rx(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct csi2rx_priv, subdev);
+}
+
+static int csi2rx_fast_toggle_set_status(struct v4l2_subdev *sd, struct fast_toggle_data *toggle_data)
+{
+	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(sd);
+
+	if (toggle_data->state < 0 || toggle_data->state >= FAST_TOGGLE_STATE_MAX) {
+		dev_err(csi2rx->dev, "Invalid fast toggle state %d\n", toggle_data->state);
+		return -EINVAL;
+	}
+
+	csi2rx->toggle_state = toggle_data->state;
+
+	switch (toggle_data->state) {
+	case FAST_TOGGLE_APPLY_PRIMING:
+		// Apply the priming mode that was set before the fast toggle
+		csi2rx->cur_mode = csi2rx->priming_mode;
+		break;
+	default:
+		// no special operation needed for other states
+		break;
+	}
+
+	return 0;
+}
+
+static long csi2rx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	switch (cmd) {
+	case HAILO15_INTERNAL_CSI2RX_FAST_TOGGLE_SET_STATUS:
+		return csi2rx_fast_toggle_set_status(sd, (struct fast_toggle_data *)arg);
+	default:
+		return -ENOTTY;
+	}
 }
 
 static const struct csi2rx_fmt *csi2rx_get_fmt_by_code(u32 code)
@@ -585,7 +639,12 @@ static const struct v4l2_subdev_pad_ops csi2rx_pad_ops = {
 	.set_fmt               = csi2rx_set_fmt,
 };
 
+static const struct v4l2_subdev_core_ops csi2rx_core_ops = {
+	.ioctl = csi2rx_ioctl,
+};
+
 static const struct v4l2_subdev_ops csi2rx_subdev_ops = {
+	.core = &csi2rx_core_ops,
 	.video = &csi2rx_video_ops,
 	.pad = &csi2rx_pad_ops,
 };
@@ -809,6 +868,10 @@ static int csi2rx_init_controls(struct csi2rx_priv *csi2rx)
 	csi2rx->mode_sel_ctrl = 
 		v4l2_ctrl_new_custom(ctrl_hdlr, &csi2rx_mode_sel_ctrl_cfg, NULL);
 
+	csi2rx->mode_sel_priming_ctrl = 
+		v4l2_ctrl_new_custom(ctrl_hdlr, &csi2rx_mode_sel_priming_ctrl_cfg, NULL);
+		
+
 	if (ctrl_hdlr->error) {
 		dev_err(csi2rx->dev, "control init failed: %d",
 			ctrl_hdlr->error);
@@ -897,6 +960,9 @@ static int csi2rx_probe(struct platform_device *pdev)
 		goto err_cleanup;
 
 	csi2rx->cur_mode = CSI2RX_MODE_SDR;
+	csi2rx->priming_mode = CSI2RX_MODE_SDR;
+	csi2rx->toggle_state = FAST_TOGGLE_NONE;
+
 	ret = csi2rx_init_controls(csi2rx);
 	if (ret) {
 		dev_err(csi2rx->dev, "failed to init controls: %d", ret);

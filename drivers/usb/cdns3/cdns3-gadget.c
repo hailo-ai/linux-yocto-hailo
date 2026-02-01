@@ -3228,6 +3228,17 @@ static int cdns3_gadget_start(struct cdns *cdns)
 		goto err3;
 	}
 
+
+	
+	/* Apply platform-specific gadget initialization quirks */
+	if (cdns->pdata && cdns->pdata->gadget_init_quirk) {
+		ret = cdns->pdata->gadget_init_quirk(&priv_dev->gadget);
+		if (ret) {
+			dev_err(priv_dev->dev, "gadget init quirk failed: %d\n", ret);
+			goto err4;
+		}
+	}
+
 	/* add USB gadget device */
 	ret = usb_add_gadget(&priv_dev->gadget);
 	if (ret < 0) {

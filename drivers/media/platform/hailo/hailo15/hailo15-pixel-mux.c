@@ -99,15 +99,15 @@ static const struct pm_config hailo15_pm_config = {
     .csi_rx1_err_irq_bit_mask = BIT(3),
     .csi_tx0_err_irq_bit_mask = BIT(4),
     .vision_subsys_err_int_reg = {
-        .name = "vision_subsys_err_int",
-        .num_errors = 2,
-        .errors = (struct error_message[]) {
-            { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7) | BIT(8) | BIT(9))),
-              .message = "sync_pulse_src_overflow" },
-            { .mask = BIT(10), 
-              .message = "pixel_mux_illegal_config" },
-        }
-        },
+	.name = "vision_subsys_err_int",
+	.num_errors = 2,
+	.errors = (struct error_message[]) {
+	    { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7) | BIT(8) | BIT(9))),
+	      .message = "sync_pulse_src_overflow" },
+	    { .mask = BIT(10), 
+	      .message = "pixel_mux_illegal_config" },
+	}
+	},
     .vc_width = 2,
 };
 
@@ -140,28 +140,28 @@ static const struct pm_config hailo15l_pm_config = {
     .csi_rx1_err_irq_bit_mask = BIT(3),
     .csi_tx0_err_irq_bit_mask = BIT(4),
     .vision_subsys_err_int_reg = {
-        .name = "vision_subsys_err_int",
-        .num_errors = 9,
-        .errors = (struct error_message[]) {
-            { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7))),
-              .message = "sync_pulse_src_overflow" },
-            { .mask = BIT(8),
-              .message = "pixel_mux_illegal_config" },
-            { .mask = BIT(9),
-              .message = "dwe_axi_len_err ,Indicates dewarp AXI length > 15; which is not supported" },
-            { .mask = BIT(10), 
-              .message = "isp_end_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
-            { .mask = BIT(11),
-              .message = "isp_base_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
-            { .mask = BIT(12), 
-              .message = "dwe_end_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
-            { .mask = BIT(13),
-              .message = "dwe_base_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
-            { .mask = BIT(14), 
-              .message = "dwe_bresp ,Received error response on DeWarp Write AXI interface" },
-            { .mask = BIT(15), 
-              .message = "dwe_rresp ,Received error response on DeWarp Read AXI interface" },
-        }
+	.name = "vision_subsys_err_int",
+	.num_errors = 9,
+	.errors = (struct error_message[]) {
+	    { .mask = (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | (BIT(6) | BIT(7))),
+	      .message = "sync_pulse_src_overflow" },
+	    { .mask = BIT(8),
+	      .message = "pixel_mux_illegal_config" },
+	    { .mask = BIT(9),
+	      .message = "dwe_axi_len_err ,Indicates dewarp AXI length > 15; which is not supported" },
+	    { .mask = BIT(10), 
+	      .message = "isp_end_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
+	    { .mask = BIT(11),
+	      .message = "isp_base_addr_alloc_err ,Indicates address that is not in allocated area from ISP <-> Hybrid" },
+	    { .mask = BIT(12), 
+	      .message = "dwe_end_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
+	    { .mask = BIT(13),
+	      .message = "dwe_base_addr_alloc_err ,Indicates address that is not in allocated area from Dewarp <-> Hybrid" },
+	    { .mask = BIT(14), 
+	      .message = "dwe_bresp ,Received error response on DeWarp Write AXI interface" },
+	    { .mask = BIT(15), 
+	      .message = "dwe_rresp ,Received error response on DeWarp Read AXI interface" },
+	}
     },
     .vc_width = 4,
 };
@@ -189,7 +189,7 @@ struct pixel_mux_priv {
 	struct clk *vision_clk;
 	struct clk *vision_hclk;
 	int irq;
-	struct irq_domain *irq_domain;	
+	struct irq_domain *irq_domain;
 
 	u8 num_lanes;
 	u8 max_lanes;
@@ -324,26 +324,26 @@ static irqreturn_t pixel_mux_error_irq_handler(int irq, void *data)
 	int virq;
 
 	status = readl(pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_status_offset);
-		if (status & pixel_mux->pm_cfg->vision_subsys_err_int_bit_mask) {
+	if (status & pixel_mux->pm_cfg->vision_subsys_err_int_bit_mask) {
 		return vision_subsys_err_int_irq_handler(irq, data);
 	}
 
-    if (status & pixel_mux->pm_cfg->isp_err_interrupt_bit_mask) {
-        virq = irq_find_mapping(pixel_mux->irq_domain, 0);
-        generic_handle_irq(virq);
-    }
+	if (status & pixel_mux->pm_cfg->isp_err_interrupt_bit_mask) {
+		virq = irq_find_mapping(pixel_mux->irq_domain, 0);
+		generic_handle_irq(virq);
+	}
 
-    if (status & pixel_mux->pm_cfg->csi_rx0_err_irq_bit_mask) {
-        virq = irq_find_mapping(pixel_mux->irq_domain, 1);
-        generic_handle_irq(virq);
-    }
+	if (status & pixel_mux->pm_cfg->csi_rx0_err_irq_bit_mask) {
+		virq = irq_find_mapping(pixel_mux->irq_domain, 1);
+		generic_handle_irq(virq);
+	}
 
 	if (status & pixel_mux->pm_cfg->csi_rx1_err_irq_bit_mask) {
 		virq = irq_find_mapping(pixel_mux->irq_domain, 2);
 		generic_handle_irq(virq);
 	}
 
-    return IRQ_HANDLED;
+	return IRQ_HANDLED;
 }
 
 static int pixel_mux_querycap(struct pixel_mux_priv *pixel_mux,
@@ -360,13 +360,13 @@ static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 {
 	struct hailo15_dma_ctx *ctx = v4l2_get_subdevdata(sd);
 	struct pixel_mux_priv *pixel_mux = ctx->dev;
-    struct hailo15_p2a_buffer_regs_addr *p2a_buffer_regs = arg;
+	struct hailo15_p2a_buffer_regs_addr *p2a_buffer_regs = arg;
 	int ret = 0;
 
 	dev_dbg(pixel_mux->dev, "%s called with cmd: %d, arg: %p\n", __func__, cmd, arg);
 
 	switch (cmd) {
-	case VIDEO_GET_P2A_REGS:
+	case HAILO15_INTERNAL_GET_P2A_REGS:
 		if (!arg) {
 			ret = -EINVAL;
 			break;
@@ -382,12 +382,12 @@ static long pixel_mux_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		break;
 
 	case VIDIOC_QUERYCAP:
-        ret = pixel_mux_querycap(pixel_mux, arg);
-        if (ret) {
-            pr_err("pixel_mux: failed to query capabilities, ret: %d\n", ret);
-            return ret;
-        }
-        break;
+	ret = pixel_mux_querycap(pixel_mux, arg);
+	if (ret) {
+	    pr_err("pixel_mux: failed to query capabilities, ret: %d\n", ret);
+	    return ret;
+	}
+	break;
 
 	default:
 		pr_debug("pixel_mux: got unsupported ioctl 0x%x, Context(process: %s, PID: %d)\n", cmd, current->comm, current->pid);
@@ -450,7 +450,7 @@ static int hailo15_pixel_mux_async_bound(struct v4l2_async_notifier *subdev_noti
 	return result;
 }
 
-unsigned int hailo15_mux_isp_stream_cfg_to_reg(
+static unsigned int hailo15_mux_isp_stream_cfg_to_reg(
 	const struct pixel_mux_priv *pixel_mux,
 	const struct hailo15_mux_isp_stream_cfg *cfg)
 {
@@ -503,6 +503,27 @@ hailo_pixel_mux_configure_dest(const struct pixel_mux_priv *pixel_mux,
 		pixel_mux->base + pm_cfg->vision_subsys_err_int_agg_mask_offset);
 }
 
+static int pixel_mux_enable(struct pixel_mux_priv *pixel_mux)
+{
+	int ret;
+
+	dev_dbg(pixel_mux->dev, "%s enabling vision_hclk\n", __func__);
+	ret = clk_prepare_enable(pixel_mux->vision_hclk);
+	if (ret) {
+		pr_err("%s - failed enabling vision_hclk\n", __func__);
+		return -EAGAIN;
+	}
+	dev_dbg(pixel_mux->dev, "%s enabling vision_clk\n", __func__);
+	ret = clk_prepare_enable(pixel_mux->vision_clk);
+	if (ret) {
+		clk_disable_unprepare(pixel_mux->vision_hclk);
+		pr_err("%s - failed enabling vision_clk\n", __func__);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
 static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct pixel_mux_priv *pixel_mux = v4l2_subdev_to_pixel_mux(sd);
@@ -519,18 +540,11 @@ static int pixel_mux_s_stream(struct v4l2_subdev *sd, int enable)
 		return -EINVAL;
 
 	if (enable && !pixel_mux->enabled) {
-		dev_dbg(pixel_mux->dev, "%s enabling vision_hclk\n", __func__);
-		ret = clk_prepare_enable(pixel_mux->vision_hclk);
+		ret = pixel_mux_enable(pixel_mux);
 		if (ret) {
-			pr_err("%s - failed enabling vision_hclk\n", __func__);
-			return -EAGAIN;
+			return ret;
 		}
-		dev_dbg(pixel_mux->dev, "%s enabling vision_clk\n", __func__);
-		ret = clk_prepare_enable(pixel_mux->vision_clk);
-		if (ret) {
-			pr_err("%s - failed enabling vision_clk\n", __func__);
-			return -EAGAIN;
-		}
+		// TODO: disable code is missing
 		pixel_mux->enabled = 1;
 	}
 
@@ -706,7 +720,7 @@ static int hailo15_pixel_mux_async_complete(struct v4l2_async_notifier *video_no
 	pr_debug("hailo15_pixel_mux: complete function invoked\n");
 
 	if (!video_dev) {
-		dev_err(video_dev->dev, "Complete function was invoked, but the notifier does not hold a v4l2 video device!");
+		pr_err("Complete function was invoked, but the notifier does not hold a v4l2 video device!\n");
 		return -EINVAL;
 	}
 
@@ -845,13 +859,13 @@ static u32 hailo_pixel_mux_hwirq_to_mask(irq_hw_number_t hwirq, const struct pm_
 {
     switch (hwirq) {
     case 0: /* ISP error interrupt */
-        return pm_cfg->isp_err_interrupt_bit_mask;
+	return pm_cfg->isp_err_interrupt_bit_mask;
     case 1: /* CSI RX0 error interrupt */
-        return pm_cfg->csi_rx0_err_irq_bit_mask;
+	return pm_cfg->csi_rx0_err_irq_bit_mask;
     case 2: /* CSI RX1 error interrupt */
-        return pm_cfg->csi_rx1_err_irq_bit_mask;
+	return pm_cfg->csi_rx1_err_irq_bit_mask;
     default:
-        return 0;
+	return 0;
     }
 }
 
@@ -863,8 +877,8 @@ static void hailo_pixel_mux_irq_enable(struct irq_data *data)
     u32 current_mask;
 
     if (!mask_bit) {
-        dev_err(pixel_mux->dev, "Invalid hwirq %lu for enable\n", data->hwirq);
-        return;
+	dev_err(pixel_mux->dev, "Invalid hwirq %lu for enable\n", data->hwirq);
+	return;
     }
 
     /* Read current mask, set the bit, write back */
@@ -873,7 +887,7 @@ static void hailo_pixel_mux_irq_enable(struct irq_data *data)
     writel(current_mask, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
     
     dev_dbg(pixel_mux->dev, "Enabled virq %u (hwirq %lu), mask bit 0x%x, new mask 0x%x\n", 
-            data->irq, data->hwirq, mask_bit, current_mask);
+	    data->irq, data->hwirq, mask_bit, current_mask);
 }
 
 static void hailo_pixel_mux_irq_disable(struct irq_data *data)
@@ -884,8 +898,8 @@ static void hailo_pixel_mux_irq_disable(struct irq_data *data)
     u32 current_mask;
 
     if (!mask_bit) {
-        dev_err(pixel_mux->dev, "Invalid hwirq %lu for disable\n", data->hwirq);
-        return;
+	dev_err(pixel_mux->dev, "Invalid hwirq %lu for disable\n", data->hwirq);
+	return;
     }
 
     /* Read current mask, clear the bit, write back */
@@ -894,7 +908,7 @@ static void hailo_pixel_mux_irq_disable(struct irq_data *data)
     writel(current_mask, pixel_mux->base + pixel_mux->pm_cfg->vision_subsys_err_int_agg_mask_offset);
     
     dev_dbg(pixel_mux->dev, "Disabled virq %u (hwirq %lu), mask bit 0x%x, new mask 0x%x\n", 
-            data->irq, data->hwirq, mask_bit, current_mask);
+	    data->irq, data->hwirq, mask_bit, current_mask);
 }
 
 static struct irq_chip hailo_pixel_mux_irq_chip = {
@@ -947,7 +961,7 @@ static int pixel_mux_init_irq_handler(struct pixel_mux_priv *pixel_mux,
 		return ret;
 	}
 
-    return 0;
+	return 0;
 }
 
 static int pixel_mux_probe(struct platform_device *pdev)
@@ -983,9 +997,9 @@ static int pixel_mux_probe(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "using %pR\n", res);	
 
 	pixel_mux->base = devm_ioremap_resource(&pdev->dev, res);
-    if (IS_ERR(pixel_mux->base)) {
-        dev_err(&pdev->dev, "Failed to remap IO memory %pR, err = (%pe)\n", res, pixel_mux->base);
-        return PTR_ERR(pixel_mux->base);
+    	if (IS_ERR(pixel_mux->base)) {
+		dev_err(&pdev->dev, "Failed to remap IO memory %pR, err = (%pe)\n", res, pixel_mux->base);
+		return PTR_ERR(pixel_mux->base);
 	}
 
 	ret = pixel_mux_init_irq_handler(pixel_mux, pdev);
@@ -1090,8 +1104,6 @@ static int pixel_mux_remove(struct platform_device *pdev)
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	kfree(pixel_mux);
 
 	return 0;
 }

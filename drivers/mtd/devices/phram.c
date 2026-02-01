@@ -99,9 +99,9 @@ static int register_device(char *name, phys_addr_t start, size_t len, uint32_t e
 		goto out0;
 
 	ret = -EIO;
-	new->mtd.priv = ioremap(start, len);
+	new->mtd.priv = memremap(start, len, MEMREMAP_WB);
 	if (!new->mtd.priv) {
-		pr_err("ioremap failed\n");
+		pr_err("memremap failed\n");
 		goto out1;
 	}
 

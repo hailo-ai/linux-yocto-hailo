@@ -2,10 +2,12 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-event.h>
 #include "hailo15-isp-hw.h"
+#include "hailo15-isp-v4l.h"
 #include "hailo15-isp.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/hailo15_isp.h>
+#include <trace/events/hailo15_dual_sensor.h>
 
 #define SCALE_FACTOR 0x10000
 #define MSRZ_SCALE_CALC(in, out)                                               \
@@ -16,13 +18,8 @@
 #define HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK 0x1FFF
 #define HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT 14
 
-extern struct list_head *hailo15_isp_get_empty_queue(struct hailo15_isp_device *, int);
-extern struct list_head *hailo15_isp_get_full_queue(struct hailo15_isp_device *, int);
-extern struct mutex *hailo15_isp_get_empty_lock(struct hailo15_isp_device *, int);
-extern struct mutex *hailo15_isp_get_full_lock(struct hailo15_isp_device *, int);
-
 /* New struct-based read register function */
-uint32_t hailo15_isp_read_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
+static uint32_t hailo15_isp_read_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
 {
 	uint32_t val = 0;
 	uint8_t vdid = VIV_INVALID_VDID;
@@ -58,7 +55,6 @@ uint32_t hailo15_isp_read_reg_op(struct hailo15_isp_device *isp_dev, const struc
 	isp_dev->fe_enable = 0;
 	return 0;
 }
-EXPORT_SYMBOL(hailo15_isp_read_reg_op);
 
 /* Legacy function maintained for compatibility */
 uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
@@ -74,7 +70,7 @@ uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 EXPORT_SYMBOL(hailo15_isp_read_reg);
 
 /* New struct-based write register function */
-void hailo15_isp_write_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
+static void hailo15_isp_write_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
 {
 	uint8_t vdid = VIV_INVALID_VDID;
 	int ret = -1;
@@ -109,7 +105,6 @@ void hailo15_isp_write_reg_op(struct hailo15_isp_device *isp_dev, const struct h
 
 	isp_dev->fe_enable = 0;
 }
-EXPORT_SYMBOL(hailo15_isp_write_reg_op);
 
 /* Legacy function maintained for compatibility */
 void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
@@ -126,22 +121,20 @@ void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
 EXPORT_SYMBOL(hailo15_isp_write_reg);
 
 /* Convenience functions for register operations with specific vdid */
-void hailo15_isp_write_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg,
+static void hailo15_isp_write_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg,
 	uint32_t val, int vdid)
 {
-struct hailo15_reg_op reg_op = HAILO15_REG_OP_WITH_VDID(reg, val, vdid);
-hailo15_isp_write_reg_op(isp_dev, &reg_op);
+	struct hailo15_reg_op reg_op = HAILO15_REG_OP_WITH_VDID(reg, val, vdid);
+	hailo15_isp_write_reg_op(isp_dev, &reg_op);
 }
-EXPORT_SYMBOL(hailo15_isp_write_reg_with_vdid);
 
-uint32_t hailo15_isp_read_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg, int vdid)
+static uint32_t hailo15_isp_read_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg, int vdid)
 {
-struct hailo15_reg_op reg_op = HAILO15_REG_READ_WITH_VDID(reg, vdid);
-return hailo15_isp_read_reg_op(isp_dev, &reg_op);
+	struct hailo15_reg_op reg_op = HAILO15_REG_READ_WITH_VDID(reg, vdid);
+	return hailo15_isp_read_reg_op(isp_dev, &reg_op);
 }
-EXPORT_SYMBOL(hailo15_isp_read_reg_with_vdid);
 
-void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
+static void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
 				   uint32_t reg, uint32_t val)
 {
 	writel(val, isp_dev->wrapper_base + reg);
@@ -199,8 +192,8 @@ void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
 		uint32_t channel_offset = i * sizeof(uint32_t);
 
 		// Set vblank_vc, and a fifo fill level, with a value of 1 line of pixels
-        reg_val = (line_buf_cfg->values.vblank_vc & HAILO15_LINE_BUF_CFG_VBLANK_VC_MASK) << HAILO15_LINE_BUF_CFG_VBLANK_VC_SHIFT;
-        reg_val |= (pixel_width & HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK) << HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT;
+		reg_val = (line_buf_cfg->values.vblank_vc & HAILO15_LINE_BUF_CFG_VBLANK_VC_MASK) << HAILO15_LINE_BUF_CFG_VBLANK_VC_SHIFT;
+		reg_val |= (pixel_width & HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK) << HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT;
 
 		hailo15_isp_wrapper_write_reg(isp_dev, line_buf_cfg->offsets.line_buf_cfg + channel_offset, reg_val);
 
@@ -231,6 +224,7 @@ static enum mcm_rd_fmt hailo15_isp_mcm_rd_cfg(int mcm_mode) {
         case ISP_MCM_MODE_INJECTION:
         case ISP_MCM_MODE_MULTI_SENSOR:
         case ISP_MCM_MODE_RAW12_PACKED:
+        case ISP_MCM_MODE_RAW_WRITE:
             return MCM_RD_FMT_12BIT;
         case ISP_MCM_MODE_OFF:
         case ISP_MCM_MODE_MAX:
@@ -285,6 +279,9 @@ static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device* isp_dev, i
 		hailo15_isp_write_reg_with_vdid(isp_dev, ISP_ACQ_PROP, isp_acq_prop, vdid);
 	}
 
+	if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
+		mi_mcm_ctrl |= MCM_WR_AUTO_UPDATE;
+	}
 	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl | MCM_RD_CFG_UPD, vdid);
 	mi_imsc = hailo15_isp_read_reg_with_vdid(isp_dev, MI_IMSC, vdid);
 	mi_imsc |= MCM_DMA_RAW_READY;
@@ -398,12 +395,8 @@ void
 hailo15_isp_configure_mcm_raw_frame_base(struct hailo15_isp_device *isp_dev,
 				    dma_addr_t addr[FMT_MAX_PLANES], unsigned int vdid)
 {
-	int mi_mcm_ctrl;
 	uint32_t raw_base_reg = vdid == 0 ? MI_MCM_RAW0_BASE_AD_INIT : MI_MCM_RAW1_BASE_AD_INIT;
 	hailo15_isp_write_reg_with_vdid(isp_dev, raw_base_reg, addr[PLANE_Y], vdid);
-	mi_mcm_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_MCM_CTRL, vdid);
-	mi_mcm_ctrl |= MCM_WR_AUTO_UPDATE;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl, vdid);
 }
 EXPORT_SYMBOL(hailo15_isp_configure_mcm_raw_frame_base);
 
@@ -454,14 +447,6 @@ void hailo15_isp_configure_frame_base(struct hailo15_isp_device *isp_dev,
 }
 EXPORT_SYMBOL(hailo15_isp_configure_frame_base);
 
-int hailo15_isp_dma_set_enable(struct hailo15_isp_device *isp_dev, int path,
-			       int enable)
-{
-	/* MSW-3003 */
-	return 0;
-}
-EXPORT_SYMBOL(hailo15_isp_dma_set_enable);
-
 static void hailo15_isp_post_irq_event(struct hailo15_isp_device *isp_dev,
 				       int irq_id)
 {
@@ -502,14 +487,7 @@ static void hailo15_isp_post_irq_event(struct hailo15_isp_device *isp_dev,
 	if (irq_event->irq_status == 0)
 		return;
 
-	if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
-		if (isp_dev->fe_dev) {
-			irq_event->port = vdid;
-		} else {
-			pr_err("%s - fe_dev is NULL\n", __func__);
-			return;
-		}
-	}
+	irq_event->port = vdid;
 
 	v4l2_event_queue(vdev, &event);
 }
@@ -574,6 +552,76 @@ static inline int __hailo15_isp_frame_rx_rdma_ready(int miv2_mis)
 static inline int __hailo15_isp_frame_rx_sp2_raw(int miv2_mis)
 {
 	return !!(miv2_mis & MIV2_SP2_RAW_FRAME_END);
+}
+
+/* Drop excess buffers from a sensor's full queue, keeping only 1 buffer */
+static void hailo15_isp_drop_excess_buffers(struct hailo15_isp_device *isp_dev,
+					     uint8_t sensor_vdid)
+{
+	struct list_head *raw_full_queue;
+	struct list_head *raw_empty_queue;
+	struct mutex *raw_full_lock;
+	struct mutex *raw_empty_lock;
+	struct hailo15_isp_raw_buf *buf, *next_buf;
+	LIST_HEAD(temp_list);
+	int kept_count = 0;
+	int dropped_count = 0;
+	int count_before, count_after;
+	int other_vdid = (sensor_vdid + 1) % HAILO15_ISP_SINK_PAD_MAX;
+	int count_other;
+
+	raw_full_queue = hailo15_isp_get_full_queue(isp_dev, sensor_vdid);
+	raw_empty_queue = hailo15_isp_get_empty_queue(isp_dev, sensor_vdid);
+	raw_full_lock = hailo15_isp_get_full_lock(isp_dev, sensor_vdid);
+	raw_empty_lock = hailo15_isp_get_empty_lock(isp_dev, sensor_vdid);
+
+	if (!raw_full_queue || !raw_empty_queue || !raw_full_lock || !raw_empty_lock) {
+		pr_err("%s - failed to get queues/locks for sensor %d\n", __func__, sensor_vdid);
+		return;
+	}
+
+	/* Lock full queue only to remove excess buffers to the temp list */
+	mutex_lock(raw_full_lock);
+
+	/* Get counts before dropping */
+	smp_mb();
+	count_before = atomic_read(&isp_dev->full_queue_count[sensor_vdid]);
+	count_other = atomic_read(&isp_dev->full_queue_count[other_vdid]);
+
+	list_for_each_entry_safe(buf, next_buf, raw_full_queue, list) {
+		/* Keep the first buffer, move the rest to temp list */
+		if (kept_count == 0) {
+			kept_count++;
+			continue;
+		}
+		list_del(&buf->list);
+		atomic_dec(&isp_dev->full_queue_count[sensor_vdid]);
+		trace_isp_raw_buffer_full_q_out(sensor_vdid, buf->index, buf->phys_addr);
+		list_add_tail(&buf->list, &temp_list);
+		dropped_count++;
+	}
+	mutex_unlock(raw_full_lock);
+
+	/* Now transfer from temp_list to empty queue, only need to lock empty lock */
+	if (!list_empty(&temp_list)) {
+		mutex_lock(raw_empty_lock);
+		list_for_each_entry_safe(buf, next_buf, &temp_list, list) {
+			list_del(&buf->list);
+			trace_isp_raw_buffer_empty_q_in(sensor_vdid, buf->index, buf->phys_addr);
+			list_add_tail(&buf->list, raw_empty_queue);
+		}
+		mutex_unlock(raw_empty_lock);
+	}
+
+	/* Get count after dropping */
+	count_after = atomic_read(&isp_dev->full_queue_count[sensor_vdid]);
+
+	/* Trace the drop event */
+	if (dropped_count > 0) {
+		trace_hailo15_dual_sensor_buffers_dropped(sensor_vdid, dropped_count,
+							  count_before, count_after,
+							  count_other);
+	}
 }
 
 static void hailo15_isp_handle_multi_sensor_frame_rx(struct hailo15_isp_device *isp_dev)
@@ -651,11 +699,34 @@ static void hailo15_isp_handle_multi_sensor_frame_rx(struct hailo15_isp_device *
 		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 	}
 
+	/* Check if the sensor we're about to process has a lead of more than 1 buffer */
+	{
+		int count_next, count_other;
+		int other_vdid = (next_vdid + 1) % HAILO15_ISP_SINK_PAD_MAX;
+
+		smp_mb(); /* Ensure all atomic writes are visible */
+		count_next = atomic_read(&isp_dev->full_queue_count[next_vdid]);
+		count_other = atomic_read(&isp_dev->full_queue_count[other_vdid]);
+
+		/* If next_vdid has more than 1 buffer lead, drop excess buffers */
+		if (count_next - count_other > 1) {
+			hailo15_isp_drop_excess_buffers(isp_dev, next_vdid);
+		}
+	}
+
 	/* get a full buffer from the raw full queue */
 	mutex_lock(raw_full_lock);
 	isp_dev->cur_rdma_buf = list_first_entry_or_null(raw_full_queue, struct hailo15_isp_raw_buf, list);
 	if (isp_dev->cur_rdma_buf) {
 		list_del(&isp_dev->cur_rdma_buf->list);
+		{
+			int old_count;
+			int new_count;
+			old_count = atomic_read(&isp_dev->full_queue_count[next_vdid]);
+			atomic_dec(&isp_dev->full_queue_count[next_vdid]);
+			new_count = atomic_read(&isp_dev->full_queue_count[next_vdid]);
+			trace_hailo15_dual_sensor_full_q_count_dec(next_vdid, old_count, new_count);
+		}
 		trace_isp_raw_buffer_full_q_out(next_vdid,
 						isp_dev->cur_rdma_buf->index,
 						isp_dev->cur_rdma_buf->phys_addr);
@@ -711,11 +782,12 @@ static void hailo15_isp_handle_frame_rx_rdma(struct hailo15_isp_device *isp_dev,
 
 		switch (isp_dev->mcm_mode) {
 			case ISP_MCM_MODE_STITCHING:
+			case ISP_MCM_MODE_RAW12_PACKED:
+			case ISP_MCM_MODE_RAW_WRITE:
 				/* do rx_rdma */
 				hailo15_isp_buffer_done(isp_dev, HAILO15_VID_GRP_MCM_IN);
 				break;
 			case ISP_MCM_MODE_INJECTION:
-			case ISP_MCM_MODE_RAW12_PACKED:
 				mutex_lock(&isp_dev->ready_lock);
 				if (isp_dev->output_ready){
 					/* do rx_rdma */
@@ -817,6 +889,7 @@ void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work)
 							 isp_dev->cur_raw_buf[isp_port]->index,
 							 isp_dev->cur_raw_buf[isp_port]->phys_addr);
 			list_add_tail(&isp_dev->cur_raw_buf[isp_port]->list, raw_full_queue);
+			atomic_inc(&isp_dev->full_queue_count[isp_port]);
 			isp_dev->raw_frame_available[isp_port] = true;
 			mutex_unlock(raw_full_lock);
 
@@ -829,7 +902,7 @@ void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work)
 			isp_dev->cur_raw_buf[isp_port] = list_first_entry_or_null(raw_empty_queue, struct hailo15_isp_raw_buf, list);
 			if (!isp_dev->cur_raw_buf[isp_port]) {
 				mutex_unlock(raw_empty_lock);
-				pr_err("%s - no empty buffers for raw %d, cur_buf_path: %d\n", __func__, isp_port, isp_dev->cur_buf_path);
+				pr_err_ratelimited("%s - no empty buffers for raw %d, cur_buf_path: %d\n", __func__, isp_port, isp_dev->cur_buf_path);
 			} else {
 				/* remove the buffer from the empty queue */
 				list_del(&isp_dev->cur_raw_buf[isp_port]->list);
@@ -845,9 +918,10 @@ void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work)
 				first_sensor_buf = list_first_entry_or_null(raw_full_queue, struct hailo15_isp_raw_buf, list);
 				if (!first_sensor_buf) {
 					mutex_unlock(raw_full_lock);
-					pr_err("%s - no full buffers for first sensor\n", __func__);
+					pr_err_ratelimited("%s - no full buffers for first sensor\n", __func__);
 				} else {
 					list_del(&first_sensor_buf->list);
+					atomic_dec(&isp_dev->full_queue_count[isp_port]);
 					trace_isp_raw_buffer_full_q_out(isp_port,
 									first_sensor_buf->index,
 									first_sensor_buf->phys_addr);
@@ -868,14 +942,48 @@ void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work)
 	kfree(irq_deffered_work);
 }
 
-void hailo15_isp_mis_work(struct work_struct *work)
+static void hailo15_isp_mcm_raw_wr_buffer_done_work(struct work_struct *work)
+{
+	struct hailo15_mcm_raw_wr_buffer_done_work *buf_done_work =
+		container_of(work, struct hailo15_mcm_raw_wr_buffer_done_work, work);
+	struct hailo15_isp_device *isp_dev = buf_done_work->isp_dev;
+	unsigned long flags;
+
+	if (!isp_dev) {
+		pr_err_ratelimited("%s: invalid isp_dev\n", __func__);
+		goto out;
+	}
+
+	/* Trace that work started processing */
+	trace_isp_mcm_raw_wr_frame_irq_work(
+		buf_done_work->grp_id,
+		ktime_get_ns());
+
+	/* Check if stream is still active by verifying stream_enabled for sensor 0's sink pad,
+	 * sensor 1 not supported yet.
+	 */
+	spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
+	if (!isp_dev->stream_enabled[HAILO15_ISP_SINK_PAD_S0]) {
+		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
+		pr_debug_ratelimited("%s: stream stopped, skipping buffer_done\n", __func__);
+		goto out;
+	}
+	spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
+
+	hailo15_isp_buffer_done(isp_dev, buf_done_work->grp_id);
+
+out:
+	kfree(buf_done_work);
+}
+
+static void hailo15_isp_mis_work(struct work_struct *work)
 {
 	struct hailo15_irq_deffered_work *irq_deffered_work =
 		(struct hailo15_irq_deffered_work *)container_of(
 			work, struct hailo15_irq_deffered_work, irq_deffered_w);
 	struct hailo15_isp_device *isp_dev = irq_deffered_work->isp_dev;
 	uint32_t isp_imsc;
-	int vdid;
+	int vdid = 0;
 
 	if (irq_deffered_work->irq_status & ISP_MIS_DATA_LOSS) {
 		if (!isp_dev->mcm_mode) {
@@ -884,15 +992,12 @@ void hailo15_isp_mis_work(struct work_struct *work)
 			isp_imsc &= ~(ISP_MIS_DATA_LOSS);
 			hailo15_isp_write_reg(isp_dev, ISP_IMSC, isp_imsc);
 		} else {
-			for (vdid = 0; vdid < HAILO15_ISP_SINK_PAD_MAX; vdid++) {
-				isp_imsc = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_IMSC, vdid);
-				isp_imsc &= ~(ISP_MIS_DATA_LOSS);
-				hailo15_isp_write_reg_with_vdid(isp_dev, ISP_IMSC, isp_imsc, vdid);
-			}
+			pr_err_ratelimited("isp data loss detected in mcm mode %d\n", isp_dev->mcm_mode);
 		}
 	}
 
 	if (isp_dev->irq_status.isp_mis & (ISP_MIS_VSM_DONE)) {
+		// currently only supported on vdid 0
 		isp_dev->current_vsm.dx = hailo15_isp_process_delta(
 			hailo15_isp_read_reg_with_vdid(isp_dev, ISP_VSM_DELTA_H, vdid));
 		isp_dev->current_vsm.dy = hailo15_isp_process_delta(
@@ -902,7 +1007,7 @@ void hailo15_isp_mis_work(struct work_struct *work)
 	kfree(irq_deffered_work);
 }
 
-void hailo15_isp_handle_frame_rx_sp2_raw(struct hailo15_isp_device *isp_dev,
+static void hailo15_isp_handle_frame_rx_sp2_raw(struct hailo15_isp_device *isp_dev,
 					    int irq_status)
 {
 	uint32_t mi_ctrl;
@@ -935,7 +1040,7 @@ void hailo15_isp_handle_frame_rx(struct work_struct *work)
 	kfree(irq_deffered_work);
 }
 
-void hailo15_isp_handle_afm_int(struct work_struct *work)
+static void hailo15_isp_handle_afm_int(struct work_struct *work)
 {
 	struct hailo15_irq_deffered_work *irq_deffered_work =
 		(struct hailo15_irq_deffered_work *)container_of(
@@ -973,6 +1078,53 @@ void hailo15_isp_handle_afm_int(struct work_struct *work)
 
 	wake_up_interruptible_all(&isp_dev->af_kevent->wait_q);
 	kfree(irq_deffered_work);
+}
+
+static void hailo15_isp_handle_mcm_multi_sensor_irq(struct hailo15_isp_device *isp_dev,
+						     uint32_t masked_mis)
+{
+	struct hailo15_irq_deffered_work *irq_deffered_work;
+
+	irq_deffered_work = kzalloc(sizeof(struct hailo15_irq_deffered_work), GFP_ATOMIC);
+	if (!irq_deffered_work) {
+		pr_err_ratelimited("%s[%d]: failed to allocate irq_deffered_work\n", __func__, __LINE__);
+		return;
+	}
+	INIT_WORK(&irq_deffered_work->irq_deffered_w, hailo15_isp_handle_mcm_raw_frame_rx);
+	irq_deffered_work->irq_status = masked_mis;
+	irq_deffered_work->isp_dev = isp_dev;
+	if (!queue_work(isp_dev->mcm_wr_raw_wq, &irq_deffered_work->irq_deffered_w)) {
+		pr_err_ratelimited("%s[%d]: failed to queue mcm_wr_raw work\n", __func__, __LINE__);
+		kfree(irq_deffered_work);
+	}
+}
+
+static void hailo15_isp_handle_mcm_raw_write_irq(struct hailo15_isp_device *isp_dev,
+						  uint32_t masked_mis)
+{
+	struct hailo15_mcm_raw_wr_buffer_done_work *buf_done_work;
+
+	/* Currently only handling MIV2_MCM_RAW0_FRAME_END */
+	if (!(masked_mis & MIV2_MCM_RAW0_FRAME_END))
+		return;
+
+	/* Trace frame end interrupt */
+	trace_isp_mcm_raw_wr_frame_end_irq(
+		HAILO15_VID_GRP_MCM_RAW_WR,
+		ktime_get_ns());
+
+	buf_done_work = kzalloc(sizeof(struct hailo15_mcm_raw_wr_buffer_done_work), GFP_ATOMIC);
+	if (!buf_done_work) {
+		pr_err_ratelimited("%s[%d]: failed to allocate buffer_done work\n", __func__, __LINE__);
+		return;
+	}
+	buf_done_work->isp_dev = isp_dev;
+	buf_done_work->grp_id = HAILO15_VID_GRP_MCM_RAW_WR;
+	INIT_WORK(&buf_done_work->work, hailo15_isp_mcm_raw_wr_buffer_done_work);
+	if (!queue_work(isp_dev->mcm_wr_raw_wq, &buf_done_work->work)) {
+		pr_err_ratelimited("%s[%d]: failed to queue buffer_done work\n", __func__, __LINE__);
+		kfree(buf_done_work);
+	}
 }
 
 static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
@@ -1034,7 +1186,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		}
 	}
 
-    hailo15_process_irq_stats_events(isp_dev, HAILO15_ISP_IRQ_EVENT_ISP_MIS, isp_dev->irq_status.isp_mis);
+	hailo15_process_irq_stats_events(isp_dev, HAILO15_ISP_IRQ_EVENT_ISP_MIS, isp_dev->irq_status.isp_mis);
 
 	/* mis is raw cpu read */
 	isp_dev->irq_status.isp_miv2_mis =
@@ -1046,17 +1198,11 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	/* queue raw frame mcm work */
 	masked_mis = isp_dev->irq_status.isp_miv2_mis & (MIV2_MCM_RAW0_FRAME_END | MIV2_MCM_RAW1_FRAME_END);
 	if (masked_mis != 0 && stream_exists) {
-		irq_deffered_work = kzalloc(sizeof(struct hailo15_irq_deffered_work), GFP_ATOMIC);
-		if (!irq_deffered_work) {
-			pr_err_ratelimited("%s[%d]: failed to allocate irq_deffered_work\n", __func__, __LINE__);
-			return;
-		}
-		INIT_WORK(&irq_deffered_work->irq_deffered_w, hailo15_isp_handle_mcm_raw_frame_rx);
-		irq_deffered_work->irq_status = masked_mis;
-		irq_deffered_work->isp_dev = isp_dev;
-		if(!queue_work(isp_dev->mcm_wr_raw_wq, &irq_deffered_work->irq_deffered_w)) {
-			pr_err_ratelimited("%s[%d]: failed to queue mcm_wr_raw work\n", __func__, __LINE__);
-			kfree(irq_deffered_work);
+		/* Route interrupt based on MCM mode */
+		if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
+			hailo15_isp_handle_mcm_multi_sensor_irq(isp_dev, masked_mis);
+		} else if (isp_dev->mcm_mode == ISP_MCM_MODE_RAW_WRITE) {
+			hailo15_isp_handle_mcm_raw_write_irq(isp_dev, masked_mis);
 		}
 	}
 
@@ -1179,13 +1325,14 @@ irqreturn_t hailo15_isp_err_irq_process(struct hailo15_isp_device *isp_dev, int 
 
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL(hailo15_isp_err_irq_process);
 
 irqreturn_t hailo15_isp_irq_process(struct hailo15_isp_device *isp_dev)
 {
 	hailo15_isp_handle_int(isp_dev);
 	return IRQ_HANDLED;
 }
-
+EXPORT_SYMBOL(hailo15_isp_irq_process);
 
 void mcm_fe_irq_tasklet(unsigned long arg){
 	struct hailo15_isp_device *isp_dev = (struct hailo15_isp_device*)arg;

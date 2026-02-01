@@ -15,13 +15,13 @@ MODULE_LICENSE("GPL v2");
 
 extern struct hailo15_af_kevent af_kevent;
 
-struct workqueue_struct *monitor_wq;
-struct work_struct monitor_w;
+static struct workqueue_struct *monitor_wq;
+static struct work_struct monitor_w;
 
-bool interrupted = false;
-spinlock_t interrupt_lock;
+static bool interrupted = false;
+static spinlock_t interrupt_lock;
 
-void monitor_af_statistics(struct work_struct *work) {
+static void monitor_af_statistics(struct work_struct *work) {
 	int ret;
 	pr_info("%s - starting af monitor\n", __func__);
 	while (1) {

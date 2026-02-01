@@ -115,7 +115,7 @@ static const struct v4l2_ctrl_ops hailo15_isp_ee_ctrl_ops = {
 	.g_volatile_ctrl = hailo15_isp_ee_g_ctrl,
 };
 
-const struct v4l2_ctrl_config hailo15_isp_ee_ctrls[] = {
+static const struct v4l2_ctrl_config hailo15_isp_ee_ctrls[] = {
 	{
 		.ops = &hailo15_isp_ee_ctrl_ops,
 		.id = HAILO15_ISP_CID_EE_ENABLE,

@@ -1554,9 +1554,13 @@ static int cdnsp_gadget_pullup(struct usb_gadget *gadget, int is_on)
 
 	if (!is_on) {
 		cdnsp_reset_device(pdev);
-		cdns_clear_vbus(cdns);
+		if (cdns->pdata && !(cdns->pdata->quirks & CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD)) {
+			cdns_clear_vbus(cdns);
+		}
 	} else {
-		cdns_set_vbus(cdns);
+		if (cdns->pdata && !(cdns->pdata->quirks & CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD)) {
+			cdns_set_vbus(cdns);
+		}
 	}
 
 	spin_unlock_irqrestore(&pdev->lock, flags);
@@ -1856,6 +1860,22 @@ static int cdnsp_gen_setup(struct cdnsp_device *pdev)
 	return 0;
 }
 
+static int cdnsp_invoke_quirks(struct cdns *cdns, struct cdnsp_device *pdev)
+{
+	int ret = 0;
+	
+	/* Apply platform-specific gadget initialization quirks */
+	if (cdns->pdata && cdns->pdata->gadget_init_quirk) {
+		ret = cdns->pdata->gadget_init_quirk(&pdev->gadget);
+		if (ret) {
+			dev_err(pdev->dev, "gadget init quirk failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
 static int __cdnsp_gadget_init(struct cdns *cdns)
 {
 	struct cdnsp_device *pdev;
@@ -1906,6 +1926,7 @@ static int __cdnsp_gadget_init(struct cdns *cdns)
 	 * performance.
 	 */
 	pdev->gadget.quirk_ep_out_aligned_size = true;
+	cdnsp_invoke_quirks(cdns, pdev);
 
 	ret = cdnsp_gen_setup(pdev);
 	if (ret) {

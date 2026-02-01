@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 #include <dt-bindings/phy/phy-hailo-torrent.h>
 
 #define NO_USB_LANE (-1)
@@ -88,6 +89,8 @@ struct hailo_torrent {
 	struct clk *usb_pclk;
 	struct clk *pcie_pclk;
 	struct clk *pcie_aclk;
+	struct reset_control *pcie_rst;
+	struct reset_control *pcie_apb_rst;
 	int usb_lane;
 	u32 lanes_cfg;
 	u32 usb_lane_pma_pll_full_rate_divider;
@@ -391,6 +394,22 @@ static int hailo_torrent_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	data->pcie_rst = devm_reset_control_get(&pdev->dev, "pcie");
+	if (IS_ERR(data->pcie_rst)) {
+		dev_err(&pdev->dev, "Failed to get reset control on pcie\n");
+		return PTR_ERR(data->pcie_rst);
+	}
+
+	data->pcie_apb_rst = devm_reset_control_get(&pdev->dev, "pcie_apb");
+	if (IS_ERR(data->pcie_apb_rst)) {
+		dev_err(&pdev->dev, "Failed to get reset control on pcie_apb\n");
+		return PTR_ERR(data->pcie_apb_rst);
+	}
+
+	/* Note: reset deassert order matters: 1-pcie, 2-pcie_apb !!! */
+	reset_control_deassert(data->pcie_rst);
+	reset_control_deassert(data->pcie_apb_rst);
+
 	data->usb_pclk = devm_clk_get(dev, "usb_pclk");
 	if (IS_ERR(data->usb_pclk))
 		return PTR_ERR(data->usb_pclk);
@@ -449,6 +468,8 @@ static int hailo_torrent_remove(struct platform_device *pdev)
 	of_platform_depopulate(dev);
 	clk_disable_unprepare(data->pcie_pclk);
 	clk_disable_unprepare(data->pcie_aclk);
+	reset_control_assert(data->pcie_apb_rst);
+	reset_control_assert(data->pcie_rst);
 	pm_runtime_put_sync(dev);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);

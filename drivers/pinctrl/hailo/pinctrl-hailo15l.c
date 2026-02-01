@@ -449,7 +449,7 @@ static int hailo15l_pin_set_strength(struct pinctrl_dev *pctldev, unsigned pin,
 
 static int hailo15l_pad_get_pull_selector(struct pinctrl_dev *pctldev, uint32_t *pad)
 {
-	return PADS_CONFIG__PS__GET(readl(pad));
+	return PADS_CONFIG__PS__GET(readl(pad)) ? PIN_CONFIG_BIAS_PULL_UP : PIN_CONFIG_BIAS_PULL_DOWN;
 }
 
 static int hailo15l_pad_set_pull(struct pinctrl_dev *pctldev,
@@ -759,7 +759,7 @@ static void hailo15l_pin_config_dbg_show(struct pinctrl_dev *pctldev,
 
 	if (!hailo15l_pin_get_pull_enabled(pctldev, offset)) {
 		seq_printf(s, "pull-disabled ");
-	} else if (hailo15l_pin_get_pull_selector(pctldev, offset)) {
+	} else if (hailo15l_pin_get_pull_selector(pctldev, offset) == PIN_CONFIG_BIAS_PULL_UP) {
 		seq_printf(s, "pull-up ");
 	} else {
 		seq_printf(s, "pull-down ");

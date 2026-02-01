@@ -1625,7 +1625,8 @@ static int cdnsp_prepare_ring(struct cdnsp_device *pdev,
 	case EP_STATE_HALTED:
 		break;
 	default:
-		dev_err(pdev->dev, "ERROR: incorrect endpoint state\n");
+		/* Brief endpoint info for debugging incorrect state */
+		dev_err(pdev->dev, "ERROR: incorrect endpoint state %d\n", ep_state);
 		return -EINVAL;
 	}
 

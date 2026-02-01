@@ -32,6 +32,8 @@
  * | 5  | HAILO15_VID_GRP_SX_CSI1_P2A    | /dev/video5  | CSI-1 | Pixel2Axi     | SDR       | pipes-vc[{0    }] = All VCs  |
  * |    |                                |              |       |               | HDR       | pipes-vc[{0,1,2}] = {0,1,2}  |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
+ * | 6  | HAILO15_VID_GRP_MCM_RAW_WR     | /dev/video6  | CSI-0 | MCM raw write | Raw12     | sensor0 MCM raw capture     |
+ * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
  * | 10 | HAILO15_VID_GRP_MCM_IN         | /dev/video10 | -     | MCM input     |           |                              |
  * +----+--------------------------------+--------------+-------+---------------+-----------+------------------------------+
  * | 20 | HAILO15_VID_GRP_S0_CSI0_P2A    | /dev/video20 | CSI-0 | Pixel2Axi     | SDR       | pipe-vc[0]=0                 |
@@ -59,6 +61,7 @@
 #define HAILO15_VID_GRP_SX_CSI1_ISP_MP   (3)
 #define HAILO15_VID_GRP_SX_CSI1_ISP_SP   (4)
 #define HAILO15_VID_GRP_SX_CSI1_P2A      (5)
+#define HAILO15_VID_GRP_MCM_RAW_WR       (6)
 
 #define HAILO15_VID_GRP_MCM_IN           (10)
 

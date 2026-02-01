@@ -155,7 +155,7 @@ static long xrp_map_request(struct file *filp, struct xrp_request *rq,
         copy_from_user(rq->nsid,
                (void __user *)(unsigned long)rq->ioctl_queue.nsid_addr,
                sizeof(rq->nsid))) {
-        dev_err(xvp->dev, "%s: nsid could not be copied\n ", __func__);
+        dev_err(xvp->dev, "%s: nsid could not be copied\n", __func__);
         return -EINVAL;
     }
 

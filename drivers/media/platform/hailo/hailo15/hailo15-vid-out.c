@@ -17,6 +17,10 @@
 
 #define HAILO_VID_NAME "hailo_video_out"
 
+#define CREATE_TRACE_POINTS
+#include "hailo15-vid-out-traces.h"
+
+
 #define MIN_BUFFERS_NEEDED 0
 #define MAX_NUM_FRAMES HAILO15_MAX_BUFFERS
 #define NUM_PLANES                                                             \
@@ -42,7 +46,7 @@
 		}                                                                  \
 	} while (0);
 
-struct mutex sd_mutex;
+static struct mutex sd_mutex;
 
 #define hailo15_subdev_call(vid_node, ...)                                     \
 	({                                                                     \
@@ -81,8 +85,8 @@ static int hailo15_enum_fmt_vid_out(struct file *file, void *priv,
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 
-	if (f->index < hailo15_get_formats_count()) {
-		f->pixelformat = hailo15_get_formats()[f->index].fourcc;
+	if (f->index < hailo15_get_out_formats_count()) {
+		f->pixelformat = hailo15_get_out_formats()[f->index].fourcc;
 		return 0;
 	}
 
@@ -114,10 +118,13 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 	struct v4l2_subdev_format fmt;
 	struct v4l2_subdev_state try_fmt;
 	struct v4l2_subdev_pad_config pad_cfg;
+	char fourcc_str[5];
 	int ret;
 
-	pr_debug("%s - enter - active = %d, width: %u, height: %u\n", __func__,
-		 active, pix_mp->width, pix_mp->height);
+	pr_debug("%s - requested format: %dx%d fourcc: 0x%X (%s), num_planes: %u\n",
+	       __func__, pix_mp->width, pix_mp->height, pix_mp->pixelformat,
+	       hailo15_fourcc_to_string(pix_mp->pixelformat, fourcc_str),
+	       pix_mp->num_planes);
 
 	memset(&fmt, 0, sizeof(fmt));
 	memset(&try_fmt, 0, sizeof(try_fmt));
@@ -155,6 +162,7 @@ static int _hailo15_try_fmt_vid_out(struct file *file, void *priv,
 
 	pix_mp->quantization = V4L2_QUANTIZATION_FULL_RANGE;
 	pix_mp->colorspace = V4L2_COLORSPACE_DEFAULT;
+
 	return ret;
 }
 
@@ -219,7 +227,7 @@ static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
 			mutex_unlock(&vid_node->ioctl_mutex);
 			pr_err("%s - ERROR from vb2_ioctl_streamon: %d\n",
 			       __func__, ret);
-			return -EINVAL;
+			return ret;
 		}
 		mutex_unlock(&vid_node->ioctl_mutex);
 		return 0;
@@ -253,13 +261,15 @@ static int hailo15_streamoff(struct file *file, void *priv,
 	return ret;
 }
 
-int hailo15_reqbufs(struct file *file, void *priv,
+static int hailo15_reqbufs(struct file *file, void *priv,
 		    struct v4l2_requestbuffers *p)
 {
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
 	struct media_pad *pad;
 	struct hailo15_reqbufs req;
 	int ret = 0;
+	req.num_buffers = p->count;
+	vid_node->reqbufs = 0;
 
 	ret = vb2_ioctl_reqbufs(file, priv, p);
 	if (ret) {
@@ -269,16 +279,18 @@ int hailo15_reqbufs(struct file *file, void *priv,
 
 	pad = media_entity_remote_pad(&vid_node->pad);
 	req.pad = pad->index;
-	req.num_buffers = p->count;
 
 	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_REQBUFS, &req);
 	if (ret) {
 		pr_err("%s - reqbufs from subdev %s failed, err = (%pe)\n",
-			__func__, vid_node->direct_sd->name, ERR_PTR(ret));
+				__func__, vid_node->direct_sd->name, ERR_PTR(ret));
+		return ret;
 	}
 
+	vid_node->reqbufs = req.num_buffers;
 	return ret;
 }
+
 
 static const struct v4l2_ioctl_ops video_ioctl_ops = {
 	.vidioc_querycap = hailo15_querycap,
@@ -316,7 +328,7 @@ static int hailo15_video_out_node_stream_cancel(struct hailo15_video_out_node *v
 	return ret;
 }
 
-int hailo15_video_out_node_open(struct file *file)
+static int hailo15_video_out_node_open(struct file *file)
 {
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
 	int ret;
@@ -330,7 +342,7 @@ int hailo15_video_out_node_open(struct file *file)
 	return 0;
 }
 
-int hailo15_video_out_node_release(struct file *file)
+static int hailo15_video_out_node_release(struct file *file)
 {
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
 	int ret;
@@ -352,7 +364,7 @@ int hailo15_video_out_node_release(struct file *file)
 	return 0;
 }
 
-static unsigned int hailo15_video_out_node_poll(struct file *file,
+static __poll_t hailo15_video_out_node_poll(struct file *file,
 					    struct poll_table_struct *wait)
 {
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
@@ -392,7 +404,7 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 		*nbuffers = MAX_NUM_FRAMES - q->num_buffers;
 
 	format =
-		hailo15_fourcc_get_format(vid_node->fmt.fmt.pix_mp.pixelformat, vid_node->fmt.fmt.pix_mp.num_planes);
+		hailo15_fourcc_get_out_format(vid_node->fmt.fmt.pix_mp.pixelformat, vid_node->fmt.fmt.pix_mp.num_planes);
 	if (!format) {
 		pr_err("%s - failed to get fourcc format\n", __func__);
 		return -EINVAL;
@@ -485,6 +497,10 @@ static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb)
 
 static void hailo15_buffer_queue(struct vb2_buffer *vb)
 {
+	struct hailo15_video_out_node *vid_node = queue_to_node(vb->vb2_queue);
+	struct vb2_v4l2_buffer *vbuf = container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	struct hailo15_buffer *hbuf = container_of(vbuf, struct hailo15_buffer, vb);
+
 	if (WARN_ON(!vb) || WARN_ON(!vb->vb2_queue)) {
 		pr_err("%s - WARN_ON(!vb) || WARN_ON(!vb->vb2_queue), returning\n",
 		       __func__);
@@ -497,6 +513,7 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 		return;
 	}
  	/* TODO call isp buffer_queue (isp will manage the buffer queue)*/
+	trace_hailo_buffer_queued(hbuf, vid_node);
 	hailo15_video_device_process_vb2_buffer(vb);
 }
 
@@ -522,10 +539,14 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	}
 
 	if (buf) {
-		buf->vb.sequence = vid_node->sequence++;
+		buf->queue_sequence = vid_node->sequence;
+		buf->vb.sequence = vid_node->sequence % vid_node->reqbufs;
+		vid_node->sequence++;
 		buf->vb.vb2_buf.timestamp = ktime_get_ns();
 		vb2_buffer_done(&buf->vb.vb2_buf,
 				vid_node->streaming ? VB2_BUF_STATE_DONE : VB2_BUF_STATE_ERROR);
+
+		trace_hailo_buffer_done(buf, vid_node);
 	}
 
 	return 0;
@@ -533,12 +554,12 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 
 static int hailo15_buffer_prepare(struct vb2_buffer *vb)
 {
-	struct hailo15_video_out_node *vid_node = queue_to_node(vb->vb2_queue);
 	int plane, line_length, bytesperline;
+	struct hailo15_video_out_node *vid_node = queue_to_node(vb->vb2_queue);
 	struct v4l2_pix_format_mplane *mfmt = &vid_node->fmt.fmt.pix_mp;
 	const struct hailo15_video_fmt *format;
 
-	format = hailo15_fourcc_get_format(mfmt->pixelformat, mfmt->num_planes);
+	format = hailo15_fourcc_get_out_format(mfmt->pixelformat, mfmt->num_planes);
 
 	if (format == NULL) {
 		pr_err("%s - returning -EINVAL\n", __func__);
@@ -559,7 +580,7 @@ static int hailo15_buffer_prepare(struct vb2_buffer *vb)
 	return 0;
 }
 
-int hailo15_video_out_node_start_streaming(struct vb2_queue *q, unsigned int count)
+static int hailo15_video_out_node_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct hailo15_video_out_node *vid_node = queue_to_node(q);
 	int ret = 0;
@@ -567,6 +588,7 @@ int hailo15_video_out_node_start_streaming(struct vb2_queue *q, unsigned int cou
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 	if (!vid_node->streaming) {
+		trace_hailo15_vidout_start_streaming(vid_node);
 		ret = hailo15_video_out_node_subdev_set_stream(vid_node, STREAM_ON);
 		if (ret) {
 			dev_err(vid_node->dev,
@@ -579,10 +601,11 @@ int hailo15_video_out_node_start_streaming(struct vb2_queue *q, unsigned int cou
 	}
 	goto out;
 out:
+	trace_hailo15_vidout_start_streaming_error(vid_node);
 	return ret;
 }
 
-void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
+static void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
 {
 	struct hailo15_video_out_node *vid_node = queue_to_node(q);
 
@@ -590,6 +613,22 @@ void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
 		return;
 
 	hailo15_video_out_node_stream_cancel(vid_node);
+	trace_hailo15_vidout_stop_streaming(vid_node);
+}
+
+
+static void hailo15_buffer_trace_dequeue(struct vb2_buffer *vb)
+{
+	struct vb2_v4l2_buffer *vbuf;
+	struct hailo15_buffer *hbuf;
+	struct hailo15_video_out_node *vid_node = queue_to_node(vb->vb2_queue);
+	if (WARN_ON(!vb) || WARN_ON(!vb->vb2_queue)) {
+		pr_err("%s - WARN_ON(!p) || WARN_ON(!p->vb2_queue), returning\n",
+		       __func__);
+	}
+	vbuf = container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
+	hbuf = container_of(vbuf, struct hailo15_buffer, vb);
+	trace_hailo_buffer_dequeued(hbuf, vid_node);
 }
 
 static struct vb2_ops hailo15_buffer_ops = {
@@ -598,6 +637,7 @@ static struct vb2_ops hailo15_buffer_ops = {
 	.queue_setup = hailo15_queue_setup,
 	.buf_prepare = hailo15_buffer_prepare,
 	.buf_queue = hailo15_buffer_queue,
+	.buf_finish = hailo15_buffer_trace_dequeue,
 	.wait_prepare = vb2_ops_wait_prepare,
 	.wait_finish = vb2_ops_wait_finish,
 };
@@ -899,10 +939,9 @@ static int hailo15_video_init_vid_nodes(struct hailo15_vid_out_device *vid_dev)
 {
 	struct hailo15_video_out_node *vid_node = NULL;
 	struct fwnode_handle *ep = NULL;
-	struct v4l2_async_subdev *asd;
 	int i = 0;
 	uint32_t path;
-	int ret;
+	int ret = -EINVAL;
 	struct fwnode_endpoint fwnode_ep;
 	struct v4l2_subdev* sd;
 	struct hailo15_dma_ctx* ctx;
@@ -923,7 +962,6 @@ static int hailo15_video_init_vid_nodes(struct hailo15_vid_out_device *vid_dev)
 			goto err_node_alloc;
 		}
 
-		vid_node->asd = asd;
 		vid_node->dev = vid_dev->dev;
 		vid_node->mdev = hailo15_media_get_media_device();
 
@@ -1018,8 +1056,9 @@ static int hailo15_video_probe(struct platform_device *pdev)
 	pm_runtime_get_sync(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	goto out;
+
 	pr_debug("video device probe success\n");
+	goto out;
 err_init_nodes:
 	kfree(vid_dev);
 out:
@@ -1055,7 +1094,6 @@ static struct platform_driver hailo_video_driver = {
 	.remove = hailo15_video_remove,
 	.driver = {
 		   .name = HAILO_VID_NAME,
-		   .owner = THIS_MODULE,
 		   .of_match_table = hailo15_vid_out_of_match,
 		   },
 };

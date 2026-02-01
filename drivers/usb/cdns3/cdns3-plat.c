@@ -336,7 +336,7 @@ static struct platform_driver cdns3_driver = {
 	.driver		= {
 		.name	= "cdns-usb3",
 		.of_match_table	= of_match_ptr(of_cdns3_match),
-		.pm	= &cdns3_pm_ops,
+		// .pm	= &cdns3_pm_ops,
 	},
 };
 

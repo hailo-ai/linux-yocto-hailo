@@ -169,4 +169,4 @@ kernel.config
 
 # image files
 fit-image.its
-fitImage
+fitImage*

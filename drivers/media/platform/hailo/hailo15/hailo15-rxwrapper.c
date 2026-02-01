@@ -34,15 +34,48 @@
 
 #define HAILO_RXWRAPPER_NAME "hailo-rxwrapper"
 
-#define CREATE_TRACE_POINTS
-#include "hailo15-rxw-traces.h"
 
-EXPORT_TRACEPOINT_SYMBOL(hailo_video_event);
-EXPORT_TRACEPOINT_SYMBOL(hailo_buffer_queued);
-EXPORT_TRACEPOINT_SYMBOL(hailo_buffer_deferred);
-EXPORT_TRACEPOINT_SYMBOL(hailo_buffer_done_sdr);
-EXPORT_TRACEPOINT_SYMBOL(hailo_buffer_done_hdr);
-EXPORT_TRACEPOINT_SYMBOL(hailo_buffer_hw);
+/* Include the common event definitions */
+/* this strange sequence does compi;e */
+/* Several other had been tried but failed on compilation */
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_events
+#include <trace/events/hailo15_events.h>
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_traces
+#include <trace/events/hailo15_rxw_traces.h>
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_fast_toggle
+#include <trace/events/hailo15_rxw_fast_toggle.h>
+
+#define CREATE_TRACE_POINTS
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_events
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+#include <trace/events/hailo15_events.h>
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_traces
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+#include <trace/events/hailo15_rxw_traces.h>
+
+#undef TRACE_SYSTEM
+#define TRACE_SYSTEM hailo15_rxw_fast_toggle
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+#include <trace/events/hailo15_rxw_fast_toggle.h>
+
+
 
 #define RXWRAPPER_NUM_PIPES 4
 #define RXWRAPPER_PIPE_0 (0)
@@ -308,9 +341,9 @@ struct hailo15_rxwrapper_priv {
 	struct v4l2_subdev sd;
 	struct v4l2_subdev *source_subdev;
 	struct media_pad pads[RXWRAPPER_PAD_MAX];
-	struct v4l2_mbus_framefmt pad_fmts[RXWRAPPER_PAD_MAX];
+	struct v4l2_subdev_format pad_fmts[RXWRAPPER_PAD_MAX];
 	int source_pad;
-	void *__iomem base;
+	void __iomem *base;
 	struct vm_area_struct vma;
 	struct mutex lock;
 	struct hailo15_rxwrapper_pipe_cfg pipe_cfg[RXWRAPPER_NUM_PIPES];
@@ -336,6 +369,11 @@ struct hailo15_rxwrapper_priv {
 	struct workqueue_struct* irq_work_wq;
 	//trace bookkeeping
 	u64 queue_sequence; // global sequence number for tracing
+
+	// rxwrapper should be aware of only whether we are priming or not (NONE/PRIMING)
+	// In the future, we might need to make this enum fast_toggle_state
+	bool is_fast_toggle_priming;
+	struct v4l2_subdev_format pad_fmts_priming[RXWRAPPER_PAD_MAX];
 };
 
 /* Defer Interrupt info element */
@@ -354,14 +392,14 @@ static const struct v4l2_mbus_framefmt fmt_default = {
 	.colorspace	= V4L2_COLORSPACE_DEFAULT,
 };
 
-struct hailo15_rxwrapper_pipe_cfg rxwrapper_default_pipe_cfg = {
+static struct hailo15_rxwrapper_pipe_cfg rxwrapper_default_pipe_cfg = {
 	.dtype = RAW12_DT,
 	.lines_nr = RES_4K_FRAME_LINE_NUM * RING_BUFFER_FRAMES,
 	.stride = RES_4K_STRIDE,
 	.used_by_grp_id = HAILO15_VID_GRP_INVALID,
 };
 
-struct hailo15_rxwrapper_credits_cfg rxwrapper_default_credits_cfg = {
+static struct hailo15_rxwrapper_credits_cfg rxwrapper_default_credits_cfg = {
 	.line_size = RXWRAPPER_RES_4K_DEFAULT_CREDITS_LINE_SIZE,
 	.frame_height = RES_4K_FRAME_LINE_NUM,
 	.buffer_frames = RXWRAPPER_DEFAULT_CREDITS_BUFFER_FRAMES,
@@ -372,8 +410,9 @@ struct hailo15_rxwrapper_credits_cfg rxwrapper_default_credits_cfg = {
 	.almost_full_th = RXWRAPPER_DEFAULT_CREDITS_ALMOST_FULL_TH,
 };
 
-struct hailo15_rxwrapper_pipe_cfg rxwrapper_chosen_pipe_cfg;
-struct hailo15_rxwrapper_credits_cfg rxwrapper_chosen_credits_cfg;
+static struct hailo15_rxwrapper_pipe_cfg rxwrapper_chosen_pipe_cfg;
+static struct hailo15_rxwrapper_credits_cfg rxwrapper_chosen_credits_cfg;
+static void trace_hailo15_driver_error(const char* driver_name, uint32_t err, char* fmt, ...);
 
 static u32
 hailo15_rxwrapper_read_reg(struct hailo15_rxwrapper_priv *hailo15_rxwrapper,
@@ -733,6 +772,9 @@ static int __maybe_unused hailo15_rxwrapper_pipe_set_data_address_or_null(
 		trace_hailo_buffer_hw(buf);
 	} else {
 		config_address = hailo15_rxwrapper->vision_ss_null_addr;
+		trace_hailo15_driver_error(dev_name(hailo15_rxwrapper->dev),
+								   -ENOMEM,
+								   "Using NULL address");
 	}
 
 	return hailo15_rxwrapper_pipe_set_data_address(hailo15_rxwrapper, pipe, config_address);
@@ -942,47 +984,40 @@ static inline uint32_t hailo15_get_used_pipes(
 	return used_pipes;
 }
 
-int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
+static void hailo15_rxwrapper_disable_p2a(struct v4l2_subdev *sd, struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
-	int i, pipe, real_pipe, ret = 0;
-	struct v4l2_subdev *remote_src_subdev;
-	struct media_pad *remote_subdev_src_pad;
-	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = v4l2_subdev_to_hailo15_rxwrapper(sd);
+	int i, pipe, real_pipe;
 	int csi = hailo15_rxwrapper->id;
 
-	pr_debug("%s: enable=%d\n", __func__, enable);
+	real_pipe = hailo15_grp_id_to_pipe_id(sd->grp_id);
 
-	if (!hailo15_rxwrapper)
-		return -EINVAL;
+	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
+		pipe = real_pipe + i;
+		hailo15_rxwrapper_pipe_disable(hailo15_rxwrapper, pipe);
+		hailo15_rxwrapper_pipe_reset(hailo15_rxwrapper, pipe);
 
-	mutex_lock(&hailo15_rxwrapper->lock);
-
-	remote_subdev_src_pad = media_entity_remote_pad(&hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0]);
-	if (!remote_subdev_src_pad) {
-		pr_err("%s - failed to get connected remote pad to subdev %s:pad[%d] , (ctx grp_id %d), aborting...\n",
-			__func__, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
-		ret = -ENODEV;
-		goto finish;
+		// clean buffer_done irq
+		hailo15_buffer_ready_int_clr(hailo15_rxwrapper, csi, pipe);
+		hailo15_buffer_ready_int_disable(hailo15_rxwrapper, csi, pipe);
 	}
+	hailo15_rxwrapper->cur_buf[sd->grp_id] = NULL;
+	hailo15_rxwrapper->next_buf[sd->grp_id] = NULL;
+	atomic_set(&hailo15_rxwrapper->num_works_processing, 0);
 
-	if (!is_media_entity_v4l2_subdev(remote_subdev_src_pad->entity)) {
-		pr_err("%s - remote entity %s:pad[%d] connected to subdev %s:pad[%d] is not v4l2 subdev, (ctx grp_id %d), aborting...\n",
-			__func__, remote_subdev_src_pad->entity->name, remote_subdev_src_pad->index, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
-		ret = -ENODEV;
-		goto finish;
+	// Soft reset per channel, clear all internal credits/counter/status
+	for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
+		pipe = real_pipe + i;
+		hailo15_rxwrapper_pipe_write_only(hailo15_rxwrapper, pipe,
+		hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_pipes_ctl_credit_handler_srst_offset,
+		RXWRAPPER_PIPES_CTL_CREDIT_HANDLER_SRST_SHIFT,
+		RXWRAPPER_PIPES_CTL_CREDIT_HANDLER_SRST_WIDTH, 0x1);
 	}
+}
 
-	remote_src_subdev = media_entity_to_v4l2_subdev(remote_subdev_src_pad->entity);
-	remote_src_subdev->grp_id = sd->grp_id;
-
-	if (!hailo15_is_p2a_grp_id(sd->grp_id)) {
-		ret = v4l2_subdev_call(remote_src_subdev, video, s_stream, enable);
-		if (ret) {
-			dev_err(hailo15_rxwrapper->dev, "%s: failed to enable source subdev\n", __func__);
-			goto disable;
-		}
-		goto finish;
-	}
+static int hailo15_rxwrapper_set_stream_p2a(struct v4l2_subdev *sd, int enable, struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct v4l2_subdev *remote_src_subdev)
+{
+	int i, pipe, real_pipe, ret = 0;
+	int csi = hailo15_rxwrapper->id;
 
 	/* Case Pixel2Axi */
 	real_pipe = hailo15_grp_id_to_pipe_id(sd->grp_id);
@@ -1009,39 +1044,98 @@ int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
 		}
 		ret = v4l2_subdev_call(remote_src_subdev, video, s_stream, enable);
 		if (ret) {
+			trace_hailo15_driver_error(sd->name, ret, "subdev s_stream enable failed");
 			dev_err(hailo15_rxwrapper->dev, "%s: failed to enable source subdev\n", __func__);
-			goto disable;
+			hailo15_rxwrapper_disable_p2a(sd, hailo15_rxwrapper);
+			return ret;
 		}
 	} else {
 		ret = v4l2_subdev_call(remote_src_subdev, video, s_stream, enable);
 		if (ret) {
 			dev_err(hailo15_rxwrapper->dev, "%s: failed to disable source subdev\n", __func__);
 		}
-disable:
-		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
-			pipe = real_pipe + i;
-			hailo15_rxwrapper_pipe_disable(hailo15_rxwrapper, pipe);
-			hailo15_rxwrapper_pipe_reset(hailo15_rxwrapper, pipe);
-
-			// clean buffer_done irq
-			hailo15_buffer_ready_int_clr(hailo15_rxwrapper, csi, pipe);
-			hailo15_buffer_ready_int_disable(hailo15_rxwrapper, csi, pipe);
-		}
-		hailo15_rxwrapper->cur_buf[sd->grp_id] = NULL;
-		hailo15_rxwrapper->next_buf[sd->grp_id] = NULL;
-		atomic_set(&hailo15_rxwrapper->num_works_processing, 0);
-
-		// Soft reset per channel, clear all internal credits/counter/status
-		for (i = 0; i < hailo15_rxwrapper->num_exposures; i++) {
-			pipe = real_pipe + i;
-			hailo15_rxwrapper_pipe_write_only(hailo15_rxwrapper, pipe,
-			hailo15_rxwrapper->rxwrapper_cfg->rxwrapper_pipes_ctl_credit_handler_srst_offset,
-			RXWRAPPER_PIPES_CTL_CREDIT_HANDLER_SRST_SHIFT,
-			RXWRAPPER_PIPES_CTL_CREDIT_HANDLER_SRST_WIDTH, 0x1);
-		}
+		hailo15_rxwrapper_disable_p2a(sd, hailo15_rxwrapper);
 	}
-	hailo15_rxwrapper->frame_count = 0;
 
+	hailo15_rxwrapper->frame_count = 0;
+	if(ret == 0) {
+		if(enable) {
+			trace_hailo15_driver_s_stream(sd->name);
+		} else {
+			trace_hailo15_driver_t_stream(sd->name);
+		}
+	} else {
+		trace_hailo15_driver_error(sd->name, ret, "subdev s_stream failed");
+	}
+
+
+
+	return ret;
+}
+
+// must be called when hailo15_rxwrapper->lock is held
+static int get_remote_src_subdev(struct v4l2_subdev *sd, struct v4l2_subdev **o_remote_src_subdev)
+{
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = v4l2_subdev_to_hailo15_rxwrapper(sd);
+	struct media_pad *remote_subdev_src_pad;
+
+	if (o_remote_src_subdev == NULL) {
+		return -EINVAL;
+	}
+
+	remote_subdev_src_pad = media_entity_remote_pad(&hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0]);
+	if (!remote_subdev_src_pad) {
+		pr_err("%s - failed to get connected remote pad to subdev %s:pad[%d] , (ctx grp_id %d), aborting...\n",
+			__func__, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
+		return -ENODEV;
+	}
+
+	if (!is_media_entity_v4l2_subdev(remote_subdev_src_pad->entity)) {
+		pr_err("%s - remote entity %s:pad[%d] connected to subdev %s:pad[%d] is not v4l2 subdev, (ctx grp_id %d), aborting...\n",
+			__func__, remote_subdev_src_pad->entity->name, remote_subdev_src_pad->index, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
+		return -ENODEV;
+	}
+
+	*o_remote_src_subdev = media_entity_to_v4l2_subdev(remote_subdev_src_pad->entity);
+	(*o_remote_src_subdev)->grp_id = sd->grp_id;
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_set_stream(struct v4l2_subdev *sd, int enable)
+{
+	int ret = 0;
+	struct v4l2_subdev *remote_src_subdev;
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = v4l2_subdev_to_hailo15_rxwrapper(sd);
+
+	pr_debug("%s: enable=%d\n", __func__, enable);
+
+	if (!hailo15_rxwrapper)
+		return -EINVAL;
+
+	mutex_lock(&hailo15_rxwrapper->lock);
+
+	ret = get_remote_src_subdev(sd, &remote_src_subdev);
+	if (ret) {
+		dev_err(hailo15_rxwrapper->dev, "%s: failed to get remote source subdev\n", __func__);
+		trace_hailo15_driver_error(sd->name, ret, "%s: failed to get remote source subdev", __func__);
+		goto finish;
+	}
+
+	if (!hailo15_is_p2a_grp_id(sd->grp_id)) {
+		ret = v4l2_subdev_call(remote_src_subdev, video, s_stream, enable);
+		if (ret) {
+			dev_err(hailo15_rxwrapper->dev, "%s: failed to enable source subdev\n", __func__);
+			trace_hailo15_driver_error(sd->name, ret, "%s: failed to enable source subdev", __func__);
+		}
+		goto finish;
+	}
+
+	/* If fast toggle is going to happen, the p2a stream on is done on fast toggle apply */
+	if (!hailo15_rxwrapper->is_fast_toggle_priming || enable == 0) {
+		/* not fast toggle or stream disable - handle immediately */
+		ret = hailo15_rxwrapper_set_stream_p2a(sd, enable, hailo15_rxwrapper, remote_src_subdev);
+	}
 
 	/* TODO: MSW-2716: This code section is unused */
 	/*
@@ -1063,12 +1157,12 @@ static int hailo15_rxwrapper_get_pad_format(struct v4l2_subdev *sd,
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		v4l2_subdev_to_hailo15_rxwrapper(sd);
 
-	struct v4l2_mbus_framefmt *src_format;
-	struct v4l2_mbus_framefmt *dst_format;
+	struct v4l2_mbus_framefmt *src_format = NULL;
+	struct v4l2_mbus_framefmt *dst_format = NULL;
 	if (!hailo15_rxwrapper || !fmt || fmt->pad >= RXWRAPPER_PAD_MAX)
 		return -EINVAL;
 
-	src_format = &hailo15_rxwrapper->pad_fmts[fmt->pad];
+	src_format = &hailo15_rxwrapper->pad_fmts[fmt->pad].format;
 	dst_format = &fmt->format;
 	if (!src_format || !dst_format)
 		return -EINVAL;
@@ -1107,42 +1201,77 @@ static int hailo15_rxwrapper_change_chosen_pipe_credits_cfg(const struct v4l2_mb
 	return 0;
 }
 
-static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
-						struct v4l2_subdev_state *sd_state,
+static int hailo15_rxwrapper_set_subdev_sensor_format(struct hailo15_rxwrapper_priv *hailo15_rxwrapper,
+						      struct v4l2_subdev *sd,
+						      struct v4l2_subdev_format *fmt)
+{
+	struct v4l2_subdev *sensor_sd;
+	struct v4l2_subdev *subdev = NULL;
+	struct media_pad *pad;
+	struct v4l2_subdev_format sensor_fmt = {0};
+	int ret = 0;
+
+    	memcpy(&sensor_fmt, fmt, sizeof(struct v4l2_subdev_format));
+
+	sensor_sd = hailo15_get_sensor_subdev(hailo15_rxwrapper->sd.v4l2_dev->mdev, sd->grp_id);
+	if (!sensor_sd) {
+		pr_warn("%s - failed to get sensor subdev\n", __func__);
+		return -EINVAL;
+	}
+
+	/* Get the pad */
+	pad = &hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0];
+	if (pad) {
+		pad = media_entity_remote_pad(pad);
+	}
+
+	if (pad == NULL) {
+		pr_err("%s - failed to get remote pad to subdev %s, (ctx grp_id %d), aborting...\n",
+			__func__, sd->name, sd->grp_id);
+		return -ENODEV;
+	}
+
+	/* set_fmt to subdev */
+	if (is_media_entity_v4l2_subdev(pad->entity)) {
+		subdev = media_entity_to_v4l2_subdev(pad->entity);
+		subdev->grp_id = sd->grp_id;
+		trace_rxw_set_subdev_sensor_format(sd->grp_id, subdev->name);
+		ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, fmt);
+		if (ret) {
+			pr_err("%s - failed to set format %x on sink subdev %s, ret %d\n",
+				__func__, fmt->format.code, subdev->name, ret);
+			return ret;
+		}
+	}
+
+	if (subdev == NULL) {
+		pr_err("%s - remote entity %s:pad[%d] connected to subdev %s:pad[%d] is not v4l2 subdev, (ctx grp_id %d), aborting...\n",
+			__func__, pad->entity->name, pad->index, sd->name, RXWRAPPER_SINK_PAD_0, sd->grp_id);
+		return -ENODEV;
+	}
+
+	/* set_fmt to sensor */
+	if (hailo15_is_p2a_grp_id(subdev->grp_id)) {
+		ret = v4l2_subdev_call(sensor_sd, pad, set_fmt, NULL, &sensor_fmt);
+		if (ret) {
+			pr_err("%s - failed to set format %x on sensor %s, ret %d\n",
+				__func__, fmt->format.code, sensor_sd->name, ret);
+		}
+	}
+
+	return ret;
+}
+
+static int hailo15_rxwrapper_apply_set_pad_format(struct v4l2_subdev *sd,
 						struct v4l2_subdev_format *fmt)
 {
-	struct v4l2_subdev *subdev;
-	struct v4l2_subdev *sensor_sd;
-	struct media_pad *pad;
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		v4l2_subdev_to_hailo15_rxwrapper(sd);
 	const struct v4l2_mbus_framefmt *src_format = &fmt->format;
-	struct v4l2_mbus_framefmt *dst_format;
-	struct v4l2_subdev_format sensor_fmt = {0};
 	int ret, i, pipe, real_pipe;
 	int num_exposures;
-    uint32_t used_pipes;
+	uint32_t used_pipes;
 
-	dev_dbg(hailo15_rxwrapper->dev, "%s: pad=%d\n", __func__, fmt->pad);
-
-	if (!hailo15_rxwrapper || !fmt) {
-        dev_err(hailo15_rxwrapper->dev, "%s - hailo15_rxwrapper or fmt is NULL\n", __func__);
-		return -EINVAL;
-    }
-
-	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-        dev_dbg(hailo15_rxwrapper->dev, "%s - fmt->which is V4L2_SUBDEV_FORMAT_TRY, returning 0\n", __func__);
-		return 0;
-	}
-
-	/* set format in hailo15_rxwrapper->pad_fmts */
-	dst_format = &hailo15_rxwrapper->pad_fmts[fmt->pad];
-	if (!dst_format) {
-        dev_err(hailo15_rxwrapper->dev, "%s - dst_format is NULL\n", __func__);
-		return -EINVAL;
-    }
-
-	*dst_format = *src_format;
 
 	switch (src_format->code) {
 	case MEDIA_BUS_FMT_SRGGB12_1X12:
@@ -1163,35 +1292,37 @@ static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
 	}
 
 	real_pipe = hailo15_grp_id_to_pipe_id(sd->grp_id);
-    used_pipes = hailo15_get_used_pipes(hailo15_rxwrapper);
+	used_pipes = hailo15_get_used_pipes(hailo15_rxwrapper);
 
 	if (is_hdr_capable(sd->grp_id)) {
 		// HDR capable group_id
 		if (num_exposures > RXWRAPPER_MAX_NUM_EXPOSURES) {
-            dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d too large\n", __func__, num_exposures);
+			dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d too large\n", __func__, num_exposures);
 			return -ENOTSUPP;
 		}
 		if (num_exposures > 1 && used_pipes != 0) {
 			// In HDR mode, no other SDR pipes should be used
-            dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d > 1 and used_pipes %d != 0\n", __func__, num_exposures, used_pipes);
+			dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d > 1 and used_pipes %d != 0\n", __func__, num_exposures, used_pipes);
 			return -EBUSY;
 		}
 	} else {
 		// SDR capable
 		if (num_exposures > 1) {
 			// Not HDR capable group_id
-            dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d > 1\n", __func__, num_exposures);
+			dev_err(hailo15_rxwrapper->dev, "%s - num_exposures %d > 1\n", __func__, num_exposures);
 			return -ENOTSUPP;
 		}
 		if (used_pipes & BIT(real_pipe)) {
 			// Already used pipe;
-            dev_err(hailo15_rxwrapper->dev, "%s - used_pipes %d & BIT(%d) != 0\n", __func__, used_pipes, real_pipe);
+			dev_err(hailo15_rxwrapper->dev, "%s - used_pipes %d & BIT(%d) != 0\n", __func__, used_pipes, real_pipe);
 			return -EBUSY;
 		}
 	}
 
 	// Valid num_exposures, apply it.
 	hailo15_rxwrapper->num_exposures = num_exposures;
+
+	trace_rxw_apply_set_pad_format(sd->grp_id, num_exposures);
 
 	/* change chosen pipe_cfg & credits_cfg to match the fmt */
 	ret = hailo15_rxwrapper_change_chosen_pipe_credits_cfg(src_format, &rxwrapper_chosen_pipe_cfg, &rxwrapper_chosen_credits_cfg);
@@ -1205,37 +1336,45 @@ static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
 			return ret;
 	}
 
-	memcpy(&sensor_fmt, fmt, sizeof(struct v4l2_subdev_format));
+	ret = hailo15_rxwrapper_set_subdev_sensor_format(hailo15_rxwrapper, sd, fmt);
+	if (ret)
+		return ret;
 
-	/* Propagate format to sink */
-	pad = &hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0];
-	if (pad)
-		pad = media_entity_remote_pad(pad);
+	return 0;
+}
 
-	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
-		subdev = media_entity_to_v4l2_subdev(pad->entity);
-		subdev->grp_id = sd->grp_id;
-		ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, fmt);
-		if (ret) {
-			pr_err("%s - failed to set format %x on sink subdev %s, ret %d\n",
-				__func__, fmt->format.code, subdev->name, ret);
-			return ret;
-		}
+static int hailo15_rxwrapper_set_pad_format(struct v4l2_subdev *sd,
+						struct v4l2_subdev_state *sd_state,
+						struct v4l2_subdev_format *fmt)
+{
+	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
+		v4l2_subdev_to_hailo15_rxwrapper(sd);
+	int ret;
+
+	dev_dbg(hailo15_rxwrapper->dev, "%s: pad=%d\n", __func__, fmt->pad);
+
+	if (!hailo15_rxwrapper || !fmt) {
+		pr_err("%s - hailo15_rxwrapper or fmt is NULL\n", __func__);
+		return -EINVAL;
 	}
 
-	if(hailo15_is_p2a_grp_id(subdev->grp_id)) {
-		/* in isp flow, set_fmt sensor_subdev will be called from daemon */
-		sensor_sd = hailo15_get_sensor_subdev(hailo15_rxwrapper->sd.v4l2_dev->mdev, sd->grp_id);
-		if (!sensor_sd) {
-			pr_warn("%s - failed to get sensor subdev\n", __func__);
-			return -EINVAL;
-		}
-		ret = v4l2_subdev_call(sensor_sd, pad, set_fmt, NULL, &sensor_fmt);
-		if (ret) {
-			pr_err("%s - failed to set format %x on sensor %s, ret %d\n",
-				__func__, fmt->format.code, sensor_sd->name, ret);
-		}
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+		dev_dbg(hailo15_rxwrapper->dev, "%s - fmt->which is V4L2_SUBDEV_FORMAT_TRY, returning 0\n", __func__);
+		return 0;
 	}
+
+	/* set format in hailo15_rxwrapper->pad_fmts (or in priming one, delay this assignment until fast toggle) */
+	if (hailo15_rxwrapper->is_fast_toggle_priming) {
+		hailo15_rxwrapper->pad_fmts_priming[fmt->pad] = *fmt;
+		return 0;
+	}
+
+	hailo15_rxwrapper->pad_fmts[fmt->pad] = *fmt;
+
+	ret = hailo15_rxwrapper_apply_set_pad_format(sd, fmt);
+	if (ret)
+		return ret;
+
 	return ret;
 }
 
@@ -1265,10 +1404,8 @@ static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
 
 	/* Delete all list elements - and dequeue them back to the userspace (w/o deferred work) */
 	list_for_each_entry_safe (buf, nbuf, &hailo15_rxwrapper->buf_queue[grp_id], irqlist) {
-		if (buf) {
-			list_del(&buf->irqlist);
-			hailo15_dma_buffer_dequeue(ctx, grp_id, buf);
-		}
+		list_del(&buf->irqlist);
+		hailo15_dma_buffer_dequeue(ctx, grp_id, buf);
 	}
 
 	spin_unlock_irqrestore(&hailo15_rxwrapper->buf_lock, flags);
@@ -1289,7 +1426,7 @@ static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
  * Make sure all exposures have the same number of unprocessed frames.
  * If not - print error message (if ignore_err is false) and return false.
  */
-bool check_unprocessed_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
+static bool check_unprocessed_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
 		uint32_t o_unprocessed_frames[RXWRAPPER_NUM_PIPES], bool ignore_err)
 {
 	int i, pipe;
@@ -1317,7 +1454,7 @@ bool check_unprocessed_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper,
 }
 
 /* Checks HW registers, and prints if there was a frame that was overwritten by HW (warn, as this is not valid) */
-void warn_overwritten_frames(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
+static void warn_overwritten_frames(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
 		uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES])
 {
 	int i, pipe;
@@ -1337,7 +1474,7 @@ void warn_overwritten_frames(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u
 	}
 }
 
-void return_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
+static void return_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe,
 	uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES])
 {
 	int i, pipe;
@@ -1355,7 +1492,7 @@ void return_credits(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_p
 }
 
 /* Should be called with hailo15_rxwrapper->buf_lock locked */
-void write_next_bufs_to_shadow_regs(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe, u32 grp_id)
+static void write_next_bufs_to_shadow_regs(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, u32 real_pipe, u32 grp_id)
 {
 	int i, pipe;
 
@@ -1392,7 +1529,7 @@ static int hailo15_irq_work_enqueue(struct hailo15_rxwrapper_priv *hailo15_rxwra
 void hailo15_rxwrapper_irq_work_handle(struct work_struct *work);
 
 //IRQ context
-void dequeue_buffer_with_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_dma_ctx *ctx, int grp_id, struct hailo15_buffer *dequeued_buf)
+static void dequeue_buffer_with_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct hailo15_dma_ctx *ctx, int grp_id, struct hailo15_buffer *dequeued_buf)
 {
 	/* Allocate hailo data attached to a single deferred work */
 	struct hailo15_irq_work *work = kzalloc(sizeof(struct hailo15_irq_work), GFP_ATOMIC);
@@ -1413,7 +1550,7 @@ void dequeue_buffer_with_deferred_work(struct hailo15_rxwrapper_priv *hailo15_rx
 }
 
 //IRQ context
-void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, bool is_first_frame_hdr, u32 real_pipe, u32 grp_id)
+static void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, bool is_first_frame_hdr, u32 real_pipe, u32 grp_id)
 {
 	uint32_t unprocessed_frames[RXWRAPPER_NUM_PIPES];
 	bool unprocessed_ready = true;
@@ -1440,9 +1577,11 @@ void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrap
 		if (hailo15_rxwrapper->cur_buf[grp_id]) {
 			if (!list_empty(&hailo15_rxwrapper->buf_queue[grp_id]) && !list_is_singular(&hailo15_rxwrapper->buf_queue[grp_id])) {
 				hailo15_rxwrapper->next_buf[grp_id] = list_next_entry(hailo15_rxwrapper->next_buf[grp_id], irqlist);
-			}
-			else
+			} else {
 				hailo15_rxwrapper->next_buf[grp_id] = NULL;
+				trace_hailo15_driver_error(hailo15_rxwrapper->sd.name, -EINVAL, "next_buf is NULL after buffer done");
+			}
+
 		}
 
 		write_next_bufs_to_shadow_regs(hailo15_rxwrapper, real_pipe, grp_id);
@@ -1480,6 +1619,107 @@ static int rxwrapper_querycap(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, 
 	return 0;
 }
 
+static int hailo15_rxwrapper_apply_priming(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct v4l2_subdev *sd)
+{
+	struct v4l2_subdev_format fmt;
+	int ret;
+
+	/* Apply the priming format to the actual format */
+	fmt = hailo15_rxwrapper->pad_fmts_priming[RXWRAPPER_SINK_PAD_0];
+	hailo15_rxwrapper->pad_fmts[RXWRAPPER_SINK_PAD_0] = fmt;
+
+	ret = hailo15_rxwrapper_apply_set_pad_format(sd, &fmt);
+	if (ret) {
+		dev_err(hailo15_rxwrapper->dev, "%s: failed to set sensor format during priming\n", __func__);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_apply_set_stream(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct v4l2_subdev *sd, int enable)
+{
+	struct v4l2_subdev *remote_src_subdev;
+	int ret;
+
+	mutex_lock(&hailo15_rxwrapper->lock);
+
+	/* Get remote source subdev */
+	ret = get_remote_src_subdev(sd, &remote_src_subdev);
+	if (ret) {
+		dev_err(hailo15_rxwrapper->dev, "%s: failed to get remote source subdev\n", __func__);
+		mutex_unlock(&hailo15_rxwrapper->lock);
+		return ret;
+	}
+
+	trace_rxw_apply_set_stream(sd->grp_id, enable);
+
+	/* Apply set_stream p2a */
+	ret = hailo15_rxwrapper_set_stream_p2a(sd, enable, hailo15_rxwrapper, remote_src_subdev);
+	if (ret) {
+		dev_err(hailo15_rxwrapper->dev, "%s: failed to enable source subdev\n", __func__);
+		mutex_unlock(&hailo15_rxwrapper->lock);
+		return ret;
+	}
+	mutex_unlock(&hailo15_rxwrapper->lock);
+
+	return 0;
+}
+
+static int hailo15_rxwrapper_fast_toggle_set_status(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct v4l2_subdev *sd, struct fast_toggle_data *toggle_data)
+{
+	int ret = 0;
+	u32 orig_grp_id;
+
+	trace_rxw_fast_toggle_set_status(sd->grp_id, toggle_data->type, toggle_data->state);
+
+	// arg is checked many times before calling this function
+	if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
+		// Switching to HDR: rxwrapper assumes the sd->grp_id is P2A grp id
+		// so we must set that here in order to pass checks
+		// we must restore the original grp_id at the end of the function
+		orig_grp_id = sd->grp_id;
+		sd->grp_id = HAILO15_VID_GRP_SX_CSI0_P2A;
+	}
+
+	if (toggle_data->state == FAST_TOGGLE_PRIMING) {
+		hailo15_rxwrapper->is_fast_toggle_priming = true;
+	} else if (toggle_data->state == FAST_TOGGLE_APPLY_PRIMING) {
+	} else if (toggle_data->state == FAST_TOGGLE_ACTIVE) {
+		// Apply priming
+		if (toggle_data->type == FAST_TOGGLE_SDR_SDR) {
+			// sdr->sdr currently does not require priming
+			ret = 0;
+		}
+		else {
+			ret = hailo15_rxwrapper_apply_priming(hailo15_rxwrapper, sd);
+		}
+
+		// Start stream
+		if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
+			ret = hailo15_rxwrapper_apply_set_stream(hailo15_rxwrapper, sd, 1);
+		}
+
+		hailo15_rxwrapper->is_fast_toggle_priming = false;
+	} else if (toggle_data->state == FAST_TOGGLE_TEARDOWN) {
+		if (toggle_data->type == FAST_TOGGLE_HDR_SDR) {
+			// Switching from HDR to SDR: rxwrapper assumes the sd->grp_id is P2A grp id
+			// we need to teardown (stop the stream) at this fast toggle state
+			orig_grp_id = sd->grp_id;
+			sd->grp_id = HAILO15_VID_GRP_SX_CSI0_P2A;
+			ret = hailo15_rxwrapper_apply_set_stream(hailo15_rxwrapper, sd, 0);
+			sd->grp_id = orig_grp_id;
+		}
+	} else if (toggle_data->state == FAST_TOGGLE_NONE) {
+		hailo15_rxwrapper->is_fast_toggle_priming = false;
+	}
+
+	if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
+		sd->grp_id = orig_grp_id;
+	}
+	return ret;
+}
+
 enum { VVCSIOC_RESET = 0x100,
 	   VVCSIOC_POWERON,
 	   VVCSIOC_POWEROFF,
@@ -1501,6 +1741,9 @@ static long rxwrapper_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 	switch (cmd) {
 	case VIDIOC_QUERYCAP:
 		ret = rxwrapper_querycap(hailo15_rxwrapper, arg);
+		break;
+	case HAILO15_INTERNAL_RXW_FAST_TOGGLE_SET_STATUS:
+		ret = hailo15_rxwrapper_fast_toggle_set_status(hailo15_rxwrapper, sd, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		pr_debug("rxwrapper: got unsupported ioctl 0x%x\n", cmd);
@@ -1529,7 +1772,7 @@ static int hailo15_rxwrapper_registered(struct v4l2_subdev* sd)
 		return -ENODEV;
 	}
 
-	ret = v4l2_subdev_call(remote_subdev, core, ioctl, VIDEO_GET_P2A_REGS, &rxwrapper_priv->p2a_buf_regs);
+	ret = v4l2_subdev_call(remote_subdev, core, ioctl, HAILO15_INTERNAL_GET_P2A_REGS, &rxwrapper_priv->p2a_buf_regs);
 	if (ret) {
 		dev_err(sd->dev, "Failed to get P2A registers from subdevice %s\n", remote_subdev->name);
 		return ret;
@@ -1546,7 +1789,7 @@ static struct v4l2_subdev_core_ops rxwrapper_core_ops = {
 	.ioctl = rxwrapper_priv_ioctl,
 };
 
-struct v4l2_subdev_ops hailo15_rxwrapper_v4l2_subdev_ops = {
+static struct v4l2_subdev_ops hailo15_rxwrapper_v4l2_subdev_ops = {
 	.core = &rxwrapper_core_ops,
 	.video = &hailo15_rxwrapper_v4l2_subdev_video_ops,
 	.pad = &hailo15_rxwrapper_v4l2_subdev_pad_ops,
@@ -1683,6 +1926,7 @@ static bool hailo15_rxwrapper_check_all_hdr_exposures_rdy(
 		return true;
 	}
 
+	trace_hailo15_driver_error(hailo15_rxwrapper->sd.name, -EINVAL, "HDR frame not ready");
 	return false;
 }
 
@@ -1715,7 +1959,7 @@ void hailo15_rxwrapper_irq_work_handle(struct work_struct *work)
 }
 
 //IRQ context
-void call_vcs_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, int csi, uint32_t vc_status, bool first_hdr_frame)
+static void call_vcs_buffer_done(struct hailo15_rxwrapper_priv *hailo15_rxwrapper, int csi, uint32_t vc_status, bool first_hdr_frame)
 {
 	int pipe, grp_id, mask;
 	bool hdr_mode = (hailo15_rxwrapper->num_exposures > 1) ? true : false;
@@ -1746,7 +1990,7 @@ static irqreturn_t hailo15_rxwrapper_irq_handler(int irq, void *arg)
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper = (struct hailo15_rxwrapper_priv *)arg;
 	uint32_t int_status, int_status_per_csi, int_status_for_vc;
 	bool hdr_mode = (hailo15_rxwrapper->num_exposures > 1) ? true : false;
-	bool first_hdr_frame;
+	bool first_hdr_frame = false;
 
 	/* NOTE: each rxwrapper handles its own CSI */
 	int csi = hailo15_rxwrapper->id;
@@ -1765,6 +2009,7 @@ static irqreturn_t hailo15_rxwrapper_irq_handler(int irq, void *arg)
 		/* For first HDR frame, LEF is not expected, we allow int_status to be without it */
 		if (!hailo15_rxwrapper_check_all_hdr_exposures_rdy(hailo15_rxwrapper, csi, int_status_per_csi, &int_status_for_vc, &first_hdr_frame)) {
 			pr_warn_ratelimited("RXWRAPPER: %s: HDR frame not ready, int_status_per_csi: 0x%x\n", __func__, int_status_per_csi);
+			trace_hailo15_driver_error(hailo15_rxwrapper->sd.name, -EINVAL, "HDR frame not ready in IRQ");
 			return IRQ_NONE;
 		}
 	} else {
@@ -1807,12 +2052,10 @@ hailo15_rxwrapper_dma_ctx_init(struct hailo15_dma_ctx *ctx, int grp_id)
 	}
 
 	VID_GRP_VALIDATE_RANGE(grp_id);
-
-	ctx->buf_ctx[grp_id].ops = kzalloc(sizeof(struct hailo15_buf_ops), GFP_KERNEL);
+	ctx->buf_ctx[grp_id].ops = kmemdup(&hailo15_rxwrapper_buf_ops, sizeof(struct hailo15_buf_ops), GFP_KERNEL);
 	if (!ctx->buf_ctx[grp_id].ops)
 		return -ENOMEM;
-	memcpy(ctx->buf_ctx[grp_id].ops, &hailo15_rxwrapper_buf_ops,
-		   sizeof(struct hailo15_buf_ops));
+
 	return 0;
 }
 
@@ -1895,7 +2138,7 @@ static int hailo15_rxwrapper_parse_null_addr(struct hailo15_rxwrapper_priv* hail
 		dev_err(hailo15_rxwrapper->dev, "Failed to read 'null-addr' from parent node. ret: %d\n", ret);
 	} else {
 		dev_dbg(hailo15_rxwrapper->dev, "Successfully read null_addr=0x%x from parent node\n", null_addr);
-	hailo15_rxwrapper->vision_ss_null_addr = null_addr;
+		hailo15_rxwrapper->vision_ss_null_addr = null_addr;
 	}
 
 	fwnode_handle_put(parent_node);
@@ -1903,7 +2146,7 @@ static int hailo15_rxwrapper_parse_null_addr(struct hailo15_rxwrapper_priv* hail
 	return ret;
 }
 
-int hailo15_rxwrapper_probe(struct platform_device *pdev)
+static int hailo15_rxwrapper_probe(struct platform_device *pdev)
 {
 	int ret, pipe;
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper;
@@ -1949,7 +2192,7 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 		return PTR_ERR(hailo15_rxwrapper->base);
 
 	pr_info("hailo15_rxwrapper base is %llx first 4 bytes \n",
-		(u64)hailo15_rxwrapper->base);
+		(__force u64)hailo15_rxwrapper->base);
 
 	clk = devm_clk_get(&pdev->dev, "rxwrapper_p_clk");
 	if (IS_ERR(clk)) {
@@ -1979,19 +2222,19 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(hailo15_rxwrapper->rxwrapper_p_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "failed enabling rxwrapper_p_clk, err = (%pe)\n", ERR_PTR(ret));
-		return ret;
+		goto err_disable_pm;
 	}
 
 	ret = clk_prepare_enable(hailo15_rxwrapper->rxwrapper_data_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "failed enabling rxwrapper_data_clk, err = (%pe)\n", ERR_PTR(ret));
-		return ret;
+		goto err_disable_p_clk;
 	}
 
 	ret = clk_prepare_enable(hailo15_rxwrapper->rxwrapper_xtal_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "failed enabling rxwrapper_xtal_clk, err = (%pe)\n", ERR_PTR(ret));
-		return ret;
+		goto err_disable_data_clk;
 	}
 
 	hailo15_rxwrapper_config_static_default(hailo15_rxwrapper);
@@ -2019,15 +2262,18 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	/*hailo15_rxwrapper->sd.flags |= V4L2_SUBDEV_FL_HAS_EVENTS;*/
 	hailo15_rxwrapper->sd.entity.function = MEDIA_ENT_F_VID_MUX;
 
-    ret = hailo15_rxwrapper_parse_null_addr(hailo15_rxwrapper);
-    if (ret) {
-        dev_err(&pdev->dev, "Failed to parse null address\n");
-        return ret;
-    }
+	ret = hailo15_rxwrapper_parse_null_addr(hailo15_rxwrapper);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to parse null address\n");
+		goto err_disable_xtal_clk;
+	}
 
 	hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0].flags = MEDIA_PAD_FL_SINK;
 	for (i = RXWRAPPER_SOURCE_PAD_1; i < RXWRAPPER_PAD_MAX; i++) {
-		hailo15_rxwrapper->pad_fmts[i] = fmt_default;
+		memset(&hailo15_rxwrapper->pad_fmts[i], 0, sizeof(struct v4l2_subdev_format));
+		memset(&hailo15_rxwrapper->pad_fmts_priming[i], 0, sizeof(struct v4l2_subdev_format));
+		hailo15_rxwrapper->pad_fmts[i].format = fmt_default;
+		hailo15_rxwrapper->pad_fmts_priming[i].format = fmt_default;
 		hailo15_rxwrapper->pads[i].flags = MEDIA_PAD_FL_SOURCE;
 	}
 
@@ -2036,7 +2282,8 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 					 hailo15_rxwrapper->pads);
 	if (ret) {
 		pr_err("failed to init entity pads: %d", ret);
-		goto error_free_dev;
+		ret = -EINVAL;
+		goto err_disable_xtal_clk;
 	}
 
 	hailo15_rxwrapper->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -2084,23 +2331,32 @@ int hailo15_rxwrapper_probe(struct platform_device *pdev)
 	}
 	spin_lock_init(&hailo15_rxwrapper->buf_lock);
 
+	hailo15_rxwrapper->is_fast_toggle_priming = false;
+
 	dev_info(hailo15_rxwrapper->dev, "probe finished successfully");
 	return 0;
 
 error_init_irq:
 	hailo15_rxwrapper_dma_ctx_clean_all(ctx);
-
 error_init_dma_ctx:
 	kfree(ctx);
 error_alloc_dma_ctx:
 	hailo15_irq_work_queue_release(hailo15_rxwrapper);
 	mutex_destroy(&hailo15_rxwrapper->lock);
-error_free_dev:
-	kfree(hailo15_rxwrapper);
+err_disable_xtal_clk:
+	clk_disable_unprepare(hailo15_rxwrapper->rxwrapper_xtal_clk);
+err_disable_data_clk:
+	clk_disable_unprepare(hailo15_rxwrapper->rxwrapper_data_clk);
+err_disable_p_clk:
+	clk_disable_unprepare(hailo15_rxwrapper->rxwrapper_p_clk);
+err_disable_pm:
+	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
 	return -EINVAL;
 }
 
-int hailo15_rxwrapper_remove(struct platform_device *pdev)
+static int hailo15_rxwrapper_remove(struct platform_device *pdev)
 {
 	struct hailo15_rxwrapper_priv *hailo15_rxwrapper =
 		platform_get_drvdata(pdev);
@@ -2133,12 +2389,29 @@ int hailo15_rxwrapper_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void trace_hailo15_driver_error(const char* driver_name, uint32_t err, char* fmt, ...) {
+	char error_msg[128];
+
+	int len = 128;
+	va_list args;
+	va_start(args, fmt);
+	len = vsnprintf(error_msg, len, fmt, args);
+	if(len > 126) {
+		len = 126;
+		error_msg[len++] = '*';
+	}
+
+	error_msg[len] = '\0';
+	va_end(args);
+	trace_hailo15_driver_error_raw(driver_name, err, error_msg);
+}
+
+
 static struct platform_driver hailo15_rxwrapper_driver = {
 	.probe = hailo15_rxwrapper_probe,
 	.remove = hailo15_rxwrapper_remove,
 	.driver = {
 		.name = HAILO_RXWRAPPER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = hailo15_rxwrapper_of_match,
 	}
 };

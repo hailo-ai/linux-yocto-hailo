@@ -383,7 +383,12 @@ static int __add_cma_heap(struct cma *cma, void *data)
 		return -ENOMEM;
 	cma_heap->cma = cma;
 
-	exp_info.name = cma_get_name(cma);
+	if (data) {
+		exp_info.name = data;
+	} else {
+		exp_info.name = cma_get_name(cma);
+	}
+
 	exp_info.ops = &cma_heap_ops;
 	exp_info.priv = cma_heap;
 
@@ -404,10 +409,17 @@ static int add_hailo_cma_heaps(void)
 	struct cma *hailo_cma;
 	struct reserved_mem *rmem;
 	struct device_node *np;
+	struct cma *default_cma = dev_get_cma_area(NULL);
 
 	for_each_node_with_property(np, "linux,cma-hailo") {
 		if (!of_device_is_available(np))
 			continue;
+		/* check if current node has property linux,cma-default if so add the 
+		CMA name of the current node to the name of the default CMA area */
+		if (of_find_property(np, "linux,cma-soft-link", NULL)) {
+			ret = __add_cma_heap(default_cma, (void*)np->name);
+			continue;
+		}
 		rmem = of_reserved_mem_lookup(np);
 		if (!rmem) {
 			return -ENODEV;

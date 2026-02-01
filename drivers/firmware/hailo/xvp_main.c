@@ -426,27 +426,8 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
     if (ret < 0)
         goto err_free_comm;
 
-    ret = device_property_read_u32_array(xvp->dev, "queue-priority", NULL,
-                         0);
-    if (ret > 0) {
-        xvp->n_queues = ret;
-        xvp->queue_priority =
-            devm_kmalloc(&pdev->dev, ret * sizeof(u32), GFP_KERNEL);
-        if (xvp->queue_priority == NULL)
-            goto err_free_pool;
-        ret = device_property_read_u32_array(xvp->dev, "queue-priority",
-                             xvp->queue_priority,
-                             xvp->n_queues);
-        if (ret < 0)
-            goto err_free_pool;
-        dev_dbg(xvp->dev,
-            "multiqueue (%d) configuration, queue priorities:\n",
-            xvp->n_queues);
-        for (i = 0; i < xvp->n_queues; ++i)
-            dev_dbg(xvp->dev, "  %d\n", xvp->queue_priority[i]);
-    } else {
-        xvp->n_queues = 1;
-    }
+    // multiple queues is not supported
+    xvp->n_queues = 1;
     xvp->queue = devm_kmalloc(
         &pdev->dev, xvp->n_queues * sizeof(*xvp->queue), GFP_KERNEL);
     xvp->queue_ordered =

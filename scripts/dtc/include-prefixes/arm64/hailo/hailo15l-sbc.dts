@@ -7,6 +7,10 @@
 #include "hailo15l-base.dtsi"
 #include "dt-bindings/net/mscc-phy-vsc8531.h"
 
+/ {
+    model = "Hailo - Hailo15l SBC VPU Development Board";
+};
+
 &i2c_0 {
     status = "okay";
     /* @note I2C-BUS-0 SCL,SDA pads are non-muxable pins */
@@ -52,10 +56,10 @@
         shunt-resistor = <1000>;
         max-current = <10000>;
     };
-    ina231_1v1: 1v1@42 {
+    ina231_VDDQX_DRAM: 1v1@42 {
         compatible = "ti,ina231_precise";
         reg = <0x42>;
-        shunt-resistor = <100000>;
+        shunt-resistor = <5000>;
         max-current = <300>;
     };
     ina231_3v3: 3v3@44 {
@@ -63,6 +67,30 @@
         reg = <0x44>;
         shunt-resistor = <100000>;
         max-current = <300>;
+    };
+    ina231_VDDQX_SOC: 1v1@46 {
+        compatible = "ti,ina231_precise";
+        reg = <0x46>;
+        shunt-resistor = <100000>;
+        max-current = <20>;
+    };
+    ina231_VDDQ_SOC: 0v6@47 {
+        compatible = "ti,ina231_precise";
+        reg = <0x47>;
+        shunt-resistor = <12000>;
+        max-current = <62>;
+    };
+    ina231_VDDQ_DRAM: 0v6@48 {
+        compatible = "ti,ina231_precise";
+        reg = <0x48>;
+        shunt-resistor = <50000>;
+        max-current = <27>;
+    };
+    ina231_VDD1_DRAM: 1v8@49 {
+        compatible = "ti,ina231_precise";
+        reg = <0x49>;
+        shunt-resistor = <100000>;
+        max-current = <10>;
     };
 
     tmp175_NEAR_H15_SOC: NEAR_H15_SOC@2c {
@@ -285,9 +313,6 @@
     status = "disabled";
 };
 
-&vision_subsys {
-    status = "disabled";
-};
 
 &hailo_torrent_phy {
     status = "okay";
@@ -957,10 +982,30 @@
 
 &hailo_vid_cap {
     status = "ok";
+    ports {
+        port@6{
+            reg = <HAILO15_VID_GRP_MCM_RAW_WR>;
+            vid6_mcm_raw_wr_in: endpoint {
+                reg = <HAILO15_VID_GRP_MCM_RAW_WR>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_MCM_RAW_WR>;
+                remote-endpoint = <&isp_out_s0_mcm_raw_wr>;
+            };
+        };
+    };
 };
 
 &hailo_isp {
     status = "ok";
+    ports {
+        port@7 {
+            reg = <7>;
+            isp_out_s0_mcm_raw_wr: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid6_mcm_raw_wr_in>;
+            };
+        };
+    };
 };
 
 &hailo_pixel_mux {
@@ -983,3 +1028,9 @@
     status = "ok";
 };
 
+&reserved_memory {
+    // Media buffer: reserve 768 Mib: [0x88000000 - 0xB8000000)
+    hailo_media_buf_cma: hailo_media_buf,cma {
+        reg = <0 0x88000000 0 0x30000000>;
+    };
+};

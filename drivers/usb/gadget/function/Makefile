@@ -50,3 +50,7 @@ usb_f_printer-y			:= f_printer.o
 obj-$(CONFIG_USB_F_PRINTER)	+= usb_f_printer.o
 usb_f_tcm-y			:= f_tcm.o
 obj-$(CONFIG_USB_F_TCM)		+= usb_f_tcm.o
+usb_f_hailo_rfs_load-y		:= f_hailo_rfs_load.o
+obj-$(CONFIG_USB_F_HAILO_RFS_LOAD) += usb_f_hailo_rfs_load.o
+usb_f_hailo_swu_load-y		:= f_hailo_swu_load.o
+obj-$(CONFIG_USB_F_HAILO_SWU_LOAD) += usb_f_hailo_swu_load.o

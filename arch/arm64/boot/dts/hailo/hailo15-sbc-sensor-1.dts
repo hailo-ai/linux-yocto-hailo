@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * hailo15-sbc-sensor-1.dtbo
+ *
+ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ */
+/dts-v1/;
+/plugin/;
+
+
+&{/i2c@106000/camera-sensor@1a} {
+    status = "okay";
+};

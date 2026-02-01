@@ -73,7 +73,7 @@ static int scmi_hailo_get_identification_attributes(const struct scmi_protocol_h
 static int scmi_hailo_get_sku_id(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_sku_id_p2a *params)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_SKU_ID, NULL, 0, params, sizeof(*params));
-	dev_dbg(ph->dev, "scmi hailo get sku id: soc=%d board=%d ret=%d\n", (int)params->soc, params->board, ret);
+	dev_dbg(ph->dev, "scmi hailo get sku id: soc=%d board=%d ret=%d\n", (int)params->product, params->board, ret);
 	return ret;
 }
 
@@ -245,9 +245,41 @@ static void* handle_noc_measurement_ended(const struct scmi_protocol_handle* ph,
 	return ended_r;
 }
 
+static void* handle_hailo_rt_notification(const struct scmi_protocol_handle* ph, u8 evt_id, ktime_t timestamp,
+                              const void* payld, size_t payld_sz, void* report, u32* src_id)
+{
+	const struct scmi_hailo_rt_generic_notification *hrt_notif_p = payld;
+	struct scmi_hailo_rt_generic_notification *hrt_notif_r = report;
+
+	if (sizeof(*hrt_notif_p) != payld_sz)
+		return NULL;
+
+	hrt_notif_r->message_id = le16_to_cpu(hrt_notif_p->message_id);
+	hrt_notif_r->arg = le16_to_cpu(hrt_notif_p->arg);
+
+	return hrt_notif_r;
+}
+
+static void* handle_crc_error(const struct scmi_protocol_handle* ph, u8 evt_id, ktime_t timestamp,
+                              const void* payld, size_t payld_sz, void* report, u32* src_id)
+{
+	const struct scmi_hailo_crc_error_notification *crc_err_p = payld;
+	struct scmi_hailo_crc_error_notification *crc_err_r = report;
+
+	if (sizeof(*crc_err_p) != payld_sz)
+		return NULL;
+
+	crc_err_r->csm_unit_idx = le16_to_cpu(crc_err_p->csm_unit_idx);
+	crc_err_r->csm_channel_idx = le16_to_cpu(crc_err_p->csm_channel_idx);
+
+	return crc_err_r;
+}
+
 static const scmi_hailo_notification_handler eventHandlers[SCMI_HAILO_NOTIFICATION_COUNT] = {
 	[SCMI_HAILO_NOC_MEASUREMENT_TRIGGER_NOTIFICATION_ID] = handle_noc_measurement_trigger,
 	[SCMI_HAILO_NOC_MEASUREMENT_ENDED_NOTIFICATION_ID] = handle_noc_measurement_ended,
+	[SCMI_HAILO_RT_GENERIC_NOTIFICATION_ID] = handle_hailo_rt_notification,
+	[SCMI_HAILO_CRC_ERROR_NOTIFICATION_ID] = handle_crc_error,
 };
 
 static void* hailo_scmi_fill_custom_report(const struct scmi_protocol_handle* ph, u8 evt_id, ktime_t timestamp,
@@ -277,6 +309,16 @@ static const struct scmi_event events[] = {
 		.id = SCMI_HAILO_NOC_MEASUREMENT_ENDED_NOTIFICATION_ID,
 		.max_payld_sz = sizeof(struct scmi_hailo_noc_measurement_ended_notification),
 		.max_report_sz = sizeof(struct scmi_hailo_noc_measurement_ended_notification),
+	},
+	{
+		.id = SCMI_HAILO_RT_GENERIC_NOTIFICATION_ID,
+		.max_payld_sz = sizeof(struct scmi_hailo_rt_generic_notification),
+		.max_report_sz = sizeof(struct scmi_hailo_rt_generic_notification),
+	},
+	{
+		.id = SCMI_HAILO_CRC_ERROR_NOTIFICATION_ID,
+		.max_payld_sz = sizeof(struct scmi_hailo_crc_error_notification),
+		.max_report_sz = sizeof(struct scmi_hailo_crc_error_notification),
 	},
 };
 

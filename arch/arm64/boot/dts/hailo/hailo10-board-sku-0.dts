@@ -8,7 +8,7 @@
 #include "hailo10-8gb-cma-config.dtsi"
 
 / {
-    model = "Hailo - Hailo10-M.2 2280 ES 8GiB 10 layers (board-sku-0)";
+    model = "Hailo - Hailo10 (board-sku-0)";
 
     // Updated by u-boot at runtime or by u-boot-spl falcon mode.
     memory {

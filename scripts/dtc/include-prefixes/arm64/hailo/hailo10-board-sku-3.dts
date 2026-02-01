@@ -8,7 +8,7 @@
 #include "hailo10-8gb-cma-config.dtsi"
 
 / {
-    model = "Hailo - Hailo10 AMAT (x18) (board-sku-3)";
+    model = "Hailo - Hailo10 (board-sku-3)";
 
     // Updated by u-boot at runtime or by u-boot-spl falcon mode.
     memory {

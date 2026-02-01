@@ -18,7 +18,8 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <linux/kernel.h>
-#include "sensor_id.h"
+#include "hailo_shared_sensor_data.h"
+
 
 #define DEFAULT_MODE_IDX 0
 
@@ -80,6 +81,8 @@
 
 /* Hcg control */
 #define IMX678_REG_HCG 0x3030
+#define IMX678_REG_HCG_SEF1 0x3031
+#define IMX678_REG_HCG_SEF2 0x3032
 #define IMX678_HCG_MIN 0
 #define IMX678_HCG_MAX 1
 #define IMX678_HCG_STEP 1
@@ -288,6 +291,7 @@ struct exp_gain_ctrl_cluster {
  * @vblank_ctrl: Pointer to vertical blanking control
  * @test_pattern_ctrl: pointer to test pattern control
  * @mode_sel_ctrl: pointer to mode select control
+ * @wdr_priming_ctrl: pointer to WDR priming control - wdr (true/false) to apply on fast toggle
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
  * @vblank: Vertical blanking in lines
@@ -319,6 +323,7 @@ struct imx678 {
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
 	struct exp_gain_ctrl_cluster sef2;
@@ -332,6 +337,8 @@ struct imx678 {
 	bool streaming;
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
+	int wdr_priming_val;
+	enum fast_toggle_state fast_toggle_state;
 };
 
 static const s64 link_freq[] = {
@@ -2827,6 +2834,17 @@ struct v4l2_ctrl_config imx678_custom_ctrls[] = {
 		.def = IMX678_CUSTOM_RHS1_DEFAULT,
 	},
 	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_WDR_PRIMING,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "wdr_priming",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+		.def = 0,
+	},
+	{
 		.ops = &imx678_get_ctrl_ops,
 		.id = IMX678_CID_RHS1,
 		.type = V4L2_CTRL_TYPE_INTEGER,
@@ -3222,7 +3240,26 @@ static int imx678_set_hcg_mode(struct imx678 *imx678, u32 hcg)
         return ret;
     }
 
-    dev_dbg(imx678->dev, "HCG mode set to %s\n", hcg ? "enabled" : "disabled");
+	if (imx678->cur_mode->dol >= 2) {
+		ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, hcg);
+		if (ret) {
+			imx678_write_reg(imx678, IMX678_REG_HCG, 1, !hcg);
+			dev_err(imx678->dev, "Failed to write HCG SEF1 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (imx678->cur_mode->dol >= 3) {
+		ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF2, 1, hcg);
+		if (ret) {
+			imx678_write_reg(imx678, IMX678_REG_HCG, 1, !hcg);
+			imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, !hcg);
+			dev_err(imx678->dev, "Failed to write HCG SEF2 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+    dev_dbg(imx678->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx678->cur_mode->dol);
     
 	return 0;
 }
@@ -3508,8 +3545,12 @@ static int imx678_get_ctrl(struct v4l2_ctrl *ctrl)
 		len = 3;
 		break;
 	case IMX678_CID_VMAX:
-		reg = IMX678_REG_LPFR;
-		len = 3;
+		if (imx678->streaming) {
+			reg = IMX678_REG_LPFR;
+			len = 3;
+		} else {
+			ctrl->val = (imx678->vblank + imx678->cur_mode->height);
+		}
 		break;
 	case IMX678_CID_HMAX:
 		reg = IMX678_REG_HMAX;
@@ -3642,7 +3683,16 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		pm_runtime_put(imx678->dev);
     	break;
+	case IMX678_CID_WDR_PRIMING:
+		imx678->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+		if (imx678->fast_toggle_state > FAST_TOGGLE_NONE && imx678->fast_toggle_state < FAST_TOGGLE_STATE_MAX) {
+			// if currently toggling, ignore this v4l control
+			return 0;
+		}
+
 		if (imx678->streaming) {
 			dev_warn(imx678->dev, "Cannot set WDR mode while streaming\n");
 			return -EBUSY;
@@ -3912,9 +3962,14 @@ out:
 static int imx678_init_pad_cfg(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *sd_state)
 {
+	static bool initialized = false;
 	struct imx678_mode *supported_modes;
 	struct imx678 *imx678 = to_imx678(sd);
 	struct v4l2_subdev_format fmt = { 0 };
+
+	/* Return immediately if pad has already been initialized */
+	if (initialized)
+		return 0;
 
 	if (imx678->streaming)
 		return 0;
@@ -3929,6 +3984,8 @@ static int imx678_init_pad_cfg(struct v4l2_subdev *sd,
 	imx678_fill_pad_format(imx678, &supported_modes[DEFAULT_MODE_IDX],
 			       &fmt);
 
+	initialized = true;
+
 	return imx678_set_pad_format(sd, sd_state, &fmt);
 }
 
@@ -3942,7 +3999,6 @@ static int imx678_setup_custom_values(struct imx678 *imx678)
     if (imx678->hdr_enabled && (imx678->custom_rhs1_value != IMX678_CUSTOM_RHS1_DEFAULT)) {
         memcpy(mode, imx678->cur_mode, sizeof(struct imx678_mode));
 	    mode->rhs1 = imx678->custom_rhs1_value;
-
         ret = imx678_write_reg(imx678, IMX678_REG_RHS1, 2, mode->rhs1);
         if (ret) {
             dev_err(imx678->dev, "Failed to write custom rhs1 value");
@@ -4007,6 +4063,8 @@ static int imx678_start_streaming(struct imx678 *imx678)
 		dev_err(imx678->dev, "fail to start streaming");
 		return ret;
 	}
+
+	imx678->wdr_priming_val = -1;
 
 	dev_info(imx678->dev, "imx678: start_streaming successful (%s)", imx678->mode_string);
 	return 0;
@@ -4233,9 +4291,16 @@ static int imx678_parse_hw_config(struct imx678 *imx678)
 	imx678->xmaster_gpio =
 		devm_gpiod_get_optional(imx678->dev, "xmaster", GPIOD_OUT_LOW);
 	if (IS_ERR(imx678->xmaster_gpio)) {
-		dev_err(imx678->dev, "failed to get xmaster gpio %ld",
-			PTR_ERR(imx678->xmaster_gpio));
-		return PTR_ERR(imx678->xmaster_gpio);
+		/* If the xmaster gpio is busy,
+		it's probably already used by another sensor
+		so we don't need to get it again */
+		if (PTR_ERR(imx678->xmaster_gpio) == -EBUSY) {
+			dev_info(imx678->dev, "xmaster gpio busy, continuing without it");
+			imx678->xmaster_gpio = NULL;
+		} else {
+			dev_err(imx678->dev, "failed to get optional xmaster gpio (%ld)", PTR_ERR(imx678->xmaster_gpio));
+			return PTR_ERR(imx678->xmaster_gpio);
+		}
 	}
 
 	/* Get sensor input clock */
@@ -4299,6 +4364,63 @@ done_endpoint_free:
 	return ret;
 }
 
+// toggle_type param might be useful in the future, we don't need it now though
+static int imx678_priming_apply(struct imx678 *imx678, int toggle_type)
+{
+	int ret;
+	
+	ret = imx678_set_hdr_mode(imx678, imx678->wdr_priming_val);
+	if (ret) {
+		dev_err(imx678->dev, "Failed to set HDR mode (%d) for priming: %d", imx678->wdr_priming_val, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int imx678_fast_toggle_set_state(struct imx678 *imx678, int toggle_state)
+{
+	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
+		dev_err(imx678->dev, "Invalid fast toggle state %d\n", toggle_state);
+		return -EINVAL;
+	}
+
+	imx678->fast_toggle_state = toggle_state;
+
+	switch (toggle_state) {
+	case FAST_TOGGLE_APPLY_PRIMING:
+		return imx678_priming_apply(imx678, toggle_state);
+	default:
+		// No action needed for other states
+		break;
+	}
+	
+	return 0;
+}
+
+static long imx678_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx678 *imx678 = to_imx678(sd);
+	int toggle_state;
+	long ret;
+
+	mutex_lock(&imx678->mutex);
+	switch (cmd) {
+	case HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS:
+		if (arg == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		toggle_state = *((int*)arg);
+		ret = imx678_fast_toggle_set_state(imx678, toggle_state);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+	mutex_unlock(&imx678->mutex);
+	return ret;
+}
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx678_video_ops = {
 	.s_stream = imx678_set_stream,
@@ -4314,7 +4436,12 @@ static const struct v4l2_subdev_pad_ops imx678_pad_ops = {
 	.set_fmt = imx678_set_pad_format,
 };
 
+static const struct v4l2_subdev_core_ops imx678_core_ops = {
+	.ioctl = imx678_ioctl,
+};
+
 static const struct v4l2_subdev_ops imx678_subdev_ops = {
+	.core = &imx678_core_ops,
 	.video = &imx678_video_ops,
 	.pad = &imx678_pad_ops,
 };
@@ -4446,6 +4573,9 @@ static int imx678_init_controls(struct imx678 *imx678)
 	/* Initialize HCG control */
 	imx678_setup_custom_ctrl(imx678, &imx678->hcg_ctrl, IMX678_CID_HCG);
 
+	/* Initialize priming ctrls */
+	imx678_setup_custom_ctrl(imx678, &imx678->wdr_priming_ctrl, IMX678_CID_WDR_PRIMING);
+
 	 /* Custom value controls */
 	imx678_setup_custom_ctrl_limits(imx678, &imx678->custom_rhs1_ctrl, IMX678_CID_CUSTOM_RHS1,
 		IMX678_CUSTOM_RHS1_MIN, IMX678_CUSTOM_RHS1_MAX, IMX678_CUSTOM_RHS1_DEFAULT);
@@ -4476,6 +4606,13 @@ static int imx678_init_controls(struct imx678 *imx678)
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX678_WDR_MIN,
 				IMX678_WDR_MAX, IMX678_WDR_STEP,
 				IMX678_WDR_DEFAULT);
+	
+	if (imx678->mode_sel_ctrl) {
+		// Always call callback, even if called with same value
+		// (this is important for fast toggle - which changes WDR mode outside of control framework)
+		imx678->mode_sel_ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
+	}
+	
 	if (ctrl_hdlr->error) {
 		ret = ctrl_hdlr->error;
 		dev_err(imx678->dev, "failed to create mode select control (%d)", ret);
@@ -4581,6 +4718,9 @@ static int imx678_probe(struct i2c_client *client)
 
 	/* Initialize custom values to default */
 	imx678->custom_rhs1_value = IMX678_CUSTOM_RHS1_DEFAULT;
+	
+	imx678->wdr_priming_val = -1;
+	imx678->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	ret = imx678_init_controls(imx678);
 	if (ret) {

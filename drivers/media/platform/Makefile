@@ -87,4 +87,4 @@ obj-y					+= sunxi/
 
 obj-$(CONFIG_VIDEO_MESON_GE2D)		+= meson/ge2d/
 
-obj-$(CONFIG_VIDEO_HAILO15)		+= hailo/hailo15/
+obj-y					+= hailo/

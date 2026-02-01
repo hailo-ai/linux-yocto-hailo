@@ -76,8 +76,8 @@ int hailo15_isp_post_event(struct video_device *vdev,
 	struct v4l2_event event;
 	struct hailo15_isp_event_pkg_head *event_data;
 	struct hailo15_isp_event_pkg *event_shm;
-	struct hailo15_isp_ctrl *isp_ctrl;
-	struct v4l2_ctrl *ctrl;
+	struct hailo15_isp_ctrl *isp_ctrl = NULL;
+	struct v4l2_ctrl *ctrl = NULL;
 	uint8_t cur_complete;
 	struct hailo15_isp_device *isp_dev = \
 		container_of(event_resource, struct hailo15_isp_device, event_resource);
@@ -141,8 +141,10 @@ int hailo15_isp_post_event(struct video_device *vdev,
 			ret = event_shm->result;
 			if (event_meta.event_id == HAILO15_DAEMON_ISP_EVENT_G_CTRL &&
 				ret == 0) {
+				BUG_ON(!isp_ctrl);
+				BUG_ON(!ctrl);
 				memcpy(ctrl->p_new.p_u8,
-					   event_shm->data + sizeof(isp_ctrl),
+					   event_shm->data + sizeof(*isp_ctrl),
 					   isp_ctrl->size);
 			}
 		}
@@ -193,9 +195,17 @@ int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 					&(isp_dev->event_resource), pad, &num_buffers, sizeof(num_buffers));
 }
 
+int hailo15_isp_post_event_fast_toggle(struct hailo15_isp_device *isp_dev, int pad)
+{
+	hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
+						 HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE };
+	return hailo15_isp_post_event(isp_dev->sd.devnode, meta,
+					&(isp_dev->event_resource), pad, NULL, 0);
+}
+
 int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status)
 {
-    hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
+	hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
 						 (status ? HAILO15_DAEMON_ISP_EVENT_STREAMON : HAILO15_DAEMON_ISP_EVENT_STREAMOFF) };
 	return hailo15_isp_post_event(isp_dev->sd.devnode, meta,
 					&(isp_dev->event_resource), pad, NULL, 0);

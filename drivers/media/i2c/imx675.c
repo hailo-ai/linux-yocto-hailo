@@ -18,8 +18,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <linux/kernel.h>
-#include "sensor_id.h"
-
+#include "hailo_shared_sensor_data.h"
 
 #define DEFAULT_MODE_IDX 0
 
@@ -104,6 +103,8 @@
 
 /* Hcg control */
 #define IMX675_REG_HCG 0x3030
+#define IMX675_REG_HCG_SEF1 0x3031
+#define IMX675_REG_HCG_SEF2 0x3032
 #define IMX675_HCG_MIN 0
 #define IMX675_HCG_MAX 1
 #define IMX675_HCG_STEP 1
@@ -315,6 +316,7 @@ struct exp_gain_ctrl_cluster {
  * @vblank_ctrl: Pointer to vertical blanking control
  * @test_pattern_ctrl: pointer to test pattern control
  * @mode_sel_ctrl: pointer to mode select control
+ * @wdr_priming_ctrl: pointer to WDR priming control - wdr (true/false) to apply on fast toggle
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
  * @vblank: Vertical blanking in lines
@@ -344,6 +346,8 @@ struct imx675 {
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
 	struct exp_gain_ctrl_cluster sef2;
@@ -353,6 +357,8 @@ struct imx675 {
 	bool streaming;
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
+	int wdr_priming_val;
+	enum fast_toggle_state fast_toggle_state;
 };
 
 static const s64 link_freq[] = {
@@ -1120,6 +1126,28 @@ struct v4l2_ctrl_config imx675_custom_ctrls[] = {
 		.def = IMX675_HCG_DEFAULT,
 	},
 	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_CUSTOM_RHS1,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "custom_rhs1",
+		.step = IMX675_INTEGER_STEP,
+		.min = 0,
+		.max = 65535,
+		.def = 0,
+	},
+	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_WDR_PRIMING,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "wdr_priming",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+		.def = 0,
+	},
+	{
 		.ops = &imx675_get_ctrl_ops,
 		.id = IMX675_CID_RHS1,
 		.type = V4L2_CTRL_TYPE_INTEGER,
@@ -1477,7 +1505,26 @@ static int imx675_set_hcg_mode(struct imx675 *imx675, u32 hcg)
 		return ret;
 	}
 
-	dev_dbg(imx675->dev, "HCG mode set to %s\n", hcg ? "enabled" : "disabled");
+	if (imx675->cur_mode->dol >= 2) {
+		ret = imx675_write_reg(imx675, IMX675_REG_HCG_SEF1, 1, hcg);
+		if (ret) {
+			imx675_write_reg(imx675, IMX675_REG_HCG, 1, !hcg);
+			dev_err(imx675->dev, "Failed to write HCG SEF1 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (imx675->cur_mode->dol >= 3) {
+		ret = imx675_write_reg(imx675, IMX675_REG_HCG_SEF2, 1, hcg);
+		if (ret) {
+			imx675_write_reg(imx675, IMX675_REG_HCG, 1, !hcg);
+			imx675_write_reg(imx675, IMX675_REG_HCG_SEF1, 1, !hcg);
+			dev_err(imx675->dev, "Failed to write HCG SEF2 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	dev_dbg(imx675->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx675->cur_mode->dol);
 
 	return 0;
 }
@@ -1740,8 +1787,12 @@ static int imx675_get_ctrl(struct v4l2_ctrl *ctrl)
 		len = 3;
 		break;
 	case IMX675_CID_VMAX:
-		reg = IMX675_REG_LPFR;
-		len = 3;
+		if (imx675->streaming) {
+			reg = IMX675_REG_LPFR;
+			len = 3;
+		} else {
+			ctrl->val = (imx675->vblank + imx675->cur_mode->height);
+		}
 		break;
 	case IMX675_CID_HMAX:
 		reg = IMX675_REG_HMAX;
@@ -1876,7 +1927,20 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 		pm_runtime_put(imx675->dev);
 		break;
 
+	case IMX675_CID_WDR_PRIMING:
+		imx675->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
+	case IMX675_CID_CUSTOM_RHS1:
+		/* Stub: control accepted but not implemented for this sensor */
+		ret = 0;
+		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+		if (imx675->fast_toggle_state > FAST_TOGGLE_NONE && imx675->fast_toggle_state < FAST_TOGGLE_STATE_MAX) {
+			// if currently toggling, ignore this v4l control
+			return 0;
+		}
+
 		if (imx675->streaming) {
 			dev_warn(imx675->dev,
 				"Cannot set WDR mode while streaming\n");
@@ -2116,14 +2180,22 @@ out:
 static int imx675_init_pad_cfg(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_state *sd_state)
 {
+	static bool initialized = false;
 	struct imx675_mode *supported_modes;
 	struct imx675 *imx675 = to_imx675(sd);
 	struct v4l2_subdev_format fmt = { 0 };
+
+	/* Return immediately if pad has already been initialized */
+	if (initialized)
+		return 0;
 
 	supported_modes = (struct imx675_mode *)(imx675->hdr_enabled ? supported_hdr_modes : supported_sdr_modes);
 	fmt.which = sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 
 	imx675_fill_pad_format(imx675, &supported_modes[DEFAULT_MODE_IDX], &fmt);
+
+	initialized = true;
+
 	return imx675_set_pad_format(sd, sd_state, &fmt);
 }
 
@@ -2168,6 +2240,8 @@ static int imx675_start_streaming(struct imx675 *imx675)
 		dev_err(imx675->dev, "fail to start streaming");
 		return ret;
 	}
+
+	imx675->wdr_priming_val = -1;
 
 	dev_info(imx675->dev, "imx675: start_streaming successful (%s)", imx675_get_mode_name(imx675));
 	return 0;
@@ -2477,6 +2551,64 @@ done_endpoint_free:
 	return ret;
 }
 
+/* toggle_type param might be useful in the future, we don't need it now though */
+static int imx675_priming_apply(struct imx675 *imx675, int toggle_type)
+{
+	int ret;
+	
+	ret = imx675_set_hdr_mode(imx675, imx675->wdr_priming_val);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to set HDR mode (%d) for priming: %d", imx675->wdr_priming_val, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int imx675_fast_toggle_set_state(struct imx675 *imx675, int toggle_state)
+{
+	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
+		dev_err(imx675->dev, "Invalid fast toggle state %d\n", toggle_state);
+		return -EINVAL;
+	}
+
+	imx675->fast_toggle_state = toggle_state;
+
+	switch (toggle_state) {
+	case FAST_TOGGLE_APPLY_PRIMING:
+		return imx675_priming_apply(imx675, toggle_state);
+	default:
+		// No action needed for other states
+		break;
+	}
+	
+	return 0;
+}
+
+static long imx675_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx675 *imx675 = to_imx675(sd);
+	int toggle_state;
+	long ret;
+
+	mutex_lock(&imx675->mutex);
+	switch (cmd) {
+	case HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS:
+		if (arg == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		toggle_state = *((int*)arg);
+		ret = imx675_fast_toggle_set_state(imx675, toggle_state);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+	mutex_unlock(&imx675->mutex);
+	return ret;
+}
+
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx675_video_ops = {
 	.s_stream = imx675_set_stream,
@@ -2492,7 +2624,12 @@ static const struct v4l2_subdev_pad_ops imx675_pad_ops = {
 	.set_fmt = imx675_set_pad_format,
 };
 
+static const struct v4l2_subdev_core_ops imx675_core_ops = {
+	.ioctl = imx675_ioctl,
+};
+
 static const struct v4l2_subdev_ops imx675_subdev_ops = {
+	.core = &imx675_core_ops,
 	.video = &imx675_video_ops,
 	.pad = &imx675_pad_ops,
 };
@@ -2558,7 +2695,7 @@ static int imx675_init_controls(struct imx675 *imx675)
 	struct ExposureLimits_t limits;
 	int ret;
 
-	const int num_ctrls = 12;
+	const int num_ctrls = 13;
 
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
@@ -2619,10 +2756,22 @@ static int imx675_init_controls(struct imx675 *imx675)
 	/* Initialize HCG control */
 	imx675_setup_custom_ctrl(imx675, &imx675->hcg_ctrl, IMX675_CID_HCG);
 
+	/* Custom RHS1 stub (not implemented for this sensor) */
+	imx675_setup_custom_ctrl_limits(imx675, &imx675->custom_rhs1_ctrl, IMX675_CID_CUSTOM_RHS1,
+		0, 65535, 0);
+
+	/* Initialize priming ctrls */
+	imx675_setup_custom_ctrl(imx675, &imx675->wdr_priming_ctrl, IMX675_CID_WDR_PRIMING);
+
 	imx675->mode_sel_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx675_ctrl_ops,
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX675_WDR_MIN,
 				IMX675_WDR_MAX, IMX675_WDR_STEP,
 				IMX675_WDR_DEFAULT);
+	if (imx675->mode_sel_ctrl) {
+		// Always call callback, even if called with same value
+		// (this is important for fast toggle - which changes WDR mode outside of control framework)
+		imx675->mode_sel_ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
+	}
 
 	/* Read only controls */
 	imx675->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
@@ -2714,6 +2863,9 @@ static int imx675_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	imx675->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	imx675->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+
+	imx675->wdr_priming_val = -1;
+	imx675->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	/* Initialize source pad */
 	imx675->pad.flags = MEDIA_PAD_FL_SOURCE;

@@ -195,6 +195,11 @@ static int __init cma_debugfs_init(void)
 	for (i = 0; i < cma_area_count; i++)
 		cma_debugfs_add_one(&cma_areas[i], cma_debugfs_root);
 
+	/* check if cma-linux,cma exists */
+	if (!debugfs_lookup("cma-hailo_media", cma_debugfs_root)) {
+		debugfs_create_symlink("cma-hailo_media", cma_debugfs_root, "cma-linux,cma");
+	}
+
 	return 0;
 }
 late_initcall(cma_debugfs_init);

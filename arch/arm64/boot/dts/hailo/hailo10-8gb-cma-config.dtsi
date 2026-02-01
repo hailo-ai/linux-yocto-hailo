@@ -12,13 +12,20 @@
     // Reserve memory only for integrated nnc dma.
     integrated_nnc_dma_cma: integrated_nnc_dma_cma,cma {
         compatible = "shared-dma-pool";
-        size = <0x0 0x80000000>;
+        size = <0x0 0x20000000>;
         alignment = <0 0x10000>;
         no-map;
     };
 
     hailo_media_buf_cma: hailo_media_buf,cma {
         status = "disabled";
+    };
+
+    /* Hailo nn-core firmware: static reserve 32MiB area: [0x8e000000 - 0x90000000)
+        - must be at 0x8XXXXXXX for main2fast LUT to work (accessing 0x3XXXXXXX->0x8XXXXXXX in the NNM firmware) */
+    hailo_nnc_fw_cma: hailo_nnc_fw_cma@0 {
+        reg = <0 0x8e000000 0 0x2000000>;
+        no-map;
     };
 };
 

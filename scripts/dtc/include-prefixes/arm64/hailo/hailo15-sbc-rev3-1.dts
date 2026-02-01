@@ -8,6 +8,8 @@
 #include <dt-bindings/gpio/gpio.h>
 
 / {
+    model = "Hailo - Hailo15 SBC rev3.1 VPU Development Board";
+
     memory {
         device_type = "memory";
         reg = <0x00000000 0x80000000 0x00000000 0x80000000>;
@@ -112,7 +114,7 @@
        regulator-initial-mode = <2>;
     };
     sensor_1: camera-sensor@1a {
-        status = "ok";
+        status = "disabled";
         compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
@@ -435,4 +437,11 @@
     phy-names = "cdns3,usb3-phy";
     pinctrl-names = "default";
     pinctrl-0 = <&pinctrl_usb_overcurrent_n_in>, <&pinctrl_usb_drive_vbus_out>;
+};
+
+&reserved_memory {
+    // Media buffer: reserve 768 Mib: [0x88000000 - 0xB8000000)
+    hailo_media_buf_cma: hailo_media_buf,cma {
+        reg = <0 0x88000000 0 0x30000000>;
+    };
 };

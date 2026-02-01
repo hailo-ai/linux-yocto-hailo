@@ -14,7 +14,7 @@ struct hailo15_video_event_pkg {
 	struct hailo15_video_event_pkg_head head;
 	uint8_t complete;
 	int32_t result;
-	uint8_t data[0];
+	uint8_t data[];
 };
 
 int hailo15_video_post_event(struct video_device *vdev,

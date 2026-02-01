@@ -1,0 +1,194 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+* Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
+*/
+
+/dts-v1/;
+#include "hailo10-base.dtsi"
+#include "hailo10-8gb-cma-config.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/usb/pd.h>
+
+/ {
+    model = "Hailo - Hailo10 USB dongle";
+
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000002 0x00000000>;
+    };
+
+    chosen {
+        bootargs = "console=ttyS1,115200n8 quiet loglevel=3 rootwait wait_initrd_image root=/dev/ram0 ramdisk_size=0x10000000";
+        linux,initrd-start = <0x90000000>;
+        linux,initrd-end = <0xA0000000>;
+    };
+
+    /* USB-C connector as separate node - Device-only dongle (disabled) */
+    usb_c_connector: connector {
+        status = "disabled";  /* Disable without removing from device tree */
+        compatible = "usb-c-connector";
+        label = "USB-C";
+        data-role = "device";  /* Always act as USB device */
+        power-role = "sink";   /* Always sink power from host */
+
+        /* USB-C Power Delivery properties for device mode: 5V, 3A */
+        sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)
+                     PDO_VAR(5000, 20000, 3000)>;
+        op-sink-microwatt = <15000000>;  /* 15W max consumption */
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            port@0 {
+                reg = <0>;
+                usb_c_connector_ss_ep: endpoint {
+                    remote-endpoint = <&hd3ss3220_in_ep>;
+                };
+            };
+        };
+    };
+};
+
+&i2c_1 {
+    status = "ok";
+    i2c-sda-falling-time-ns = <1000>;
+
+    ina231_5v: 5v@40 {
+        compatible = "ti,ina231_precise";
+        reg = <0x40>;
+        shunt-resistor = <10000>; // shunt_uohms
+        max-current = <30000>; // max_current_mA
+    };
+
+    regulator_0p8v: regulator-0p8v@43 {
+        status = "disabled";
+        compatible = "ti,tps62872";
+        reg = <0x43>;
+        regulator-name = "+0.8V";
+        regulator-min-microvolt = <400000>;
+        regulator-max-microvolt = <1037500>;
+        regulator-initial-mode = <2>;
+    };
+
+    /* 64 KiB EEPROM  */
+    eeprom: eeprom-atmel-24c64@50 {
+        status = "disabled";
+        compatible = "atmel,24c64";
+        reg = <0x50>;
+    };
+
+    hd3ss3220@47 {
+        status = "disabled";
+        compatible = "ti,hd3ss3220";
+        reg = <0x47>;
+        /* No interrupt connected - will use polling for cable detection */
+
+        ports {
+            status = "disabled";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            port@0 {
+                reg = <0>;
+                hd3ss3220_in_ep: endpoint {
+                    remote-endpoint = <&usb_c_connector_ss_ep>;
+                };
+            };
+            port@1 {
+                reg = <1>;
+                hd3ss3220_out_ep: endpoint {
+                    remote-endpoint = <&cdns_usb3_connector_switch>;
+                };
+            };
+        };
+    };
+};
+
+&qspi {
+    status = "ok";
+
+    spi0_flash0: flash@0 {
+        /* values for MT25QU01G */
+        spi-max-frequency = <6250000>; /* 90Mhz in DTR, 166Mhz in STR */
+        cdns,read-delay = <7>;
+        cdns,tshsl-ns = <30>;
+        cdns,tsd2d-ns = <30>;
+        cdns,tchsh-ns = <5>;
+        cdns,tslch-ns = <3>;
+    };
+};
+
+&serial0 {
+    status = "ok";
+};
+
+#define GPIO_LINE_NAMES \
+    "gpio_in_out_0",            "gpio_in_out_1",            "gpio_in_out_2",            "gpio_in_out_3", \
+    "gpio_in_out_4",            "boot_ROM",                 "gpio_in_out_6",            "gpio_in_out_7", \
+    "gpio_in_out_8",            "gpio_in_out_9",            "gpio_in_out_10",           "gpio_in_out_8", \
+    "gpio_in_out_12",           "gpio_in_out_13",           "gpio_in_out_14",           "gpio_in_out_15", \
+    \
+    "sku_id_en",                "gpio_in_out_17",           "gpio_in_out_18",           "gpio_in_out_19", \
+    "gpio_in_out_20",           "gpio_in_out_21",           "fan_control",              "gpio_in_out_23", \
+    "gpio_in_out_24",           "sku_id_3",                 "sku_id_4",                 "sku_id_5", \
+    "gpio_in_out_28",           "gpio_in_out_29",           "gpio_in_out_30",           "gpio_in_out_31"
+
+&gpio0 {
+    gpio-ranges = <&pinctrl 0 0 16>;
+
+    gpio-line-names = GPIO_LINE_NAMES;
+};
+
+&gpio1 {
+    gpio-ranges = <&pinctrl 0 16 16>;
+
+    gpio-line-names = GPIO_LINE_NAMES;
+};
+
+&hailo_torrent_phy {
+    status = "okay";
+    usb-lane = <3>;
+    usb-lane-pma-pll-full-rate-divider = <PCI_PMA_PLL_FULL_RATE_CLK_DIVIDER_4>;
+    lanes-config = <PCI_PHY_LINK_LANES_CFG__2x1_PLUS_1x2__MASTER_LANES_LN0_LN2_LN3>;
+};
+
+&cdns_torrent_phy {
+    torrent_phy_pcie: phy@0 {
+        reg = <0>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_0>, <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_1>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_PCIE>;
+        cdns,num-lanes = <2>;
+    };
+    torrent_phy_usb3: phy@3 {
+        reg = <3>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_3>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_USB3>;
+        cdns,num-lanes = <1>;
+        cdns,ssc-mode = <TORRENT_SERDES_NO_SSC>;
+    };
+};
+
+&hailo_usb3 {
+    no-usb2-phy-avdd-core-power; // Indicate that AVDD core power is not connected to USB2 PHY 
+    status = "okay";
+};
+
+&cdns_usb3 {
+    dr_mode = "peripheral"; // Force USB controller to always be in device mode
+    phys = <&torrent_phy_usb3>;
+    phy-names = "cdns3,usb3-phy";
+    maximum-speed = "super-speed"; // known HW bug - MER-3829, not reaching super-speed-plus. Fixed in H15L.
+    
+    ports {
+        status = "disabled";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        port@0 {
+            reg = <0>;
+            cdns_usb3_connector_switch: endpoint {
+                remote-endpoint = <&hd3ss3220_out_ep>;
+            };
+        };
+    };
+};

@@ -15,16 +15,19 @@
 #define HAILO15_EVENT_RESOURCE_DATA_SIZE (4096 * 4)
 #define HAILO15_EVENT_RESOURCE_MAX_MAP_SIZE  (HAILO15_EVENT_RESOURCE_DATA_SIZE + PAGE_SIZE)
 
+// Generally Vid-cap (type = 'D') ioctls
 #define VIDEO_FPS_MONITOR_SUBDEV_IOC    _IOR('D', BASE_VIDIOC_PRIVATE + 0, uint64_t)
 #define VIDEO_GET_VSM_IOC               _IOWR('D', BASE_VIDIOC_PRIVATE + 1, struct hailo15_get_vsm_params)
-#define VIDEO_GET_P2A_REGS              _IOR('D', BASE_VIDIOC_PRIVATE + 2, struct hailo15_p2a_buffer_regs_addr)
+// HAILO15_INTERNAL_GET_P2A_REGS used to occupy offset 2, but this ioctl is kernel-internal -> moved to type='K' ioctls
 #define VIDEO_WAIT_FOR_STREAM_START	_IO('D', BASE_VIDIOC_PRIVATE + 3)
 #define VIDEO_TUNING_STATE              _IOWR('D', BASE_VIDIOC_PRIVATE + 4, bool)
 #define VIDEO_HDR_TIME_STAMP_MODE_SET    _IOW('D', BASE_VIDIOC_PRIVATE + 5, bool)
 #define VIDEO_HDR_TIME_STAMP_MODE_GET    _IOR('D', BASE_VIDIOC_PRIVATE + 6, bool)
 #define VIDEO_PIPELINE_STATE_GET         _IOR('D', BASE_VIDIOC_PRIVATE + 7, int)
+#define VIDEO_FAST_TOGGLE                _IOR('D', BASE_VIDIOC_PRIVATE + 8, int)
+#define VIDEO_FAST_TOGGLE_PRIMING        _IOR('D', BASE_VIDIOC_PRIVATE + 9, int)
 
-
+// ISP (type = 'I') ioctls
 #define ISPIOC_V4L2_READ_REG            _IOWR('I', BASE_VIDIOC_PRIVATE + 0, struct isp_reg_data)
 #define ISPIOC_V4L2_WRITE_REG           _IOWR('I', BASE_VIDIOC_PRIVATE + 1, struct isp_reg_data)
 #define ISPIOC_V4L2_RMEM                _IOWR('I', BASE_VIDIOC_PRIVATE + 2, struct hailo15_rmem)
@@ -38,8 +41,10 @@
 #define ISPIOC_V4L2_SET_INPUT_FORMAT    _IOWR('I', BASE_VIDIOC_PRIVATE + 9, struct v4l2_subdev_format)
 #define ISPIOC_V4L2_SET_MCM_MODE        _IOWR('I', BASE_VIDIOC_PRIVATE + 10, uint32_t)
 #define ISPIOC_V4L2_GET_NULL_ADDR       _IOR('I', BASE_VIDIOC_PRIVATE + 11, uint32_t)
-#define ISPIOC_V4L2_SET_ENABLE_SP2_ERR         _IOWR('I', BASE_VIDIOC_PRIVATE + 12, bool)
+#define ISPIOC_V4L2_SET_ENABLE_SP2_ERR  _IOWR('I', BASE_VIDIOC_PRIVATE + 12, bool)
+#define ISPIOC_V4L2_SET_MCM_MODE_PRIMING _IOWR('I', BASE_VIDIOC_PRIVATE + 13, uint32_t)
 
+// V4L2 (type = 'V') ioctls
 #define HAILO15_PAD_REQBUFS             _IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_reqbufs)
 #define HAILO15_PAD_BUF_DONE            _IOWR('V', BASE_VIDIOC_PRIVATE + 10, struct hailo15_pad_buf)
 #define HAILO15_PAD_BUF_QUEUE           _IOWR('V', BASE_VIDIOC_PRIVATE + 11, struct hailo15_pad_buf)
@@ -58,7 +63,15 @@
 #define HAILO15_PAD_STAT_UNSUBSCRIBE    _IOWR('V', BASE_VIDIOC_PRIVATE + 22, struct hailo15_pad_stat_subscribe)
 #define HAILO15_PAD_STAT_DONE           _IOWR('V', BASE_VIDIOC_PRIVATE + 23, struct hailo15_pad_stat)
 
+
 #define HAILO15_TUNING           		_IOWR('V', BASE_VIDIOC_PRIVATE + 24, bool)
+
+// Kernel internal ioctl (core ioctl to v4l2_subdev)s (type = 'K'))
+#define HAILO15_INTERNAL_GET_P2A_REGS               	_IOR('K', BASE_VIDIOC_PRIVATE + 0, struct hailo15_p2a_buffer_regs_addr)
+#define HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS	_IOW('K', BASE_VIDIOC_PRIVATE + 1, int)
+#define HAILO15_INTERNAL_CSI2RX_FAST_TOGGLE_SET_STATUS	_IOW('K', BASE_VIDIOC_PRIVATE + 2, struct fast_toggle_data)
+#define HAILO15_INTERNAL_ISP_FAST_TOGGLE_SET_STATUS 	_IOW('K', BASE_VIDIOC_PRIVATE + 3, struct fast_toggle_data)
+#define HAILO15_INTERNAL_RXW_FAST_TOGGLE_SET_STATUS 	_IOW('K', BASE_VIDIOC_PRIVATE + 4, struct fast_toggle_data)
 
 #define HAILO15_DMA_CTX_CB(ctx, func, grp_id, ...)							\
 ({																	\
@@ -77,7 +90,7 @@
 				break;												\
 			}														\
 			__hailo15_cb_retval = ctx->buf_ctx[grp_id].ops->func(			\
-				ctx __VA_OPT__(, ) __VA_ARGS__);					\
+				ctx, ##__VA_ARGS__);					\
 		} while (0);												\
 		__hailo15_cb_retval;										\
 	})
@@ -88,6 +101,8 @@
 	(HAILO15_DMA_CTX_CB(ctx, buffer_queue, grp_id, buf))
 #define hailo15_video_node_get_frame_count(ctx, grp_id, fc)                            \
 	(HAILO15_DMA_CTX_CB(ctx, get_frame_count, grp_id, grp_id, fc))
+#define hailo15_video_node_fast_toggle_stream(ctx, grp_id, toggle_type)                            \
+	(HAILO15_DMA_CTX_CB(ctx, fast_toggle_stream, grp_id, grp_id, toggle_type))
 #define hailo15_video_node_get_rmem(ctx, grp_id, rmem)                                 \
 	(HAILO15_DMA_CTX_CB(ctx, get_rmem, grp_id, rmem))
 #define hailo15_video_node_get_event_resource(ctx, grp_id, resource)                   \
@@ -164,10 +179,10 @@ struct hailo15_video_fmt {
 };
 
 struct hailo15_p2a_buffer_regs_addr {
-	void *buffer_ready_ap_int_mask_addr;
-	void *buffer_ready_ap_int_status_addr;
-	void *buffer_ready_ap_int_w1c_addr;
-	void *buffer_ready_ap_int_w1s_addr;
+	void __iomem *buffer_ready_ap_int_mask_addr;
+	void __iomem *buffer_ready_ap_int_status_addr;
+	void __iomem *buffer_ready_ap_int_w1c_addr;
+	void __iomem *buffer_ready_ap_int_w1s_addr;
 };
 
 // struct hailo15_video_plane_fmt
@@ -181,6 +196,15 @@ struct hailo15_p2a_buffer_regs_addr {
 #define HAILO15_INTERLEAVED_VIDEO_PLANE(_bpp) HAILO15_CUSTOM_VIDEO_PLANE(_bpp, 1, 1)
 
 static const struct hailo15_video_fmt __hailo15_out_formats[] = {
+	{
+		.fourcc = V4L2_PIX_FMT_SGBRG12P,
+		.code = MEDIA_BUS_FMT_SGBRG12_1X12,
+		.pix_fmt = RAW12,
+		.planarity = INTERLEAVED,
+		.num_planes = 1,
+		.width_modulus = 16,
+		.planes = { HAILO15_INTERLEAVED_VIDEO_PLANE(12) },
+	},
 	{
 		.fourcc = V4L2_PIX_FMT_SRGGB12P,
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
@@ -244,7 +268,6 @@ static const struct hailo15_video_fmt __hailo15_out_formats[] = {
 		.width_modulus = 16,
 		.planes = { HAILO15_INTERLEAVED_VIDEO_PLANE(16), HAILO15_INTERLEAVED_VIDEO_PLANE(16) },
 	},
-
 };
 
 static const struct hailo15_video_fmt __hailo15_formats[] = {
@@ -368,6 +391,7 @@ const struct hailo15_video_fmt *hailo15_get_out_formats(void);
 const struct hailo15_video_fmt *hailo15_get_formats(void);
 unsigned int hailo15_get_out_formats_count(void);
 unsigned int hailo15_get_formats_count(void);
+char *hailo15_fourcc_to_string(uint32_t fourcc, char *buf);
 
 struct hailo15_vsm {
 	int dx;
@@ -514,8 +538,6 @@ struct hailo15_buf_ops {
 	int (*get_event_resource)(struct hailo15_dma_ctx *ctx,
 				  struct hailo15_event_resource
 					  *event_resource); /* VIDEO -> DMA */
-	int (*get_fbuf)(struct hailo15_dma_ctx *ctx,
-			struct v4l2_framebuffer *fbuf); /*VIDEO -> DMA */
 	int (*set_private_data)(struct hailo15_dma_ctx *ctx, int grp_id,
 				void *data);
 	int (*get_private_data)(struct hailo15_dma_ctx *ctx, int grp_id,
@@ -524,6 +546,7 @@ struct hailo15_buf_ops {
 			   struct hailo15_vsm *vsm); /* VIDEO -> DMA */
 	int (*queue_empty)(struct hailo15_dma_ctx *ctx,
 			   int grp_id); /* VIDEO -> DMA */
+	int (*fast_toggle_stream)(struct hailo15_dma_ctx *dma_ctx, int grp_id, int toggle_type); /* VIDEO -> DMA */
 };
 
 #ifndef ALIGN_UP
@@ -534,6 +557,7 @@ enum hailo15_isp_path {
 	ISP_MP,
 	ISP_SP2,
 	ISP_MCM_IN,
+	ISP_MCM_RAW_OUT,
 	ISP_MAX_PATH,
 };
 
@@ -544,6 +568,28 @@ enum pixel_mux_pads {
 	PIXEL_MUX_SOURCE_PAD_0 = PIXEL_MUX_SINK_PAD_MAX,
 	PIXEL_MUX_SOURCE_PAD_1,
 	PIXEL_MUX_PAD_MAX,
+};
+
+enum fast_toggle_type {
+	FAST_TOGGLE_SDR_SDR = 0,
+	FAST_TOGGLE_SDR_HDR = 1,
+	FAST_TOGGLE_HDR_SDR = 2,
+	FAST_TOGGLE_HDR_HDR = 3,
+	FAST_TOGGLE_TYPE_MAX,
+};
+
+enum fast_toggle_state {
+	FAST_TOGGLE_NONE,
+	FAST_TOGGLE_TEARDOWN,
+	FAST_TOGGLE_PRIMING,
+	FAST_TOGGLE_APPLY_PRIMING,
+	FAST_TOGGLE_ACTIVE,
+	FAST_TOGGLE_STATE_MAX,
+};
+
+struct fast_toggle_data {
+	enum fast_toggle_state state;
+	enum fast_toggle_type type;
 };
 
 static inline int HAILO15_VID_GRP_TO_ISP_PATH(int grp_id)
@@ -557,6 +603,8 @@ static inline int HAILO15_VID_GRP_TO_ISP_PATH(int grp_id)
 		return ISP_SP2;
 	case HAILO15_VID_GRP_MCM_IN:
 		return ISP_MCM_IN;
+	case HAILO15_VID_GRP_MCM_RAW_WR:
+		return ISP_MCM_RAW_OUT;
 	default:
 		return -1;
 	}
@@ -567,6 +615,7 @@ static inline int HAILO15_VID_GRP_TO_VDID(int grp_id)
 	switch (grp_id) {
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
+	case HAILO15_VID_GRP_MCM_RAW_WR:
 		return 0;
 	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
@@ -606,6 +655,16 @@ static inline bool hailo15_is_p2a_grp_id(int grp_id)
 	}
 }
 
+static inline bool hailo15_is_mcm_raw_wr_grp_id(int grp_id)
+{
+	return grp_id == HAILO15_VID_GRP_MCM_RAW_WR;
+}
+
+static inline bool hailo15_is_mcm_in_grp_id(int grp_id)
+{
+	return grp_id == HAILO15_VID_GRP_MCM_IN;
+}
+
 static inline bool hailo15_is_isp_grp_id(int grp_id)
 {
 	switch(grp_id) {
@@ -614,6 +673,7 @@ static inline bool hailo15_is_isp_grp_id(int grp_id)
 		case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 		case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
 		case HAILO15_VID_GRP_MCM_IN:
+		case HAILO15_VID_GRP_MCM_RAW_WR:
 			return true;
 		default:
 			return false;
@@ -630,6 +690,7 @@ static inline int hailo15_grp_id_to_pipe_id(int grp_id)
 		case HAILO15_VID_GRP_SX_CSI0_P2A:
 		case HAILO15_VID_GRP_SX_CSI1_P2A:
 		case HAILO15_VID_GRP_MCM_IN:
+		case HAILO15_VID_GRP_MCM_RAW_WR:
 			return 0;
 		case HAILO15_VID_GRP_S0_CSI0_P2A:
 		case HAILO15_VID_GRP_S1_CSI0_P2A:
@@ -672,6 +733,8 @@ static inline char* hailo15_grp_id_to_str(int grp_id)
 			return "sx-csi0-p2a";
 		case HAILO15_VID_GRP_SX_CSI1_P2A:
 			return "sx-csi1-p2a";
+		case HAILO15_VID_GRP_MCM_RAW_WR:
+			return "mcm-raw-wr";
 		case HAILO15_VID_GRP_MCM_IN:
 			return "mcm-in";
 		case HAILO15_VID_GRP_S0_CSI0_P2A:
@@ -705,6 +768,7 @@ static inline int pixel_mux_grp_id_to_sink_pad_index(int grp_id)
 		case HAILO15_VID_GRP_S1_CSI0_P2A:
 		case HAILO15_VID_GRP_S2_CSI0_P2A:
 		case HAILO15_VID_GRP_S3_CSI0_P2A:
+		case HAILO15_VID_GRP_MCM_RAW_WR:
 			return PIXEL_MUX_SINK_PAD_0;
 		case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 		case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
@@ -726,6 +790,7 @@ int hailo15_v4l2_notifier_bound(struct v4l2_async_notifier *,
 const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code);
 const struct hailo15_video_fmt *hailo15_fourcc_get_format(uint32_t fourcc, __u8 num_planes);
 const struct hailo15_video_fmt *hailo15_fourcc_get_out_format(uint32_t fourcc, __u8 num_planes);
+struct v4l2_subdev *hailo15_get_csi2rx_subdev(struct media_device *mdev, int grp_id);
 struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp_id);
 int hailo15_plane_get_bytesperline(const struct hailo15_video_fmt *format,
 				   int width, int plane);

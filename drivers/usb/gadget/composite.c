@@ -727,6 +727,9 @@ static int bos_desc(struct usb_composite_dev *cdev)
 						      USB_FULL_SPEED_OPERATION |
 						      USB_HIGH_SPEED_OPERATION |
 						      USB_5GBPS_OPERATION);
+		/* TODO: MERCURY, PLUTO USB device mode supports only SuperSpeed */
+		// ss_cap->wSpeedSupported = cpu_to_le16(USB_5GBPS_OPERATION); 
+		
 		ss_cap->bFunctionalitySupport = USB_LOW_SPEED_OPERATION;
 		ss_cap->bU1devExitLat = dcd_config_params.bU1devExitLat;
 		ss_cap->bU2DevExitLat = dcd_config_params.bU2DevExitLat;

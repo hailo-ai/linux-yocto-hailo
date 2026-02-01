@@ -7,31 +7,9 @@
 #include "hailo15-evb-base.dtsi"
 #include <dt-bindings/pinctrl/hailo15_cpld.h>
 
-&i2c_2 {
-    status = "okay";
-    pinctrl-names = "default";
-    pinctrl-0 = <&pinctrl_i2c2>, <&pinctrl_i2c2_current_src_en_out>;
-
-    sensor_1: camera-sensor@1a {
-        status = "okay";
-        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
-        reg = <0x1a>;
-        clocks = <&sensor_clk>;
-        clock-names = "inclk";
-        clock-frequency = <24000000>;
-        csi-id = <1>;
-        reset-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
-        port {
-            sensor_out_csi2rx1: endpoint {
-                data-lanes = <1 2 3 4>;
-                remote-endpoint = <&csi2rx1_in_sensor>;
-                link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
-            };
-        };
-    };
-};
-
 / {
+    model = "Hailo - Hailo15 EVB 2-Camera VPU Development Board";
+
     sensor_clk: sensor_clk {
         compatible = "fixed-clock";
         #clock-cells = <0>;
@@ -39,12 +17,22 @@
     };
 };
 
-
 &csi2rx0 {
     ports {
         port@0 {
             csi2rx_in_sensor: endpoint {
                 remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
+&csi2rx1 {
+    status = "okay";
+    ports {
+        port@0 {
+            csi2rx1_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx1>;
             };
         };
     };
@@ -91,7 +79,6 @@
     };
 };
 
-// TODO: uncomment when ISP will support streaming from CSI-1
 &hailo_isp {
     ports {
         port@4 {
@@ -113,7 +100,6 @@
 
 &hailo_vid_cap {
     ports {
-        // TODO: uncomment when ISP will support streaming from CSI-1
         port@4{
             reg = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
             vid4_in: endpoint {
@@ -183,7 +169,7 @@
 &i2c_0 {
     sensor_0: camera-sensor@1a {
         status = "okay";
-        compatible = "sony,imx334", "sony,imx664","sony,imx675", "sony,imx678", "sony,imx715";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
@@ -198,6 +184,30 @@
             };
         };
      };
+};
+
+&i2c_2 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c2>, <&pinctrl_i2c2_current_src_en_out>;
+
+    sensor_1: camera-sensor@1a {
+        status = "okay";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <1>;
+        reset-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
+        port {
+            sensor_out_csi2rx1: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx1_in_sensor>;
+                link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
+            };
+        };
+    };
 };
 
 &sdio0 {
@@ -339,13 +349,3 @@
     };
 };
 
-&csi2rx1 {
-    status = "okay";
-    ports {
-        port@0 {
-            csi2rx1_in_sensor: endpoint {
-                remote-endpoint = <&sensor_out_csi2rx1>;
-            };
-        };
-    };
-};

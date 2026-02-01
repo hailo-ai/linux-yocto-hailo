@@ -14,6 +14,7 @@ static struct scmi_device *hailo_sdev = NULL;
 /* Hailo SCMI command definitions */
 
 static int scmi_hailo_register_notifier(u8 evt_id, struct notifier_block *nb);
+static int scmi_hailo_unregister_notifier(u8 evt_id, struct notifier_block *nb);
 static int scmi_hailo_set_eth_rmii(void);
 static int scmi_hailo_start_measure(struct scmi_hailo_noc_start_measure_a2p *params);
 static int scmi_hailo_get_mbist_subservers_status(struct scmi_hailo_mbist_subservers_status_p2a *params);
@@ -36,6 +37,7 @@ static int scmi_hailo_get_sku_id(struct scmi_hailo_get_sku_id_p2a *params);
 
 const struct scmi_hailo_ops ops = {
 	.register_notifier = scmi_hailo_register_notifier,
+	.unregister_notifier = scmi_hailo_unregister_notifier,
 	.get_boot_info = scmi_hailo_get_boot_info,
 	.get_fuse_info = scmi_hailo_get_fuse_info,
 	.set_eth_rmii = scmi_hailo_set_eth_rmii,
@@ -63,6 +65,14 @@ static int scmi_hailo_register_notifier(u8 evt_id, struct notifier_block *nb)
 		return -EOPNOTSUPP;
 
 	return hailo_notify_ops->devm_event_notifier_register(hailo_sdev, SCMI_PROTOCOL_HAILO, evt_id, NULL, nb);
+}
+
+static int scmi_hailo_unregister_notifier(u8 evt_id, struct notifier_block *nb)
+{
+	if (!hailo_notify_ops || !hailo_notify_ops->devm_event_notifier_unregister)
+		return -EOPNOTSUPP;
+
+	return hailo_notify_ops->devm_event_notifier_unregister(hailo_sdev, SCMI_PROTOCOL_HAILO, evt_id, NULL, nb);
 }
 
 const struct scmi_hailo_ops *scmi_hailo_get_ops(void)

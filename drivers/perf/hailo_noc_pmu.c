@@ -1025,6 +1025,23 @@ static int hailo_pmu_register_notifiers(struct hailo_pmu *hailo_pmu)
 	return ret;
 }
 
+static int hailo_pmu_unregister_notifiers(struct hailo_pmu *hailo_pmu)
+{
+	int ret;
+
+	ret = hailo_pmu->scmi_ops->unregister_notifier(SCMI_HAILO_NOC_MEASUREMENT_ENDED_NOTIFICATION_ID, &ended_nb.notifier_block);
+	if (ret)
+		return ret;
+	ended_nb.context = NULL;
+
+	ret = hailo_pmu->scmi_ops->unregister_notifier(SCMI_HAILO_NOC_MEASUREMENT_TRIGGER_NOTIFICATION_ID, &trigger_nb.notifier_block);
+	if (ret)
+		return ret;
+	trigger_nb.context = NULL;
+
+	return ret;
+}
+
 static int hailo_pmu_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -1101,6 +1118,13 @@ static int hailo_pmu_probe(struct platform_device *pdev)
 static int hailo_pmu_remove(struct platform_device *pdev)
 {
 	struct hailo_pmu *hailo_pmu = platform_get_drvdata(pdev);
+	int ret;
+
+	ret = hailo_pmu_unregister_notifiers(hailo_pmu);
+	if (ret) {
+		pr_err("Failed to unregister notifiers: %d\n", ret);
+		return ret;
+	}
 
 	flush_workqueue(hailo_pmu->scmi_wq);
 	destroy_workqueue(hailo_pmu->scmi_wq);

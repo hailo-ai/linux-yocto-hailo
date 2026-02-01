@@ -4,12 +4,22 @@
  */
 
 #define HAILO_SOC_TYPE HAILO_SOC_HAILO12L
+#include "hailo12l-audio.h"
 #include "hailo1x-base.dtsi"
 
 / {
-    soc {
+    soc:soc {
         compatible = "hailo,hailo12l";
     };
+
+    sram@60000000 {
+        cpu_scp_i2s_dma_shmem: scp-shmem@10a0 {
+            compatible = "hailo,hailo15-i2s-shmem";
+            reg = <0 0x10a0 0 0xf60>;
+        };
+    };
+
+    #include "hailo12l-audio.dtsi"
 
     pl320_mailbox: mailbox {
         reg = <0 0x78003000 0 0x1000>;
@@ -22,7 +32,61 @@
                 <0 0x7c293000 0 0x1000>,
                 <0 0x00306000 0 0x1000>,
                 <0 0x00304000 0 0x1000>;
-        reg-names = "general_pads_config_base", "gpio_pads_config_base", "slow_pads_config_base", "aon_pads_config_base", "aon_pinmux_config_base";
+        reg-names = "general_pads_config_base",
+                    "gpio_pads_config_base",
+                    "slow_pads_config_base",
+                    "aon_pads_config_base",
+                    "aon_pinmux_config_base";
+    };
+
+    i2c_0: i2c@104000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_0>;
+    };
+
+    i2c_1: i2c@105000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_1>;
+    };
+
+    i2c_2: i2c@106000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_2>;
+    };
+
+    i2c_3: i2c@107000 {
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_I2C_3>;
+    };
+
+    spi_0: spi_0@0x00115000 {
+    status = "disabled";
+    compatible = "snps,dw-apb-ssi";
+    reg = <0 0x00115000 0 0x400>;
+    interrupts = <GIC_SPI HW_INTERRUPTS__SPI0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+    #address-cells = <1>;
+    #size-cells = <0>;
+    clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SPI_0_GATE>;
+    clock-names = "spi_0_gate";
+    num-cs = <4>;
+    };
+
+    xspi: xspi@1c0000 {
+        status = "disabled";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        compatible = "hailo,xspi-nor";
+        reg = <0x00000000 0x001c0000 0x00000000 0x2000>,
+                <0x00000000 0x70000000 0x00000000 0x08000000>,
+                <0x0 0x001c2000 0x0 0x1000>,
+                <0x0 0x0010f000 0x0 0x1000>;
+        reg-names = "io", "sdma", "aux", "wrapper";
+        interrupts = <GIC_SPI HW_INTERRUPTS__XSPI_IRQ IRQ_TYPE_LEVEL_HIGH>;
+
+        clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
+
+        spi0_flash0: flash@0 {
+            #address-cells = <1>;
+            #size-cells = <1>;
+            compatible = "jedec,spi-nor";
+            reg = <0>; /* chip select */
+        };
     };
 
 };
@@ -36,6 +100,16 @@
     hailo_media_buf_cma: hailo_media_buf,cma {
         status = "disabled";
     };
+};
+
+&gpio0 {
+    reg = <0 0x78200000 0 0x1000>,
+          <0 0x7c2a10e4 0 0xC>;
+};
+
+&gpio1 {
+    reg = <0 0x78201000 0 0x1000>,
+          <0 0x7c2a10e4 0 0xC>;
 };
 
 &integrated_nnc {
@@ -67,6 +141,15 @@
     };
 };
 
+&sdio1 {
+    compatible = "hailo,dwcmshc-sdhci-0";
+    clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_M_HCLK>,
+        <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_CLK_DIV_BYPASS>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_SDIO_1_CARD_CLK>;
+    resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_SDIO_1_CD_FROM_PINMUX>;
+    clock-names = "core", "bus", "clk_div_bypass","card_clk";
+};
+
+
 &gp_vdma {
     status = "disabled";
 };
@@ -76,6 +159,7 @@
 };
 
 &nocpmu {
+    status = "disabled";
     compatible = "hailo,hailo12l-noc-pmu";
     reg = <0 0x000a5000 0 0x2100>;
 };

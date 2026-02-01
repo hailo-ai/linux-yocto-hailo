@@ -63,6 +63,9 @@ struct hailo15_video_node {
 	bool tuning_state;
 	bool is_first_buffer_processed; /* If false, vid-cap didn't pass (enqueued) any buf to subdev yet */
 	wait_queue_head_t stream_wait;
+
+	enum fast_toggle_state fast_toggle_state;
+	struct hailo15_buffer *fast_toggle_priming_buf; // on fast toggle, one buffer must be available immediately - this is it
 };
 
 struct hailo15_vid_cap_device {

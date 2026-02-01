@@ -69,6 +69,7 @@ static int hailo15_isp_hdr_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_HDR_EXT_BIT:
 	case HAILO15_ISP_CID_HDR_TRANS_RANGE:
 	case HAILO15_ISP_CID_HDR_COLOR_WEIGHTS:
+	case HAILO15_ISP_CID_HDR_RATIO_PRIMING:
 		ret = hailo15_isp_s_ctrl_event(isp_dev, isp_dev->ctrl_pad,
 					       ctrl);
 		break;
@@ -87,7 +88,7 @@ static int hailo15_isp_hdr_g_ctrl(struct v4l2_ctrl *ctrl)
 	struct hailo15_isp_device *isp_dev = container_of(
 		ctrl->handler, struct hailo15_isp_device, ctrl_handler);
 
-    pr_debug("%s - enter with cid %d\n", __func__, ctrl->id);
+	pr_debug("%s - enter with cid %d\n", __func__, ctrl->id);
 
 	switch (ctrl->id) {
 	case HAILO15_ISP_CID_HDR_RATIO:
@@ -112,7 +113,7 @@ static const struct v4l2_ctrl_ops hailo15_isp_hdr_ctrl_ops = {
 	.g_volatile_ctrl = hailo15_isp_hdr_g_ctrl,
 };
 
-const struct v4l2_ctrl_config hailo15_isp_hdr_ctrls[] = {
+static const struct v4l2_ctrl_config hailo15_isp_hdr_ctrls[] = {
 	{
 		.ops = &hailo15_isp_hdr_ctrl_ops,
 		.id = HAILO15_ISP_CID_HDR_RATIO,
@@ -120,6 +121,19 @@ const struct v4l2_ctrl_config hailo15_isp_hdr_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_hdr_ratio",
+		.step = 1,
+		.min = 0,
+		.max = 0xFFFFFFFF,
+		.dims = { 2 },
+	},
+	{
+		.ops = &hailo15_isp_hdr_ctrl_ops,
+		.id = HAILO15_ISP_CID_HDR_RATIO_PRIMING,
+		.type = V4L2_CTRL_TYPE_U32,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE |
+			 V4L2_CTRL_FLAG_WRITE_ONLY,
+		.name = "isp_hdr_ratio_priming",
 		.step = 1,
 		.min = 0,
 		.max = 0xFFFFFFFF,

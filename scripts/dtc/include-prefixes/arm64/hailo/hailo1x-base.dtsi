@@ -217,6 +217,9 @@
                  <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_PCLK>,
                  <&scmi_clk HAILO15_SCMI_CLOCK_IDX_PCIE_ACLK>;
         clock-names = "usb_pclk", "pcie_pclk", "pcie_aclk";
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE>,
+                 <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_APB>;
+        reset-names = "pcie", "pcie_apb";
         power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_PCIE>;
         status = "disabled";
         #address-cells = <2>;
@@ -245,6 +248,8 @@
                  <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_ACLK>,
                  <&scmi_clk HAILO15_SCMI_CLOCK_IDX_USB_SOF_CLK>;
         clock-names = "usb_pclk", "usb_lpm_clk", "usb2_refclk", "usb_aclk", "usb_sof_clk";
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_USB>, <&scmi_reset HAILO15_SCMI_RESET_IDX_USB_APB>;
+        reset-names = "usb", "usb_apb";
         power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_USB>;
         interrupts = <GIC_SPI HW_INTERRUPTS__USB_INFO_INTR_IRQ IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "usb_info_intr";
@@ -363,10 +368,10 @@
         ranges;
 
         /* ******* DDR 1'st GiB ******* */
-        /* Hailo nn-core firmware: static reserve 2MiB area: [0x80500000 - 0x80700000)
+        /* Hailo nn-core firmware: static reserve 4MiB area: [0x80500000 - 0x80900000)
            - must be at 0x8XXXXXXX for main2fast LUT to work (accessing 0x3XXXXXXX->0x8XXXXXXX in the NNM firmware) */
         hailo_nnc_fw_cma: hailo_nnc_fw_cma@0 {
-            reg = <0 0x80500000 0 0x200000>;
+            reg = <0 0x80500000 0 0x400000>;
             no-map;
         };
         // XRP(DSP): static reserve 2MiB for DSP Firmware code: [0x80300000 - 0x80500000).
@@ -413,9 +418,11 @@
         ranges;
         #address-cells = <2>;
         #size-cells = <2>;
-        // From main-bus prespective the 256MiB range from bus-address 0x40000000 to 0x50000000,
-        //  is mapped to physical address 0xC0000000-0xD0000000
-        dma-ranges = <0 0x40000000 0 0xC0000000 0 0x10000000>;
+        // From main-bus prespective the 256MiB range from bus-address:
+        // 0x40000000 to 0x50000000, is mapped to physical address 0xC0000000-0xD0000000
+        // 0x50000000 to 0x60000000, is mapped to physical address 0x80000000-0x90000000
+        dma-ranges = <0 0x40000000 0 0xC0000000 0 0x10000000>,
+                     <0 0x50000000 0 0x80000000 0 0x10000000>;
 
         watchdog@7c2c1000 {
             compatible = "arm,sp805", "arm,primecell";

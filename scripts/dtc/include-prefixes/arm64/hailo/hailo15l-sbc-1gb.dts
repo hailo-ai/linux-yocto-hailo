@@ -1,0 +1,30 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo15l-sbc.dts"
+
+&sdio0_reserved {
+    reg = <0 0x84000000 0 0x4000000>;
+};
+
+&gp_vdma {
+    status = "disabled";
+};
+
+&reserved_memory {
+    // add linux,cma-soft-link property to the hailo_media_buf_cma node
+    // this will make the CMA area to be used by the media library
+    hailo_media_buf_cma: hailo_media_buf,cma {
+        status = "okay";
+        linux,cma-soft-link;
+        /delete-property/ reg;
+    };
+
+    // default Linux,CMA: reserve 640 MiB: [0x88000000 - 0xB0000000)
+    cma: linux,cma {
+        reg = <0 0x88000000 0 0x28000000>;
+    };
+};

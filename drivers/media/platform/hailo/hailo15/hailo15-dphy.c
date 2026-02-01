@@ -13,6 +13,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/of_platform.h>
+#include "hailo15-dphy.h"
 
 #define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT0_ADDR_OFFSET (0xb00)
 #define CDNS_MIPI_DPHY_RX_TX_DIG_TBIT2_ADDR_OFFSET (0xb08)
@@ -40,8 +41,7 @@ static int hailo15_dphy_rx_band_control_select(u64 data_rate)
 											880,	1040,	1200,	1350,	1500,
 											1750,	2000,	2250,	2500 };
 
-	static const int data_rates_mbps_num_elements =
-		sizeof(data_rates_mbps) / sizeof(data_rates_mbps[0]);
+	static const int data_rates_mbps_num_elements = ARRAY_SIZE(data_rates_mbps);
 
 	for (i = 0; i < data_rates_mbps_num_elements - 2; i++)
 		if (data_rate_mbps >= data_rates_mbps[i] &&
@@ -65,7 +65,7 @@ int hailo15_dphy_rx_init(struct phy *phy, s64 data_rate)
 	u32 phy_band_control = 0;
 
 	if (!dphy || !dphy->base) {
-		dev_err(dphy->dev, "dphy not initialized\n");
+		pr_err("dphy not initialized\n");
 		return -ENODEV;
 	}
 
@@ -129,7 +129,7 @@ static int hailo15_dphy_probe(struct platform_device *pdev)
 
 	dphy->phy = devm_phy_create(&pdev->dev, NULL, &hailo15_dphy_ops);
 	if (IS_ERR(dphy->phy)) {
-        ret = PTR_ERR(dphy->phy);
+		ret = PTR_ERR(dphy->phy);
 		dev_err(&pdev->dev, "failed to create PHY (%d)\n", ret);
 		goto err_free_priv;
 	}
@@ -138,11 +138,11 @@ static int hailo15_dphy_probe(struct platform_device *pdev)
 	phy_provider = devm_of_phy_provider_register(&pdev->dev,
 						     of_phy_simple_xlate);
 
-    if (IS_ERR(phy_provider)) {
-        ret = PTR_ERR(phy_provider);
-        dev_err(&pdev->dev, "failed to register PHY provider (%d)\n", ret);
-        goto err_free_priv;
-    }
+	if (IS_ERR(phy_provider)) {
+		ret = PTR_ERR(phy_provider);
+		dev_err(&pdev->dev, "failed to register PHY provider (%d)\n", ret);
+		goto err_free_priv;
+	}
 
 	if (ret < 0)
 		goto err_free_priv;

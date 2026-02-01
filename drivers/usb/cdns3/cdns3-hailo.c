@@ -17,8 +17,15 @@
 #include <linux/io.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
+#include <linux/slab.h>
+#include <linux/gfp.h>
+#include <linux/types.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
 #include "core.h"
 #include "drd.h"
+#include "cdnsp-gadget.h"
 
 
 #define DR_MODE_DEVICE "peripheral"
@@ -43,6 +50,30 @@
 #define VBUS_SELECT_MASK 0x08  //vbus select 1 for device mode
 #define NUM_SUB_INTERRUPTS 3
 
+#define PORT_OVERRIDE_SLEEPM_SFR BIT(27)
+#define PORT_OVERRIDE_SLEEPM_SEL BIT(26)
+#define PORT_OVERRIDE_SUSPEND_SFR BIT(25)
+#define PORT_OVERRIDE_SUSPEND_SEL BIT(24)
+#define PORT_OVERRIDE_XCVSEL_SFR GENMASK(23, 22)
+#define PORT_OVERRIDE_XCVSEL_SEL BIT(21)
+#define PORT_OVERRIDE_TXBITSTUFF_SFR BIT(20)
+#define PORT_OVERRIDE_TXBITSTUFF_SEL BIT(19)
+#define PORT_OVERRIDE_OPMODE_SFR GENMASK(18, 17)
+#define PORT_OVERRIDE_OPMODE_SEL BIT(16)
+#define PORT_OVERRIDE_OVERCURRENT_SFR BIT(13)
+#define PORT_OVERRIDE_OVERCURRENT_SEL BIT(12)
+#define PORT_OVERRIDE_SESS_VLD_SFR BIT(11)
+#define PORT_OVERRIDE_SESS_VLD_SEL BIT(10)
+#define PORT_OVERRIDE_IDDIG_SFR BIT(9)
+#define PORT_OVERRIDE_IDDIG_SEL BIT(8)
+#define PORT_OVERRIDE_DRIVE_VBUS_SFR BIT(6)
+#define PORT_OVERRIDE_DRIVE_VBUS_SEL BIT(5)
+#define PORT_OVERRIDE_FORCE_OPMODE01 BIT(4)
+#define PORT_OVERRIDE_BC_DMPULLDOWN BIT(3)
+#define PORT_OVERRIDE_BC_DPPULLDOWN BIT(2)
+#define PORT_OVERRIDE_BC_PULLDOWNCTRL BIT(1)
+#define PORT_OVERRIDE_LDPULLUP BIT(0)
+
 /* usb3 controller xhci registers */
 #define XEC_PRE_REG_250NS 0x21e8
 #define XEC_PRE_REG_1US 0x21ec
@@ -66,7 +97,10 @@ struct cdns_hailo {
 	struct clk_bulk_data *core_clks;
 	int num_core_clks;
 	struct clk *pclk;
+	struct reset_control *usb_rst;
+	struct reset_control *usb_apb_rst;
 	bool disconnected_overcurrent;
+	bool no_usb2_phy_avdd_core_power;
 	struct irq_domain *irq_domain;
 	int dr_mode;
 };
@@ -129,7 +163,7 @@ static irqreturn_t cdns_hailo_irq_handler(int irq, void *dev_id)
 
 void cdns_hailo_init(struct cdns_hailo *data)
 {
-	u32 usb_config, interrupt_mask,phy_config,usb_mode_strap;
+	u32 usb_config, interrupt_mask, usb_mode_strap, phy_config;
 
     /*  USB config Default mode to be activated after power on reset
 			BIT 0-1 mode strap.
@@ -149,14 +183,16 @@ void cdns_hailo_init(struct cdns_hailo *data)
 	*/
 	interrupt_mask = cdns_hailo_readl(data, USB_INFO_INTR_MASK);
 
-	/* Isolation control pin for all PHY output pins
+	usb_config = cdns_hailo_readl(data, USB_CONFIG_REG);
+
+	/* Isolation control pin for all PHY output pins (USB 2.0 only)
 	* - 0: For isolating IP outputs (default).
 	* - 1: For normal operation.
 	*/
-	usb_config = cdns_hailo_readl(data, USB_CONFIG_REG);
-
-	phy_config = cdns_hailo_readl(data, USB2_PHY_CONFIG_REG);
-	phy_config |= (ISO_IP2SOC_MASK | VBUS_SELECT_MASK);
+	if (!data->no_usb2_phy_avdd_core_power) {
+		phy_config = cdns_hailo_readl(data, USB2_PHY_CONFIG_REG);
+		phy_config |= (ISO_IP2SOC_MASK | VBUS_SELECT_MASK);
+	}
 
 	//the device mode interrupt mask is includes also the host mode
 	interrupt_mask &= ~IRQ_MASK_DEVICE;
@@ -175,7 +211,9 @@ void cdns_hailo_init(struct cdns_hailo *data)
 
 	cdns_hailo_writel(data, USB_CONFIG_REG, usb_mode_strap);
 	cdns_hailo_writel(data, USB_INFO_INTR_MASK, interrupt_mask);
-	cdns_hailo_writel(data, USB2_PHY_CONFIG_REG, phy_config);
+	if (!data->no_usb2_phy_avdd_core_power) {
+		cdns_hailo_writel(data, USB2_PHY_CONFIG_REG, phy_config);
+	}
 }
 
 static int cdns_hailo_xhci_init_quirk(struct usb_hcd *hcd)
@@ -227,8 +265,119 @@ static int cdns_hailo_xhci_init_quirk(struct usb_hcd *hcd)
 	return 0;
 }
 
+static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
+{
+    struct cdnsp_device *pdev;
+    struct cdns *cdns;
+    struct cdnsp_otg_regs __iomem *regs;
+	struct cdns_hailo *data;
+	uint32_t reg_val = 0;
+
+	if (!gadget) {
+		pr_err("%s: gadget pointer is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!gadget->name || strcmp(gadget->name, "cdnsp-gadget") != 0) {
+		pr_debug("%s: not a cdnsp-gadget (name=%s), skipping\n", 
+			 __func__, gadget->name ? gadget->name : "NULL");
+		return 0;
+	}	
+
+	pdev = gadget_to_cdnsp(gadget);
+	if (!pdev) {
+		pr_err("%s: failed to get cdnsp_device from gadget\n", __func__);
+		return -ENODEV;
+	}
+
+	if (!pdev->dev) {
+		pr_err("%s: cdnsp_device has no associated device\n", __func__);
+		return -ENODEV;
+	}
+
+	cdns = dev_get_drvdata(pdev->dev);
+	if (!cdns) {
+		dev_err(pdev->dev, "%s: no CDNS core structure available\n", __func__);
+		return -ENODEV;
+	}
+
+	if (!pdev->dev->parent) {
+		dev_err(pdev->dev, "%s: no parent device available\n", __func__);
+		return -ENODEV;
+	}
+
+	data = dev_get_drvdata(pdev->dev->parent);
+	if (!data) {
+		dev_err(pdev->dev->parent, "%s: no Hailo platform data available\n", __func__);
+		return -ENODEV;
+	}
+    
+	regs = cdns->otg_cdnsp_regs;
+	if (!regs) {
+		dev_err(pdev->dev, "%s: CDNSP OTG registers not mapped\n", __func__);
+		return -ENODEV;
+	}
+
+	/* Check for no-usb2-power device tree property */
+	if (data->no_usb2_phy_avdd_core_power) {
+		reg_val = readl(&regs->override);
+
+		reg_val |= PORT_OVERRIDE_SLEEPM_SFR;
+		reg_val &= ~PORT_OVERRIDE_SUSPEND_SFR;
+		reg_val |= FIELD_PREP(PORT_OVERRIDE_XCVSEL_SFR, 0x1);
+		reg_val &= ~PORT_OVERRIDE_TXBITSTUFF_SFR;
+		reg_val |= FIELD_PREP(PORT_OVERRIDE_OPMODE_SFR, 0x1);
+		reg_val &= ~PORT_OVERRIDE_OVERCURRENT_SFR;
+		reg_val |= PORT_OVERRIDE_SESS_VLD_SFR;
+		reg_val &= ~PORT_OVERRIDE_IDDIG_SFR;
+		reg_val &= ~PORT_OVERRIDE_DRIVE_VBUS_SFR;
+		reg_val |= PORT_OVERRIDE_FORCE_OPMODE01;
+
+		writel(reg_val, &regs->override);
+
+		reg_val |= PORT_OVERRIDE_SLEEPM_SEL;
+		reg_val |= PORT_OVERRIDE_SUSPEND_SEL;
+		reg_val |= PORT_OVERRIDE_XCVSEL_SEL;
+		reg_val |= PORT_OVERRIDE_TXBITSTUFF_SEL;
+		reg_val |= PORT_OVERRIDE_OPMODE_SEL;
+		reg_val |= PORT_OVERRIDE_OVERCURRENT_SEL;
+		reg_val |= PORT_OVERRIDE_SESS_VLD_SEL;
+		reg_val |= PORT_OVERRIDE_IDDIG_SEL;
+		reg_val |= PORT_OVERRIDE_DRIVE_VBUS_SEL;
+
+		// reg_val |= 0xD6B1D30U;
+		writel(reg_val, &regs->override);
+
+		dev_info(pdev->dev, "%s: USB2 phy AVVD core power is not conncted, set override reg = =0x%08x\n", __func__, reg_val);
+	}
+
+	dev_info(pdev->dev, "updating timers\n");
+    // PRE REG Timers
+    writel(0xb, pdev->regs + XEC_PRE_REG_250NS);
+    writel(0x2f, pdev->regs + XEC_PRE_REG_1US);
+    writel(0x1df, pdev->regs + XEC_PRE_REG_10US);
+    writel(0x12bf, pdev->regs + XEC_PRE_REG_100US);
+    writel(0x176f, pdev->regs + XEC_PRE_REG_125US);
+    writel(0xbb7f, pdev->regs + XEC_PRE_REG_1MS);
+    writel(0x752ff, pdev->regs + XEC_PRE_REG_10MS);
+    writel(0x493dff, pdev->regs + XEC_PRE_REG_100MS);
+    // PRE LMP REG Timers
+    writel(0xb, pdev->regs + XEC_LPM_PRE_REG_250NS);
+    writel(0x2f, pdev->regs + XEC_LPM_PRE_REG_1US);
+    writel(0x1df, pdev->regs + XEC_LPM_PRE_REG_10US);
+    writel(0x12bf, pdev->regs + XEC_LPM_PRE_REG_100US);
+    writel(0x176f, pdev->regs + XEC_LPM_PRE_REG_125US);
+    writel(0xbb7f, pdev->regs + XEC_LPM_PRE_REG_1MS);
+    writel(0x752ff, pdev->regs + XEC_LPM_PRE_REG_10MS);
+    writel(0x493dff, pdev->regs + XEC_LPM_PRE_REG_100MS);
+
+	return 0;
+}
+
 static struct cdns3_platform_data cdns_hailo_pdata = {
 	.xhci_init_quirk = cdns_hailo_xhci_init_quirk,
+	.gadget_init_quirk = cdns_hailo_gadget_init_quirk,
+	.quirks = 0,
 };
 
 static const struct of_dev_auxdata cdns_hailo_auxdata[] = {
@@ -238,6 +387,7 @@ static const struct of_dev_auxdata cdns_hailo_auxdata[] = {
 	},
 	{},
 };
+
 
 static int cdns_hailo_probe(struct platform_device *pdev)
 {
@@ -303,12 +453,30 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 
 	if (!data->core_clks)
 		return -ENOMEM;
+	
+	/* deassert USB out of reset */
+	data->usb_apb_rst = devm_reset_control_get(&pdev->dev, "usb_apb");
+	if (IS_ERR(data->usb_apb_rst)) {
+		dev_err(&pdev->dev, "Failed to get reset control on usb_apb\n");
+		return PTR_ERR(data->usb_apb_rst);
+	}
+	data->usb_rst = devm_reset_control_get(&pdev->dev, "usb");
+	if (IS_ERR(data->usb_rst)) {
+		dev_err(&pdev->dev, "Failed to get reset control on usb\n");
+		return PTR_ERR(data->usb_rst);
+	}
 
 	data->pclk = devm_clk_get(dev, "usb_pclk");
 	if (IS_ERR(data->pclk))
 		return PTR_ERR(data->pclk);
 
 	data->disconnected_overcurrent = of_property_read_bool(node, "disconnected-overcurrent");
+	data->no_usb2_phy_avdd_core_power = of_property_read_bool(node, "no-usb2-phy-avdd-core-power");
+	if (data->no_usb2_phy_avdd_core_power) {
+		dev_info(&pdev->dev, "Overriding VBUS validation since USB2 phy AVDD core power is not connected\n");
+		cdns_hailo_pdata.quirks |= CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD;
+	}
+	
 	// Iterate through the child nodes to find the cdns_usb3 node
 	data->dr_mode = USB_DR_MODE_UNKNOWN;
     for_each_child_of_node(node, child) {
@@ -341,9 +509,12 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 
+	/* Note: reset deassert order matters: 1-usb_apb, 2-usb !!! */
+	reset_control_deassert(data->usb_apb_rst);
 	ret = clk_prepare_enable(data->pclk);
 	if (ret)
 		return ret;
+	reset_control_deassert(data->usb_rst);
 
 	// note: must be called before the core clocks are enabled
 	cdns_hailo_init(data);
@@ -377,6 +548,8 @@ static int cdns_hailo_remove(struct platform_device *pdev)
 	of_platform_depopulate(dev);
 	clk_bulk_disable_unprepare(data->num_core_clks, data->core_clks);
 	clk_disable_unprepare(data->pclk);
+	reset_control_assert(data->usb_rst);
+	reset_control_assert(data->usb_apb_rst);
 	pm_runtime_put_sync(dev);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);
@@ -425,7 +598,7 @@ static struct platform_driver cdns_hailo_driver = {
 	.driver		= {
 		.name	= CDNS_HAILO_DRIVER_NAME,
 		.of_match_table	= cdns_hailo_of_match,
-		.pm	= &cdns_hailo_pm_ops,
+		// .pm	= &cdns_hailo_pm_ops, TODO: enable power management
 	},
 };
 module_platform_driver(cdns_hailo_driver);

@@ -529,4 +529,31 @@ config USB_RAW_GADGET
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module called "raw_gadget".
 
+config USB_HAILO_GADGET
+	tristate "Hailo AI Composite Gadget"
+	select USB_LIBCOMPOSITE
+	select USB_F_HAILO_RFS_LOAD
+	select USB_F_HAILO_SWU_LOAD
+	help
+	  The Hailo Gadget is a composite USB device with a single configuration for RFS loading.
+
+	  Configuration 1 (RFS Loading Mode):
+	  - Provides RFS (Root File System) loading functionality
+	  - Bulk OUT endpoint for RFS image upload (up to 256MB)
+	  - Interrupt IN endpoint for upload progress reports
+	  - RFS specific vendor control requests
+
+	  Configuration 2 (SW Update Mode):
+	  - Provides firmware/software update functionality
+	  - Bulk OUT endpoint for firmware upload (up to 256MB)
+	  - Interrupt IN endpoint for upload progress reports
+	  - SW update specific vendor control requests
+
+	  Each configuration uses separate function drivers (f_hailo_rfs_load, f_hailo_swu_load)
+	  with dedicated USB descriptors, ensuring proper separation of concerns
+	  and mode-specific behavior.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_hailo".
+
 endmenu

@@ -117,7 +117,7 @@ static const struct v4l2_ctrl_ops hailo15_isp_cproc_ctrl_ops = {
 	.g_volatile_ctrl = hailo15_isp_cproc_g_ctrl,
 };
 
-const struct v4l2_ctrl_config hailo15_isp_cproc_ctrls[] = {
+static const struct v4l2_ctrl_config hailo15_isp_cproc_ctrls[] = {
 	{
 		.ops = &hailo15_isp_cproc_ctrl_ops,
 		.id = HAILO15_ISP_CID_CPROC_ENABLE,

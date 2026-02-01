@@ -12,7 +12,7 @@
 };
 
 &pvt_ts_0_trip_point_0 {
-    temperature = <95000>;
+    temperature = <80000>;
     hysteresis = <4999>;
 };
 &pvt_ts_0_trip_point_1 {
@@ -36,7 +36,7 @@
 };
 
 &pvt_ts_1_trip_point_0 {
-    temperature = <95000>;
+    temperature = <80000>;
     hysteresis = <4999>;
 };
 &pvt_ts_1_trip_point_1 {

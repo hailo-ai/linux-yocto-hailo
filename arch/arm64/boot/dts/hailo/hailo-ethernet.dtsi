@@ -22,4 +22,6 @@
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_ETHERNET_PCLK>, <&scmi_clk HAILO15_SCMI_CLOCK_IDX_ETHERNET_ACLK>;
         clock-names = "pclk", "hclk";
         phy-mode = "rgmii-id";
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_ETHERNET>;
+        reset-names = "ethernet-rst";
     };

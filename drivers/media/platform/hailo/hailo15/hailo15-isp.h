@@ -14,7 +14,7 @@
 #include <linux/delay.h>
 #include <linux/wait.h>
 #include "hailo15-events.h"
-#include "hailo15-isp-hw.h"
+#include "hailo15-isp-hw-defs.h"
 #include "common.h"
 #include "fe/fe_dev.h"
 
@@ -25,7 +25,7 @@
 
 #define HAILO15_ISP_CHN_MAX 2 // S0/S1 - also called "port" in isp_mcm_buf
 #define HAILO15_ISP_PATHS_MAX 2 // MP/SP
-#define HAILO15_ISP_RAW_BUFS_NUM 6 /* number of buffers for raw frames from sensor 0 */
+#define HAILO15_ISP_RAW_BUFS_NUM 3 /* number of buffers for raw frames from sensors */
 #define FRAME_TIMEOUT_MS 1100
 #define HAILO15_ISP_IRQ_EVENTS_COUNT 2
 
@@ -49,6 +49,7 @@ enum hailo15_source_pads {
 	HAILO15_ISP_SOURCE_PAD_MP_S1,
 	HAILO15_ISP_SINK_PAD_MCM_IN,
 	HAILO15_ISP_SOURCE_PAD_SP_S1,
+	HAILO15_ISP_SOURCE_PAD_MCM_RAW_WR,
 	HAILO15_ISP_SOURCE_PAD_MAX,
 };
 
@@ -57,6 +58,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_SINK_PAD(int grp_id)
 	switch (grp_id) {
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
+	case HAILO15_VID_GRP_MCM_RAW_WR:
 		return HAILO15_ISP_SINK_PAD_S0;
 	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
@@ -70,6 +72,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_SOURCE_PAD(int grp_id)
 {
 	switch (grp_id) {
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
+	case HAILO15_VID_GRP_MCM_RAW_WR:
 		return HAILO15_ISP_SOURCE_PAD_MP_S0;
 	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
 		return HAILO15_ISP_SOURCE_PAD_SP_S0;
@@ -79,6 +82,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_SOURCE_PAD(int grp_id)
 		return HAILO15_ISP_SOURCE_PAD_SP_S1;
 	case HAILO15_VID_GRP_MCM_IN:
 		return HAILO15_ISP_SINK_PAD_MCM_IN;
+		// return HAILO15_ISP_SOURCE_PAD_MCM_RAW_WR;
 	default:
 		return -1;
 	}
@@ -89,6 +93,7 @@ static inline int HAILO15_ISP_SOURCE_PAD_TO_ISP_SINK_PAD(int src_pad)
 	switch (src_pad) {
 	case HAILO15_ISP_SOURCE_PAD_MP_S0:
 	case HAILO15_ISP_SOURCE_PAD_SP_S0:
+	case HAILO15_ISP_SOURCE_PAD_MCM_RAW_WR:
 		return HAILO15_ISP_SINK_PAD_S0;
 	case HAILO15_ISP_SOURCE_PAD_MP_S1:
 	case HAILO15_ISP_SOURCE_PAD_SP_S1:
@@ -210,6 +215,12 @@ struct hailo15_irq_deffered_work {
 	uint32_t irq_status;
 };
 
+struct hailo15_mcm_raw_wr_buffer_done_work {
+	struct work_struct work;
+	struct hailo15_isp_device *isp_dev;
+	int grp_id;
+};
+
 struct hailo15_isp_device {
 	struct device *dev;
 	struct v4l2_subdev sd;
@@ -244,8 +255,6 @@ struct hailo15_isp_device {
 	int is_ip_clk_enabled;
 	int is_p_clk_enabled;
 	int mi_stopped[ISP_MAX_PATH];
-	dma_addr_t fbuf_phys;
-	void *fbuf_vaddr;
 	void *private_data[HAILO15_VID_GRP_SX_MAX];
 	int current_vsm_index[HAILO15_VID_GRP_SX_MAX];
 	struct hailo15_vsm current_vsm;
@@ -261,6 +270,8 @@ struct hailo15_isp_device {
 	int mcm_mode;
 	struct v4l2_subdev_format input_fmt[HAILO15_ISP_SINK_PAD_MAX];
 	struct list_head mcm_queue;
+	struct list_head mcm_raw_wr_queue;
+	struct mutex mcm_raw_wr_lock;
 	struct list_head raw0_full_queue;
 	struct list_head raw0_empty_queue;
 	struct list_head raw1_full_queue;
@@ -296,10 +307,15 @@ struct hailo15_isp_device {
 	atomic_t frame_received[HAILO15_ISP_SINK_PAD_MAX];
 	atomic_t streaming_started[HAILO15_ISP_SINK_PAD_MAX];
 	atomic_t first_rdma_done;
+	atomic_t full_queue_count[HAILO15_ISP_SINK_PAD_MAX]; /* count of buffers in each sensor's full queue */
 	bool tuning_state;
 	bool hdr_enabled;
 	wait_queue_head_t buf_done_wait_q;
 	atomic_t buf_done_ready;
+
+	struct hailo15_reqbufs prev_reqbufs;
+	enum isp_mcm_mode mcm_mode_priming;
+	enum fast_toggle_state fast_toggle_state;
 };
 
 
@@ -307,10 +323,9 @@ void hailo15_isp_private_entity_init(struct hailo15_isp_device *isp_dev);
 void hailo15_isp_pad_handle_init(struct hailo15_isp_device *isp_dev);
 int isp_hal_set_pad_stream(struct hailo15_isp_device *isp_dev,
 			   uint32_t pad_index, int status);
-void hailo15_isp_buffer_done(struct hailo15_isp_device *, int path);
+void hailo15_isp_buffer_done(struct hailo15_isp_device *, int grp_id);
 void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev);
 int hailo15_isp_is_path_enabled(struct hailo15_isp_device *, int);
-int hailo15_isp_dma_set_enable(struct hailo15_isp_device *, int, int);
 void hailo15_isp_reset_hw(struct hailo15_isp_device*);
 int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,
 				     int pad,
@@ -319,6 +334,7 @@ int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev, int 
 int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int pad);
 int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 				      int pad, uint32_t num_buffers);
+int hailo15_isp_post_event_fast_toggle(struct hailo15_isp_device *isp_dev, int pad);
 int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status);
 int hailo15_isp_s_ctrl_event(struct hailo15_isp_device *isp_dev, int pad,
 			     struct v4l2_ctrl *ctrl);
@@ -331,15 +347,4 @@ void mcm_fe_irq_tasklet(unsigned long);
 void hailo15_isp_handle_frame_rx(struct work_struct*);
 void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work);
 
-/* New struct-based register operation functions */
-uint32_t hailo15_isp_read_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op);
-void hailo15_isp_write_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op);
-
-/* Convenience functions for register operations with specific vdid */
-void hailo15_isp_write_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg, uint32_t val, int vdid);
-uint32_t hailo15_isp_read_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg, int vdid);
-
-/* Legacy register functions (for compatibility) */
-uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg);
-void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg, uint32_t val);
 #endif

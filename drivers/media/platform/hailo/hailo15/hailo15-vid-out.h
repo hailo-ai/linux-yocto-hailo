@@ -28,7 +28,6 @@ struct hailo15_video_out_node {
 	int id;
 	struct video_device *video_dev;
 	struct v4l2_device *v4l2_dev;
-	struct v4l2_async_subdev *asd;
 	struct v4l2_subdev *direct_sd;
 	struct media_device *mdev;
 	struct v4l2_ctrl *ctrl;
@@ -50,6 +49,7 @@ struct hailo15_video_out_node {
 	int streaming;
 	int path;
 	int sequence;
+	int reqbufs; 
 };
 
 struct hailo15_vid_out_device {

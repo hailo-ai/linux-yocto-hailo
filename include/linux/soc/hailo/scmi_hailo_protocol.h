@@ -51,7 +51,9 @@
 enum scmi_hailo_notification_id {
     SCMI_HAILO_NOC_MEASUREMENT_TRIGGER_NOTIFICATION_ID = 0,
     SCMI_HAILO_NOC_MEASUREMENT_ENDED_NOTIFICATION_ID = 1,
-    SCMI_HAILO_NOTIFICATION_COUNT = 2
+    SCMI_HAILO_RT_GENERIC_NOTIFICATION_ID = 2,
+    SCMI_HAILO_CRC_ERROR_NOTIFICATION_ID = 3,
+    SCMI_HAILO_NOTIFICATION_COUNT = 4
 };
 
 /*********************************************
@@ -242,6 +244,24 @@ struct scmi_hailo_noc_measurement_ended_notification {
     uint16_t sample_end_index;
 } __packed;
 
+/**************************************************
+ * Hailo-RT generic notification definitions *
+ **************************************************/
+
+struct scmi_hailo_rt_generic_notification {
+    uint16_t message_id;
+    uint16_t arg;
+} __packed;
+
+/**************************************************
+ * CRC-error notification definitions *
+ **************************************************/
+
+struct scmi_hailo_crc_error_notification {
+    uint16_t csm_unit_idx;
+    uint16_t csm_channel_idx;
+} __packed;
+
 /****************************************************
  * SCMI-Hailo boot success indication component IDs *
  ****************************************************/
@@ -370,22 +390,12 @@ struct scmi_hailo_get_source_clock_p2a {
 } __packed;
 
 /***********************************************
- * - Get SKU ids: SoC and board                *
+ * - Get SKU ids: product and board                *
  ***********************************************/
 
-enum hailo_scmi_soc_id {
-    HAILO_SCMI_SOC_ID__INVALID,
-    HAILO_SCMI_SOC_ID__15H,
-    HAILO_SCMI_SOC_ID__15M,
-    HAILO_SCMI_SOC_ID__15L,
-    HAILO_SCMI_SOC_ID__15U,
-    HAILO_SCMI_SOC_ID__10H,
-    HAILO_SCMI_SOC_ID__12L,
-};
-
 struct scmi_hailo_get_sku_id_p2a {
-    uint32_t soc; /* 16-bit value */
-    uint32_t board; /* 16-bit value - Currently valid only for HAILO_SCMI_SOC_ID__10H */
+    uint32_t product; /* 16-bit value */
+    uint32_t board; /* 16-bit value - Currently valid only for HAILO_SCMI_PRODUCT_ID__10H */
 } __packed;
 
 #endif /* SCMI_HAILO_PROTOCOL_H */

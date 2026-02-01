@@ -1268,6 +1268,8 @@ struct macb {
 	struct clk		*rx_clk;
 	struct clk		*tsu_clk;
 	struct net_device	*dev;
+	/* Protects hw_stats and ethtool_stats */
+	spinlock_t		stats_lock;
 	union {
 		struct macb_stats	macb;
 		struct gem_stats	gem;
@@ -1313,6 +1315,7 @@ struct macb {
 	unsigned int max_tuples;
 
 	struct tasklet_struct	hresp_err_tasklet;
+	struct work_struct	hard_reset_work;
 
 	int	rx_bd_rd_prefetch;
 	int	tx_bd_rd_prefetch;
@@ -1325,6 +1328,9 @@ struct macb {
 	bool allocate_segments_equally;
 	bool force_pm_runtime_disable;
 	int duplex;
+
+	struct reset_control *reset;
+	atomic_t hard_reset_in_progress;
 };
 
 #ifdef CONFIG_MACB_USE_HWSTAMP

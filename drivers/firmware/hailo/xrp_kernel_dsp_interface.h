@@ -32,18 +32,15 @@
 #define _XRP_KERNEL_DSP_INTERFACE_H
 
 #ifndef __KERNEL__
+#include <assert.h>
 #include <stdint.h>
 #else
 #include <linux/types.h>
 #endif
 
-#ifndef XRP_DSP_COMM_BASE_MAGIC
-#define XRP_DSP_COMM_BASE_MAGIC		0x20161006
-#endif
-
 #define DSP_FASTBUS_MEM_MAPPED (0x88000000)
-#define DSP_CONFIG_MAPPED      (0xB8000000)
-#define DSP_MAILBOX_MAPPED     (0xF0000000)
+#define DSP_CONFIG_MAPPED (0xB8000000)
+#define DSP_MAILBOX_MAPPED (0xF0000000)
 
 enum {
     XRP_DSP_SYNC_IDLE = 0,
@@ -70,7 +67,6 @@ struct xrp_dsp_tlv {
 };
 
 typedef struct {
-
 } xrp_hailo_sync_data_t;
 
 struct xrp_dsp_sync_v1 {
@@ -132,5 +128,7 @@ struct xrp_dsp_cmd {
     };
     uint8_t nsid[XRP_DSP_CMD_NAMESPACE_ID_SIZE];
 };
+
+static_assert(sizeof(struct xrp_dsp_cmd) <= XRP_DSP_CMD_STRIDE, "struct xrp_dsp_cmd too large");
 
 #endif

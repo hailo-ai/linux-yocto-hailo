@@ -1,0 +1,113 @@
+    i2s_hailo: hailo-audio@10d800 {
+        status = "disabled";
+        compatible = "hailo,designware-i2s";
+        reg = <0x0 0x10d800 0x0 0x400>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        i2s_0_cpu: audio-controller-0@10d000 {
+            status = "disabled";
+            compatible = "hailo,hailo-designware-i2s-scu-dma";
+            reg = <0x0 0x10d000 0x0 0x400>;
+            shmem = <&cpu_scp_i2s_dma_shmem>;
+            #sound-dai-cells = <0>;
+            interrupts = <GIC_SPI HW_INTERRUPTS__I2S0_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupt-names = "i2s_0_irq";
+            /* Possible audio-controller configuration to override into you specific board DTS.
+             * - Master:
+             *   - set one of the following:
+             *     - HAILO_I2S_CTRL_CFG(0, XTAL);
+             *     - HAILO_I2S_CTRL_CFG(0, PCLK);
+             *     - HAILO_I2S_CTRL_CFG(0, FAST_ACLK);
+             *     - HAILO_I2S_CTRL_CFG(0, EXTERNAL_MCLK, <OSC Hz>); - E.g: OSC Hz: 12288000
+             * - Slave:
+             *   - set: HAILO_I2S_CTRL_CFG(0, SLAVE_CLK); - default
+             */
+            HAILO_I2S_CTRL_CFG(0, SLAVE_CLK);
+            ctrl-id = <0>;
+        };
+
+        i2s_1_cpu: audio-controller-1@10d400 {
+            status = "disabled";
+            compatible = "snps,designware-i2s";
+            reg = <0x0 0x10d400 0x0 0x400>;
+            #sound-dai-cells = <0>;
+            interrupts = <GIC_SPI HW_INTERRUPTS__I2S1_IRQ IRQ_TYPE_LEVEL_HIGH>;
+            interrupt-names = "i2s_1_irq";
+            /* Possible audio-controller configuration to override into you specific board DTS.
+             * - Master:
+             *   - set one of the following:
+             *     - HAILO_I2S_CTRL_CFG(1, XTAL);
+             *     - HAILO_I2S_CTRL_CFG(1, PCLK);
+             *     - HAILO_I2S_CTRL_CFG(1, FAST_ACLK);
+             *     - HAILO_I2S_CTRL_CFG(1, EXTERNAL_MCLK, <OSC Hz>); - E.g: OSC Hz: 12288000
+             * - Slave:
+             *   - set: HAILO_I2S_CTRL_CFG(1, SLAVE_CLK); - default
+             */
+            HAILO_I2S_CTRL_CFG(1, SLAVE_CLK);
+            ctrl-id = <1>;
+        };
+    };
+
+    audio_card_0: audio-card-0 {
+        status = "disabled";
+        compatible = "simple-audio-card";
+        /* Possible audio-card configuration to override into you specific board DTS.
+         * If using I2S Controller mode as:
+         * - Masrer: set SIMPLE_AUDIO_CARD_CFG(0, MASTER);
+         * - Slave: set SIMPLE_AUDIO_CARD_CFG(0, SLAVE);
+         */
+        SIMPLE_AUDIO_CARD_CFG(0, SLAVE);
+        simple-audio-card,format = "i2s";
+
+        cpu_dai_0: simple-audio-card,cpu {
+            sound-dai = <&i2s_0_cpu>;
+            /* Possible CPU DAI configuration to override into you specific board DTS.
+             * If using I2S Controller mode as:
+             * - Maser: set CPU_DAI_CFG(0, MASTER);
+             * - Slave: set CPU_DAI_CFG(0, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
+             */
+            CPU_DAI_CFG(0, SLAVE, 12288000);
+        };
+        codec_dai_0: simple-audio-card,codec {
+            // sound-dai = <&codec_0_tlv320aic3104>;
+            /* Possible CODEC DAI configuration to override into you specific board DTS.
+             * If using I2S Controller mode as:
+             * - Master: set CODEC_DAI_CFG(0, MASTER);
+             * - Slave: set: CODEC_DAI_CFG(0, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
+             */
+            CODEC_DAI_CFG(0, SLAVE, 12288000);
+        };
+    };
+
+    audio_card_1: audio-card-1 {
+        status = "disabled";
+        compatible = "simple-audio-card";
+        /* Possible audio-card configuration to override into you specific board DTS.
+         * If using I2S Controller mode as:
+         * - Masrer: set SIMPLE_AUDIO_CARD_CFG(1, MASTER);
+         * - Slave: set SIMPLE_AUDIO_CARD_CFG(1, SLAVE);
+         */
+        SIMPLE_AUDIO_CARD_CFG(1, SLAVE);
+        simple-audio-card,format = "i2s";
+
+        cpu_dai_1: simple-audio-card,cpu {
+            sound-dai = <&i2s_1_cpu>;
+            /* Possible CPU DAI configuration to override into you specific board DTS.
+             * If using I2S Controller mode as:
+             * - Maser: set CPU_DAI_CFG(1, MASTER);
+             * - Slave: set CPU_DAI_CFG(1, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
+             */
+            CPU_DAI_CFG(1, SLAVE, 12288000);
+        };
+        codec_dai_1: simple-audio-card,codec {
+            // sound-dai = <&codec_1_tlv320aic3104>;
+            /* Possible CODEC DAI configuration to override into you specific board DTS.
+             * If using I2S Controller mode as:
+             * - Master: set CODEC_DAI_CFG(1, MASTER);
+             * - Slave: set: CODEC_DAI_CFG(1, SLAVE, <OSC Hz>); // OSC Hz is the external oscillator frequency E.g.: 12288000
+             */
+            CODEC_DAI_CFG(1, SLAVE, 12288000);
+        };
+    };

@@ -1254,6 +1254,18 @@ config REGULATOR_TPS62360
 	  high-frequency synchronous step down dc-dc converter optimized
 	  for battery-powered portable applications.
 
+config REGULATOR_TPS6286X
+    tristate "TI TPS6286x Power Regulator"
+    depends on I2C
+    select REGMAP_I2C
+    help
+      This driver supports TPS6286x voltage regulator chips. These are
+      high-efficiency, synchronous step-down DC-DC converters with an
+      I2C interface. The TPS6286x family includes TPS62864, TPS62866,
+      TPS62868, and TPS62869 variants.
+
+      If built as a module it will be called tps6286x-regulator.
+
 config REGULATOR_TPS6287X
 	tristate "TI TPS6287x Power Regulator"
 	depends on I2C && OF

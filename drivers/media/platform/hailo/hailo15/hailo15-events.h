@@ -54,6 +54,8 @@ enum HAILO15_isp_private_event_id {
 	HAILO15_DAEMON_ISP_EVENT_STREAMOFF,
 	HAILO15_DAEMON_ISP_EVENT_S_CTRL,
 	HAILO15_DAEMON_ISP_EVENT_G_CTRL,
+	HAILO15_DAEMON_ISP_EVENT_S_SELECTION,
+	HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE,
 	HAILO15_DAEMON_ISP_EVENT_MAX,
 };
 
@@ -97,7 +99,7 @@ struct hailo15_video_caps_enummode {
 struct hailo15_isp_ctrl {
 	uint32_t cid;
 	uint32_t size;
-	char data[0];
+	char data[];
 };
 
 

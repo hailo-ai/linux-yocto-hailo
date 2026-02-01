@@ -1340,6 +1340,39 @@ source "usr/Kconfig"
 
 endif
 
+config WAIT_INITRD_IMAGE
+	bool "Wait for /initrd.image to be available during boot"
+	depends on BLK_DEV_INITRD
+	default n
+	help
+	  Enable support for deferring initrd mounting until /initrd.image becomes available.
+	  This allows the kernel to wait for an RFS image to be provided by various sources
+	  (e.g., USB gadget functions, network uploads, etc.) before proceeding with boot.
+
+	  The kernel will wait up to 5 minutes for /initrd.image to become available.
+	  Once /initrd.image is available it uses standard initrd mechanism into /dev/ram0.
+
+	  To use this feature, pass "wait_initrd_image" as a kernel parameter.
+	  DTS chosen node example:
+		chosen {
+			bootargs = "console=ttyS1,115200n8 quiet loglevel=3 rootwait wait_initrd_image root=/dev/ram0 ramdisk_size=0x10000000";
+			linux,initrd-start = <0x90000000>;
+			linux,initrd-end = <0xA0000000>;
+		};
+
+	  If unsure, say N.
+
+config WAIT_INITRD_IMAGE_TIMEOUT
+	int "Timeout for waiting for /initrd.image become available (seconds)"
+	depends on WAIT_INITRD_IMAGE
+	default 300
+	range 1 300
+	help
+	  Maximum time to wait for an /initrd.image to become available
+	  before giving up and continuing with normal boot process.
+
+	  Default is 300 seconds. Valid range is 1-300 seconds.
+
 config BOOT_CONFIG
 	bool "Boot config support"
 	select BLK_DEV_INITRD

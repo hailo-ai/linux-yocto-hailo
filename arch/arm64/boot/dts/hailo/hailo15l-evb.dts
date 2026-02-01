@@ -6,17 +6,214 @@
 /dts-v1/;
 #include "hailo15l-base.dtsi"
 
+/ {
+    model = "Hailo - Hailo15l EVB VPU Development Board";
+};
+
 &i2c_0 {
     status = "okay";
-/*    pinctrl-names = "default";    */
-/*    pinctrl-0 = <&pinctrl_i2c0_scl>, <&pinctrl_i2c0_sda>;   */     /* these are non-muxable pins */
+    i2c-sda-falling-time-ns = <1000>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c0_scl>, <&pinctrl_i2c0_sda>;
+
+        sensor_0: camera-sensor@1a {
+        status = "ok";
+        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
+        reg = <0x1a>;
+        clocks = <&sensor_clk>;
+        clock-names = "inclk";
+        clock-frequency = <24000000>;
+        csi-id = <0>;
+        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+        port {
+            sensor_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+		        link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
+            };
+        };
+     };
 };
 
 &i2c_1 {
     status = "okay";
-/*    pinctrl-names = "default";    */
-/*    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;   */     /* these are non-muxable pins */
-/* Todo - add 4 INA's, IV&P sensor, temp sensor, M.2 Ekey, Audio codec, clock buffer, DSI, DCDC, Gyro */
+    i2c-sda-falling-time-ns = <1000>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;    
+/* Todo -  IV&P sensor, M.2 Ekey, Audio codec, clock buffer, DCDC, Gyro */
+//    codec_tlv320aic3104: tlv320aic3104@18 {
+//        #sound-dai-cells = <0>;
+//        compatible = "ti,tlv320aic3104";
+//        reg = <0x18>;
+//        /* @note, If using I2S Controller mode as:
+//         * - Master: set: ai3x-source-clk = "bclk";
+//         * - Slave: set: ai3x-source-clk = "mclk";
+//         */
+//
+//        ai3x-source-clk = "bclk";
+//        ai3x-micbias-vg = <2>;
+//		/* Regulators */
+//		AVDD-supply = <&regulator_3p3v>;
+//		IOVDD-supply = <&regulator_1p8v>;
+//		DRVDD-supply = <&regulator_3p3v>;
+//		DVDD-supply = <&regulator_1p8v>;
+//    };
+    ina231_INA_USB_AVDD_IO_HV: INA_USB_AVDD_IO_HV@40 {
+        compatible = "ti,ina231_precise";
+        reg = <0x40>;
+        shunt-resistor = <100000>;
+        max-current = <55>;
+    };
+    ina231_INA_MPP_AVDD_H: INA_MPP_AVDD_H@41 {
+        compatible = "ti,ina231_precise";
+        reg = <0x41>;
+        shunt-resistor = <100000>;
+        max-current = <11>;
+    };  
+    ina231_INA_DDR_VDDQX: INA_DDR_VDDQX@42 {
+        compatible = "ti,ina231_precise";
+        reg = <0x42>;
+        shunt-resistor = <50000>;
+        max-current = <330>;
+    };  
+    ina231_INA_ALL_PLLS_VDDA: INA_ALL_PLLS_VDDA@43 {
+        compatible = "ti,ina231_precise";
+        reg = <0x43>;
+        shunt-resistor = <100000>;
+        max-current = <16>;
+    };
+    ina231_INA_CSI_AVDDH: INA_CSI_AVDDH@44 {
+        compatible = "ti,ina231_precise";
+        reg = <0x44>;
+        shunt-resistor = <100000>;
+        max-current = <71>;
+    };
+    ina231_INA_DDR_VDD_H: INA_DDR_VDD_H@46 {
+        compatible = "ti,ina231_precise";
+        reg = <0x46>;
+        shunt-resistor = <100000>;
+        max-current = <110>;
+    };
+    ina231_INA_DDR_VDD: INA_DDR_VDD@47 {
+        compatible = "ti,ina231_precise";
+        reg = <0x47>;
+        shunt-resistor = <50000>;
+        max-current = <1600>;
+    };
+    ina231_INA_DDR_VDDQ: INA_DDR_VDDQ@48 {
+        compatible = "ti,ina231_precise";
+        reg = <0x48>;
+        shunt-resistor = <10000>;
+        //max-current = <0>;
+        max-current = <300>;
+    };
+    ina231_INA_5V_AUX: INA_5V_AUX@49 {
+        compatible = "ti,ina231_precise";
+        reg = <0x49>;
+        shunt-resistor = <1000>;
+        max-current = <3850>;
+    };
+    ina231_INA_5V_H_IN: INA_5V_H_IN@4A {
+        compatible = "ti,ina231_precise";
+        reg = <0x4A>;
+        shunt-resistor = <1000>;
+        max-current = <2970>;
+    };
+    ina231_INA_VDDQ_MEM: INA_VDDQ_MEM@4B {
+        compatible = "ti,ina231_precise";
+        reg = <0x4B>;
+        shunt-resistor = <50000>;
+        max-current = <138>;
+    };
+    ina231_INA_VDD2_MEM: INA_VDD2_MEM@4C {
+        compatible = "ti,ina231_precise";
+        reg = <0x4C>;
+        shunt-resistor = <10000>;
+        max-current = <440>;
+    };
+    ina231_INA_VDDIO: INA_VDDIO@4D {
+        compatible = "ti,ina231_precise";
+        reg = <0x4D>;
+        shunt-resistor = <100000>;
+        max-current = <154>;
+    };
+    ina231_INA_VDD_TOP: INA_VDD_TOP@4E {
+        compatible = "ti,ina231_precise";
+        reg = <0x4E>;
+        shunt-resistor = <1000>;
+        max-current = <11000>;
+    };
+    ina231_INA_VDCDC_08V_R: INA_VDCDC_08V_R@4F {
+        compatible = "ti,ina231_precise";
+        reg = <0x4F>;
+        shunt-resistor = <50000>;
+        max-current = <280>;
+    };
+    
+    lcd@45 {
+        status = "okay";
+        compatible = "raspberrypi,7inch-touchscreen-panel";
+        reg = <0x45>;
+        port {
+            panel_in: endpoint {
+                remote-endpoint = <&dsi0_out>;
+                };
+        };
+    };
+
+    GPIOS_IO_expender: tca9535@22 {
+        compatible = "ti,tca9539";
+        reg = <0x22>;
+        gpio-controller;
+        #gpio-cells = <2>; // For GPIO number and flags
+
+        gpio-line-names =
+            "CSI_AVDDH_ALRT", "VDDIO_ALRT", "VDD_TOP_ALRT_D", "POWER_INT3",
+            "0V8_ALRT", "DDR_VDDQ_ALRT", "ALL_PLLS_VDDA_ALRT", "DDR_VDD_H_ALRT",
+            "DDR_VDD_ALRT", "DDR_VDDQX_ALRT", "USB_AVDD_IO_HV_ALRT", "POWER_INT11",
+            "5V_H_IN_ALRT_D", "5V_AUX_ALRT", "PG_M2_M", "MPP_AVDD_H_ALRT";
+    };
+
+    leds_IO_expender: tca9535@23 {
+        compatible = "ti,tca9539";
+        reg = <0x23>;
+        gpio-controller;
+        #gpio-cells = <2>; // For GPIO number and flags
+        
+        gpio-line-names =
+              "DDR_DATA_RET_3V3", "D7_RED", "D9_GREEN", "D11_GREEN",
+              "D14_GREEN", "D6_GREEN", "D23_GREEN", "D22_GREEN",
+              "D21_GREEN", "D20_RED", "D19_GREEN", "D17_RED",
+              "D15_GREEN", "D10_RED", "D8_GREEN", "D6_RED";
+    };
+};
+
+
+&i2c_2 {
+    status = "ok";
+    clock-frequency = <400000>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_gpio_16>, <&pinctrl_gpio_17>;
+    i2c-sda-falling-time-ns = <190>;
+
+//    codec_tlv320aic3104: tlv320aic3104@18 {
+//        #sound-dai-cells = <0>;
+//        compatible = "ti,tlv320aic3104";
+//        reg = <0x18>;
+//        /* @note, If using I2S Controller mode as:
+//         * - Master: set: ai3x-source-clk = "bclk";
+//         * - Slave: set: ai3x-source-clk = "mclk";
+//         */
+//
+//        ai3x-source-clk = "bclk";
+//        ai3x-micbias-vg = <2>;
+//		/* Regulators */
+//		AVDD-supply = <&regulator_3p3v>;
+//		IOVDD-supply = <&regulator_1p8v>;
+//		DRVDD-supply = <&regulator_3p3v>;
+//		DVDD-supply = <&regulator_1p8v>;
+//    };
+
 };
 
 &serial0 {
@@ -57,6 +254,7 @@
 
 &sdio0 {
     status = "okay";
+    non-removable;
     sdhci-caps = <0 0x01000000>; // Force VOLT33 capability
     bus-width = <4>;    
     phy-config {
@@ -72,7 +270,6 @@
 
 &sdio1 {
     status = "okay";
-    non-removable;   
     phy-config {
             card-is-emmc = <0x1>;
             cmd-pad-values = <0x2 0x2 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
@@ -92,11 +289,150 @@
     pinctrl-0 = <&pinctrl_gpio_31>;
 };
 
+&spi_0 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_gpio_20>,
+                <&pinctrl_gpio_21>,
+                <&pinctrl_gpio_24>,
+                <&pinctrl_gpio_25>,
+                <&pinctrl_gpio_26>;
+    spi@0 {
+        compatible = "spidev";
+        reg = <0>;
+        spi-max-frequency = <100000>;
+    };
+};
+
+&csi2rx0 {
+    status = "ok";
+    ports {
+        port@0 {
+            csi2rx_in_sensor: endpoint {
+                remote-endpoint = <&sensor_out_csi2rx>;
+            };
+        };
+    };
+};
+
+&vision_subsys {
+    status = "okay";
+};
+
+&hailo_vid_cap {
+    status = "ok";
+};
+
+&hailo_isp {
+    status = "ok";
+};
+
+&hailo_pixel_mux {
+    status = "ok";
+};
+
+&rxwrapper0 {
+    status = "ok";
+};
+
+/ {
+    sensor_clk: sensor_clk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+};
+
+&hailo_vc8000e {
+    status = "ok";
+};
+
+&dphy0 {
+    status = "okay";
+};
+
+&dpi0 {
+    status = "okay";
+};
+
+&dsi0 {
+    status = "okay";
+    ports {
+        port@0 {
+            reg = <0>;
+            dsi0_out: endpoint {
+                remote-endpoint = <&panel_in>;
+            };
+        };
+    };
+};
+
+&hailo_torrent_phy {
+    status = "okay";
+    compatible = "hailo15l,torrent-phy";
+    usb-lane = <1>;
+    usb-lane-pma-pll-full-rate-divider = <PCI_PMA_PLL_FULL_RATE_CLK_DIVIDER_4>;
+    lanes-config = <PCI_PHY_LINK_LANES_CFG__2x1_PLUS_1x2__MASTER_LANES_LN0_LN1_LN2>;
+};
+
+&cdns_torrent_phy {
+    torrent_phy_pcie: phy@0 {
+        reg = <0>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_0>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_PCIE>;
+        cdns,num-lanes = <1>;
+    };
+    torrent_phy_usb3: phy@1 {
+        reg = <1>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_1>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_USB3>;
+        cdns,num-lanes = <1>;
+        cdns,ssc-mode = <TORRENT_SERDES_NO_SSC>;
+    };
+};
+
+&hailo_usb3 {
+    status = "okay";
+};
+
+&cdns_usb3 {
+    dr_mode = "host";
+    phys = <&torrent_phy_usb3>;
+    phy-names = "cdns3,usb3-phy";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_gpio_1>, <&pinctrl_usb_drive_vbus>;
+};
+
 &pinctrl {
-    /* IO_PAD_0  - I2C0_SCL - non-muxable */
-    /* IO_PAD_1  - I2C0_SDA - non-muxable */
-    /* IO_PAD_2  - I2C1_SCL - non-muxable */
-    /* IO_PAD_3  - I2C1_SDA - non-muxable */
+ /* IO_PAD_0 */
+    pinctrl_i2c0_scl: i2c0_scl {
+        function = "i2c0_scl";
+        groups = "i2c0_scl_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_1 */
+    pinctrl_i2c0_sda: i2c0_sda {
+        function = "i2c0_sda";
+        groups = "i2c0_sda_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_2 */
+    pinctrl_i2c1_scl: i2c1_scl {
+        function = "i2c1_scl";
+        groups = "i2c1_scl_0_grp";
+        drive-strength = <8>;
+    };
+
+    /* IO_PAD_3 */
+    pinctrl_i2c1_sda: i2c1_sda {
+        function = "i2c1_sda";
+        groups = "i2c1_sda_0_grp";
+        drive-strength = <8>;
+    };
 
     /* IO_PAD_4 */
     pinctrl_uart0_rxd: uart0_rxd {
@@ -628,7 +964,7 @@
 #define GPIO_LINE_NAMES \
     "",                         "",                     "",                         "", \
     "gpio_4 - dsi_interrupt",   "",                     "",                         "", \
-    "gpio_8 - sensor1_reset",   "gpio_9 - sensor0 reset","gpio_10 - uart_wake_n",    "gpio_11 - shutdown", \
+    "gpio_8 - sensor1_reset",   "gpio_9 - sensor0_reset","gpio_10 - uart_wake_n",    "gpio_11 - shutdown", \
     "",                         "",                     "",                         "", \
     \
     "",                         "",                     "",                         "", \

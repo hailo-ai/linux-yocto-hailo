@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: GPL-2.0
+# Generic Memory Tracker Framework
+
+config CMA_TRACKER
+	bool "CMA allocation tracker"
+	depends on CMA
+	default y
+	help
+	  Generic memory tracker framework with CMA implementation.
+	  
+	  Tracks all CMA allocations system-wide with detailed process 
+	  context and kernel call stacks. Provides debugfs interface at 
+	  /sys/kernel/debug/mem_trackers/cma/ for monitoring CMA usage,
+	  detecting memory leaks, and identifying allocation sources.
+
+if CMA_TRACKER
+	config CMA_TRACKER_PERFORMANCE_MEASUREMENT
+		bool "CMA tracker performance measurement"
+		default n
+		help
+		Enable performance overhead measurement for CMA tracker operations.
+		
+		When enabled, the CMA tracker measures and reports the overhead
+		time added by tracking operations. This information is displayed
+		in the summary output. This option adds some overhead itself and
+		should only be enabled for performance analysis purposes.
+
+	choice
+		prompt "CMA tracker heap stats used pages calculation mode"
+		default CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED
+		help
+		  Select how the CMA tracker calculates used pages in heap statistics.
+
+		  The used pages count is needed to calculate free pages and usage
+		  percentage. This can be done in three ways:
+		  - Disabled: Do not calculate used/free pages.
+		  - Full: Always scan the bitmap.
+		  - Cached: Use incremental cache.
+
+	# NOTICE: These 'config' lines must be aligned with 'choice', NOT inside 'help'
+	config CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_DISABLED
+		bool "Disabled"
+		help
+		  Do not calculate used/free pages. Fastest option.
+
+	config CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_FULL
+		bool "Full bitmap scan"
+		help
+		  Always calculate used pages by scanning the entire CMA bitmap.
+
+	config CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED
+		bool "Cached (incremental updates)"
+		help
+		  Use a cache that is updated incrementally.
+
+	endchoice
+
+	config CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE
+		int
+		default 0 if CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_DISABLED
+		default 1 if CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_FULL
+		default 2 if CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED
+		range 0 2
+		help
+		Internal config value for CMA tracker heap stats used pages mode.
+		Set automatically based on the choice selection above.
+
+endif # CMA_TRACKER

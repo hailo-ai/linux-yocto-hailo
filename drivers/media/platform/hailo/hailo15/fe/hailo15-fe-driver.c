@@ -71,6 +71,7 @@
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 #include <linux/interrupt.h>
+#include <linux/rwsem.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/dma-mapping.h>
 
@@ -86,6 +87,8 @@
 
 #define VI_IRCL_OFFSET 0x0014
 #define VI_DPCL_OFFSET 0x0018
+#define VI_ISP_IMSC_OFFSET 0x5bc
+#define VI_MI_IMSC_OFFSET 0x16c0
 #define VIV_ISP_FE_DMA_TIMOUT_MS	1000
 #define VIV_ISP_PROCESS_TIMOUT_MS	400
 #define VIV_ISP_FE_DEBUG_DUMP		0
@@ -136,9 +139,6 @@ static unsigned int vvcam_fe_major;
 static unsigned int vvcam_fe_minor;
 static struct class *vvcam_fe_class;
 static unsigned int fe_register_index;
-
-void hailo15_fe_get_dev(struct vvcam_fe_dev** dev);
-void hailo15_fe_set_address_space_base(struct vvcam_fe_dev* fe_dev, void* base);
 
 static void isp_fe_raw_write_reg(struct vvcam_fe_dev *dev, u32 offset, u32 val)
 {
@@ -437,6 +437,8 @@ static bool is_cpu_read(struct vvcam_fe_dev *dev, uint32_t offset)
 		fe->general_ctrl.mi_mis3 == offset ||
 #endif
 		fe->general_ctrl.isp_stitching_mis == offset ||
+		// @hailo - reading fe_ctrl is only for debugging purposes
+		fe->general_ctrl.fe_ctrl == offset ||
 			fe->general_ctrl.mipi_mis == offset) {
 		cpu_read = true;
 	} else if ((offset >= 0x1200 && offset <= 0x1294) ||
@@ -457,6 +459,7 @@ int isp_fe_read_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uin
 	union isp_fe_cmd_u *full_cmd_buffer;
 	uint32_t mapped_index;
 	struct isp_fe_context *fe;
+	unsigned long flags;
 
 	if (!dev) {
 		isp_err("%s error: dev is NULL!", __func__);
@@ -482,8 +485,18 @@ int isp_fe_read_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uin
 	mapped_index = isp_fe_hash_map(fe, offset);
 	//read register directly
 	if (is_cpu_read(dev, offset) == true) {
-		*val = isp_fe_raw_read_reg(dev, offset);
+		// If not in atomic context, acquire read lock to allow concurrent raw reg reads
+		// but block during fe transaction (e.g. IRQ or holding spinlock)
+		if (in_atomic()) {
+			*val = isp_fe_raw_read_reg(dev, offset);
+		} else {
+			down_read(&fe->cpu_rw_sem);
+			*val = isp_fe_raw_read_reg(dev, offset);
+			up_read(&fe->cpu_rw_sem);
+		}
+		spin_lock_irqsave(&fe->full_buff_lock, flags);
 		full_cmd_buffer[mapped_index].cmd_wreg.w_data = *val;
+		spin_unlock_irqrestore(&fe->full_buff_lock, flags);
 	} else {
 		if (fe->state == ISP_FE_STATE_EXIT) {
 			isp_err("%s error: fe is destoried!", __func__);
@@ -626,6 +639,45 @@ static void isp_fe_mcm_busid_filter(struct isp_fe_context *fe, u32 offset, u32 *
 #endif
 }
 
+static void isp_fe_save_and_disable_interrupts(struct vvcam_fe_dev *dev, uint8_t vdid)
+{
+	struct isp_fe_context *fe = &dev->fe;
+	uint32_t mi_imsc, isp_imsc;
+	int ret;
+
+	// @hailo - we have logic that prevents register writes while an FE transaction is in progress
+	// disable mi_imsc so we don't handle interrupts while in fe transaction
+	// also disable mi_imsc in the cmd buffer because the FE transaction will write the mask back
+	fe->saved_mi_imsc = isp_fe_raw_read_reg(dev, VI_MI_IMSC_OFFSET);
+	if (fe->saved_mi_imsc != 0) {
+		/* make sure mask writes from cmd buffer that were not written to HW are also saved */
+		ret = isp_fe_read_reg(dev, vdid, VI_MI_IMSC_OFFSET, &mi_imsc);
+		if (ret != 0) {
+			isp_err("%s: failed to read mi_imsc: 0x%x\n", __func__, ret);
+		}
+		fe->saved_mi_imsc |= mi_imsc;
+		isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, 0x00000000);
+		isp_fe_write_reg(dev, vdid, VI_MI_IMSC_OFFSET, 0x00000000);
+	}
+
+	// disable isp_imsc so we don't handle interrupts while in fe transaction
+	// also disable isp_imsc in the cmd buffer because the FE transaction will write the mask back
+	fe->saved_isp_imsc = isp_fe_raw_read_reg(dev, VI_ISP_IMSC_OFFSET);
+	if (fe->saved_isp_imsc != 0) {
+		/* make sure mask writes from cmd buffer that were not written to HW are also saved */
+		ret = isp_fe_read_reg(dev, vdid, VI_ISP_IMSC_OFFSET, &isp_imsc);
+		if (ret != 0) {
+			isp_err("%s: failed to read isp_imsc: 0x%x\n", __func__, ret);
+		}
+		fe->saved_isp_imsc |= isp_imsc;
+		isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, 0x00000000);
+		isp_fe_write_reg(dev, vdid, VI_ISP_IMSC_OFFSET, 0x00000000);
+	}
+
+	// make sure no pending interrupts are being processed
+	synchronize_irq(fe->isp_irq);
+}
+
 static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_cmd_buffer_t *refresh_regs)
 {
 #if defined(ISP_MIV2)
@@ -646,6 +698,8 @@ static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_
 	full_cmd_buffer[mapped_index].cmd_wreg.w_data = miv2_mcm_bus_id;
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.mi_mcm_bus_id, miv2_mcm_bus_id);	//0x0DCABD1E
 #endif
+
+	isp_fe_save_and_disable_interrupts(dev, vdid);
 
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_imsc, 0x00000001);
@@ -725,17 +779,22 @@ static void isp_fe_clean_wo_bits(struct vvcam_fe_dev *dev)
 
 }
 
+
+/* we call this from the tasklet when the FE interrupt is raised (after posting to userspace)
+   we trigger this when a frame is done processing */
 static void isp_fe_isp_irq_work(struct vvcam_fe_dev *dev)
 {
 	if (dev->fe.state == ISP_FE_STATE_INIT) {
 		return;
 	}
 
+	/* this reads back into the full command buffer, all the 3a statistics registers */
 	isp_fe_writeback_status(dev);
 	dev->fe.is_isp_processing = false;
 	complete_all(&dev->fe.isp_completion);
 }
 
+/* this is called once when starting the stream with FE and once in the end of the stream */
 static void isp_fe_update_cmd(struct vvcam_fe_dev *dev)
 {
 	uint8_t vdid;
@@ -765,9 +824,8 @@ static void isp_fe_update_cmd(struct vvcam_fe_dev *dev)
 
 }
 
-// Note: This function is currently used only for 1 offset/value at a time.
-// If needed to support more than 1, change function implementation
-// If needed to support more than 1 vdid (currently we ignore vdid), change function implementation
+/* Note: This function is currently used only for 1 offset/value at a time.
+   If needed to support more than 1, change function implementation */
 static void isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val, int idx)
 {
 	struct isp_fe_context *fe = &dev->fe;
@@ -791,9 +849,8 @@ static void isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint8_t vdid
 	fe->post_fe_modify_reg_value[idx] = val;
 }
 
-// Note: This function is currently used only for 1 offset/value at a time.
-// If needed to support more than 1, change function implementation
-// If needed to support more than 1 vdid (currently we ignore vdid), change function implementation
+/* Note: This function is currently used only for 1 offset/value at a time.
+   If needed to support more than 1, change function implementation */
 static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev, uint8_t vdid)
 {
 	struct isp_fe_context *fe = &dev->fe;
@@ -852,7 +909,15 @@ int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 
 	//write register directly
 	if (is_cpu_write(dev, offset) == true) {
-		isp_fe_raw_write_reg(dev, offset, val);
+		// If in atomic context (IRQ or holding spinlock), skip the read lock
+		// to avoid sleeping function call from invalid context
+		if (in_atomic()) {
+			isp_fe_raw_write_reg(dev, offset, val);
+		} else {
+			down_read(&fe->cpu_rw_sem);
+			isp_fe_raw_write_reg(dev, offset, val);
+			up_read(&fe->cpu_rw_sem);
+		}
 		//MCM+FE+HDR workaroud.
 		if (offset == 0x5700) {
 			mdelay(1);
@@ -937,7 +1002,7 @@ int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 
 			// mcm read dma start (MI_CTRL_MCM_RAW_RDMA_START in isp-hw) - should be post-FE to prevent inner race within FE.
 			// This is a HW issue in FE - so instead of writing this value to command buffer, we use raw write for it post-FE.
-			if (val && (1 << 15)) {
+			if (val & (1 << 15)) {
 				val &= ~(1 << 15);	// disable MCM read dma start
 				isp_fe_register_post_fe_write(dev, vdid, offset, 1 << 15, ISP_FE_POST_OFFSET_MCM_RAW_RDMA_START);
 			}
@@ -968,6 +1033,7 @@ int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 		}
 
 		//fe->reg_buffer[offset / ISP_FE_REG_SIZE] = val;
+		spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
 		mapped_index = isp_fe_hash_map(fe, offset);
 		full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
 		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.start_reg_addr = offset;
@@ -975,6 +1041,7 @@ int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.rsv = 0;
 		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
 		full_cmd_buffer[mapped_index].cmd_wreg.w_data = val;
+		spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
 
 		spin_lock_irqsave(&fe->fe_buff[vdid].cmd_buffer_lock, part_buff_flags);
 		curr_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
@@ -1141,6 +1208,20 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 	vdid = fe->curr_vdid;
 	isp_info("%s vdid value = %d, next id value = %d\n", __func__, vdid, fe_switch->next_vdid[0]);
 
+	ret = isp_fe_read_reg(dev, vdid, fe->general_ctrl.mi_ctrl, &mi_ctrl);
+	if (ret != 0) {
+		isp_err("%s - failed to read mi_ctrl from vdid %d\n", __func__, vdid);
+		return ret;
+	}
+
+	/* trigger RDMA start registration */
+	mi_ctrl |= (1 << 15);
+	ret = isp_fe_write_reg(dev, vdid, fe->general_ctrl.mi_ctrl, mi_ctrl);
+	if (ret != 0) {
+		isp_err("%s - failed to write mi_ctrl to vdid %d\n", __func__, vdid);
+		return ret;
+	}
+
 	if (vdid == fe_switch->next_vdid[0]) {
 		if (fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num == 0) {	//no register to be updated
 			return 0;
@@ -1181,6 +1262,9 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 #endif
 
 			//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
+			isp_fe_save_and_disable_interrupts(dev, vdid);
+			down_write(&fe->cpu_rw_sem);
+			fe->cpu_rw_sem_write_held = true;
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
 			fe->state = ISP_FE_STATE_RUNNING;
@@ -1201,6 +1285,10 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 		//refresh the whole registers
 		//config dma
 		//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->refresh_full_regs.curr_cmd_num);
+
+		isp_fe_save_and_disable_interrupts(dev, vdid);
+		down_write(&fe->cpu_rw_sem);
+		fe->cpu_rw_sem_write_held = true;
 		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
 		fe->state = ISP_FE_STATE_RUNNING;
@@ -1216,11 +1304,7 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
 		pr_err("fe switch timeout! FE is stuck\n");
 		return -ETIMEDOUT;
-	}	
-
-	mi_ctrl = isp_fe_raw_read_reg(dev, 0x1300);
-	mi_ctrl |= (1 << 15);
-	isp_fe_raw_write_reg(dev, 0x1300, mi_ctrl);
+	}
 
 	return ret;
 }
@@ -1277,7 +1361,7 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 
 	fe->general_ctrl = fe_params.general_ctrl;
 
-	fe->fe_buff = (struct isp_fe_buff_t *)kzalloc(sizeof(struct isp_fe_buff_t) * fe_params.max_vd_caps, GFP_KERNEL);
+	fe->fe_buff = kzalloc(sizeof(struct isp_fe_buff_t) * fe_params.max_vd_caps, GFP_KERNEL);
 	if (!fe->fe_buff) {
 		isp_err("%s: alloc fe buff error!\n", __func__);
 		return -1;
@@ -1291,7 +1375,7 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
 		fe->fe_buff[vdid].rd_index = 0;
 		fe->fe_buff[vdid].fixed_reg_rd_num = ISP_FE_FIXED_OFFSET_READ_NUM;
-		fe->fe_buff[vdid].fixed_reg_buffer = (uint32_t *) kmalloc(fe->fe_buff[vdid].fixed_reg_rd_num * sizeof(uint32_t), GFP_KERNEL);
+		fe->fe_buff[vdid].fixed_reg_buffer = kmalloc(fe->fe_buff[vdid].fixed_reg_rd_num * sizeof(uint32_t), GFP_KERNEL);
 		if (!fe->fe_buff[vdid].fixed_reg_buffer) {
 			isp_err("%s: alloc fixed_reg_buffer %d error!\n", __func__, vdid);
 			goto alloc_fixed_buf_err;
@@ -1302,7 +1386,7 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		spin_lock_init(&fe->fe_buff[vdid].cmd_buffer_lock);
 		fe->fe_buff[vdid].refresh_part_regs.cmd_num_max = ISP_FE_REG_PART_REFRESH_NUM;
 		fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
-		fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = (union isp_fe_cmd_u *)dma_alloc_coherent(dev->dev,
+		fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = dma_alloc_coherent(dev->dev,
 								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_part_regs.cmd_num_max + 1,
 								&fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr, GFP_KERNEL);
 		isp_info("%s:%d refresh_part_regs.cmd_num_max=0x%08x\n", __func__, __LINE__, fe->fe_buff[vdid].refresh_part_regs.cmd_num_max);
@@ -1321,7 +1405,7 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		fe->fe_buff[vdid].tbl_total_params_num = fe_params.tbl_total_params_num;
 		fe->fe_buff[vdid].refresh_full_regs.cmd_num_max = ISP_FE_FULL_BUFFER_NUM +
 								fe_params.tbl_total_params_num + ISP_FE_SPECIAL_REG_NUM + 2;	//2--end or nop+end flag
-		fe->fe_buff[vdid].refresh_full_regs.cmd_buffer = (union isp_fe_cmd_u *)dma_alloc_coherent(dev->dev,
+		fe->fe_buff[vdid].refresh_full_regs.cmd_buffer = dma_alloc_coherent(dev->dev,
 								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_full_regs.cmd_num_max,
 								&fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr, GFP_KERNEL);
 		isp_info("%s:%d tbl_total_params_num=0x%08x\n", __func__, __LINE__, fe->fe_buff[vdid].tbl_total_params_num);
@@ -1406,8 +1490,7 @@ alloc_part_err:
 
 alloc_fixed_buf_err:
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
-		if (fe->fe_buff[vdid].fixed_reg_buffer)
-			kfree(fe->fe_buff[vdid].fixed_reg_buffer);
+		kfree(fe->fe_buff[vdid].fixed_reg_buffer);
 	}
 
 	kfree(fe->fe_buff);
@@ -1455,6 +1538,7 @@ int isp_fe_reset(struct vvcam_fe_dev *dev)
 	fe->state = ISP_FE_STATE_INIT;
 	fe->fst_wr_flag = true;
 	fe->is_isp_processing = false;
+	fe->cpu_rw_sem_write_held = false;
 	//the default id value is set to invaild.
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->curr_vdid = VIV_INVALID_VDID;
@@ -1511,13 +1595,13 @@ int isp_fe_init(struct vvcam_fe_dev *dev)
 		kfree(fe->hash_map_tbl);
 	}
 
-	fe->reg_buffer = (u32 *) kmalloc(ISP_FE_REG_OFFSET_BYTE_MAX, GFP_KERNEL);
+	fe->reg_buffer = kmalloc(ISP_FE_REG_OFFSET_BYTE_MAX, GFP_KERNEL);
 	if (!fe->reg_buffer) {
 		isp_err("%s: alloc reg_buffer error!\n", __func__);
 		return -ENOMEM;
 	}
 
-	fe->hash_map_tbl = (uint16_t *) kmalloc(ISP_FE_REG_NUM * sizeof(uint16_t), GFP_KERNEL);
+	fe->hash_map_tbl = kmalloc(ISP_FE_REG_NUM * sizeof(uint16_t), GFP_KERNEL);
 	if (!fe->hash_map_tbl) {
 		isp_err("%s: alloc hash_map_tbl error!\n", __func__);
 		goto hash_map_tbl_err;
@@ -1526,6 +1610,8 @@ int isp_fe_init(struct vvcam_fe_dev *dev)
 	init_completion(&fe->fe_completion);
 	init_completion(&fe->isp_completion);
 	spin_lock_init(&fe->full_buff_lock);
+	init_rwsem(&fe->cpu_rw_sem);
+	fe->cpu_rw_sem_write_held = false;
 
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->state = ISP_FE_STATE_INIT;
@@ -1650,10 +1736,38 @@ static int vvcam_fe_dma_irq(struct vvcam_fe_dev *dev)
 			spin_lock(&dev->fe.fe_buff[vdid].cmd_buffer_lock);
 			dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
 			spin_unlock(&dev->fe.fe_buff[vdid].cmd_buffer_lock);
+
+			// restore mi_imsc from register
+			if (dev->fe.saved_mi_imsc != 0) {
+				isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, dev->fe.saved_mi_imsc);
+			}
+
+			// restore isp_imsc from register
+			if (dev->fe.saved_isp_imsc != 0) {
+				isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, dev->fe.saved_isp_imsc);
+			}
+
 			isp_fe_perform_post_fe_writes(dev, vdid);
 			dev->fe.prev_vdid = vdid;
 			dev->fe.state = ISP_FE_STATE_WAITING;
 			dev->fe.is_isp_processing = true;
+
+			if (dev->fe.cpu_rw_sem_write_held) {
+				up_write(&dev->fe.cpu_rw_sem);
+				dev->fe.cpu_rw_sem_write_held = false;
+			}
+
+			// restore mi_imsc from command buffer (has to happen when fe state is not running)
+			if (dev->fe.saved_mi_imsc != 0) {
+				isp_fe_write_reg(dev, vdid, VI_MI_IMSC_OFFSET, dev->fe.saved_mi_imsc);
+				dev->fe.saved_mi_imsc = 0;
+			}
+
+			// restore isp_imsc from command buffer (has to happen when fe state is not running)
+			if (dev->fe.saved_isp_imsc != 0) {
+				isp_fe_write_reg(dev, vdid, VI_ISP_IMSC_OFFSET, dev->fe.saved_isp_imsc);
+				dev->fe.saved_isp_imsc = 0;
+			}
 			complete_all(&dev->fe.fe_completion);
 		}
 	}
@@ -1781,7 +1895,7 @@ void hailo15_fe_get_dev(struct vvcam_fe_dev** dev){
 }
 EXPORT_SYMBOL(hailo15_fe_get_dev);
 
-void hailo15_fe_set_address_space_base(struct vvcam_fe_dev* fe_dev, void* base){
+void hailo15_fe_set_address_space_base(struct vvcam_fe_dev* fe_dev, void __iomem* base){
 	fe_dev->base = base;
 }
 EXPORT_SYMBOL(hailo15_fe_set_address_space_base);
@@ -1917,7 +2031,6 @@ static struct platform_driver vvcam_fe_driver = {
 	.remove = vvcam_fe_remove,
 	.driver = {
 		.name = VIVCAM_FE_NAME,
-		.owner = THIS_MODULE,
 	}
 };
 

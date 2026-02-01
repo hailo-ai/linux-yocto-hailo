@@ -8,6 +8,8 @@
 #include <dt-bindings/pinctrl/hailo15_cpld.h>
 
 / {
+    model = "Hailo - Hailo15 EVB security camera VPU Development Board";
+
     sensor_clk: sensor_clk {
         compatible = "fixed-clock";
         #clock-cells = <0>;

@@ -1,0 +1,605 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo12l-base.dtsi"
+
+/ {
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000001 0x00000000>;
+    };
+};
+
+&soc{
+    /* List all JTAG pinctrl phandles here */
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_jtag_tck>, <&pinctrl_jtag_tdi>, <&pinctrl_jtag_tdo>,
+                <&pinctrl_jtag_tms>, <&pinctrl_jtag_trstn_in>;
+};
+
+&serial0 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_uart0_txd>, <&pinctrl_uart0_rxd>;
+};
+
+&serial1 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_uart1_txd>, <&pinctrl_uart1_rxd>;
+};
+
+&i2c_0 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_i2c0_scl>, <&pinctrl_i2c0_sda>;     /* these are non-muxable pins - leave this part for claiming the pins only for user display */
+
+    codec_tlv320aic3104: tlv320aic3104@18 {
+        #sound-dai-cells = <0>;
+        compatible = "ti,tlv320aic3104";
+        reg = <0x18>;
+        /* @note, If using I2S Controller mode as:
+         * - Master: set: ai3x-source-clk = "bclk";
+         * - Slave: set: ai3x-source-clk = "mclk";
+         */
+
+        ai3x-source-clk = "bclk";
+        ai3x-micbias-vg = <2>;
+		/* Regulators */
+		AVDD-supply = <&regulator_3p3v>;
+		IOVDD-supply = <&regulator_1p8v>;
+		DRVDD-supply = <&regulator_3p3v>;
+		DVDD-supply = <&regulator_1p8v>;
+    };
+
+    gpio_expander: gpio@20 {
+        compatible = "ti,tca9539";
+        reg = <0x20>;
+        gpio-controller;
+        #gpio-cells = <2>;
+
+        gpio-line-names =
+        "EXP_PWR_EN", "EXP_BS_MODE_0", "EXP_BS_MODE_1", "EXP_BS_MODE_2",
+        "EXP_BS_MODE_3", "PCIE_USB_L1_SEL", "SEL_EMMC_SD", "AON_PWR_CMD",
+        "AON_PWR_STAT", "PWR_DCDC_CTRL", "BS_INIT_DBG_BUS", "BS_REF_CLK",
+        "PWR_CTRL_EN", "D3_COLD_EN", "GPIO_18", "BS_CTRL_N";
+    };
+
+    regulator_0p8v: regulator-0p8v@40 {
+       status = "disabled";
+       compatible = "ti,tps62872";
+       reg = <0x40>;
+       regulator-name = "+0.8V";
+       regulator-min-microvolt = <400000>;
+       regulator-max-microvolt = <1037500>;
+       regulator-initial-mode = <2>;
+    };
+
+    regulator_1p8v_tps62868: regulator_1p8v_tps62868@41 {
+       status = "disabled";
+       compatible = "ti,tps62868";
+       reg = <0x41>;
+       regulator-name = "+1.8V";
+       regulator-min-microvolt = <400000>;
+       regulator-max-microvolt = <1037500>;
+       regulator-initial-mode = <2>;
+    };
+
+    eeprom@50 {
+		compatible = "atmel,24c32";
+		reg = <0x50>;
+		pagesize = <32>;
+	};
+};
+
+&i2c_1 {
+    status = "okay";
+/*    pinctrl-names = "default";
+/*    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;     /* these are non-muxable pins - leave this part for claiming the pins only for user display */
+
+    ina231_USB_HV: USB_HV@40 {
+        compatible = "ti,ina231_precise";
+        reg = <0x40>;
+        shunt-resistor = <10000>;
+        max-current = <1>;
+    };
+    ina231_IO_1v8: IO_1v8@41 {
+        compatible = "ti,ina231_precise";
+        reg = <0x41>;
+        shunt-resistor = <50>;
+        max-current = <145>;
+    };
+    ina231_IO_AON_1v8: IO_AON_1v8@42 {
+        compatible = "ti,ina231_precise";
+        reg = <0x42>;
+        shunt-resistor = <150>;
+        max-current = <65>;
+    };
+    ina231_VDD: VDD@43 {
+        compatible = "ti,ina231_precise";
+        reg = <0x43>;
+        shunt-resistor = <1>;
+        max-current = <5000>;
+    };
+    ina231_ALL_PLL: ALL_PLL@44 {
+        compatible = "ti,ina231_precise";
+        reg = <0x44>;
+        shunt-resistor = <200>;
+        max-current = <22>;
+    };
+    ina231_VDD_AON: VDD_AON@45 {
+        compatible = "ti,ina231_precise";
+        reg = <0x45>;
+        shunt-resistor = <10>;
+        max-current = <250>;
+    };
+    ina231_MPP_USB_AVDD: MPP_USB_AVDD@46 {
+        compatible = "ti,ina231_precise";
+        reg = <0x46>;
+        shunt-resistor = <50>;
+        max-current = <159>;
+    };
+    ina231_DDR0_PHY_0V8: DDR0_PHY_0V8@47 {
+        compatible = "ti,ina231_precise";
+        reg = <0x47>;
+        shunt-resistor = <2>;
+        max-current = <1425>;
+    };
+    ina231_DDR1_PHY_0V8: DDR1_PHY_0V8@48 {
+        compatible = "ti,ina231_precise";
+        reg = <0x48>;
+        shunt-resistor = <2>;
+        max-current = <1425>;
+    };
+    ina231_DDR0_PHY_1V1: DDR0_PHY_1V1@49 {
+        compatible = "ti,ina231_precise";
+        reg = <0x49>;
+        shunt-resistor = <50>;
+        max-current = <152>;
+    };
+    ina231_DDR1_PHY_0V6: DDR1_PHY_0V6@4a {
+        compatible = "ti,ina231_precise";
+        reg = <0x4a>;
+        shunt-resistor = <2>;
+        max-current = <826>;
+    };
+    ina231_DDR1_PHY_1V1: DDR1_PHY_1V1@4b {
+        compatible = "ti,ina231_precise";
+        reg = <0x4b>;
+        shunt-resistor = <50>;
+        max-current = <152>;
+    };
+    ina231_DDR0_PHY_0V6: DDR0_PHY_0V6@4c {
+        compatible = "ti,ina231_precise";
+        reg = <0x4c>;
+        shunt-resistor = <2>;
+        max-current = <826>;
+    };
+    ina231_DDR_VDD2: DDR_VDD2@4d {
+        compatible = "ti,ina231_precise";
+        reg = <0x4d>;
+        shunt-resistor = <10>;
+        max-current = <689>;
+    };
+    ina231_DDR_VDDQ: DDR_VDDQ@4e {
+        compatible = "ti,ina231_precise";
+        reg = <0x4e>;
+        shunt-resistor = <50>;
+        max-current = <176>;
+    };
+    ina231_DDR_VDD1: DDR_VDD1@4f {
+        compatible = "ti,ina231_precise";
+        reg = <0x4f>;
+        shunt-resistor = <1000>;
+        max-current = <9>;
+    };
+};
+
+&hailo_pci_ep_driver {
+    status = "okay";
+    pinctrl-names = "default";
+    /*The Pcie pins should be claimed by this driver.*/
+    pinctrl-0 = <&pinctrl_pcie_wake_n>,  <&pinctrl_pcie_clkreq_n>,
+                <&pinctrl_pcie_perst_n_in>;
+};
+
+&pinctrl {
+    /* IO_PAD_0  - I2C0_SCL - non-muxable */
+    pinctrl_i2c0_scl: i2c0_scl {
+        function = "i2c0_scl";
+        groups = "i2c0_scl_0_grp";
+    };
+
+    /* IO_PAD_1  - I2C0_SDA - non-muxable */
+    pinctrl_i2c0_sda: i2c0_sda {
+        function = "i2c0_sda";
+        groups = "i2c0_sda_0_grp";
+    };
+
+    /* IO_PAD_2  - I2C1_SCL - non-muxable */
+    pinctrl_i2c1_scl: i2c1_scl {
+        function = "i2c1_scl";
+        groups = "i2c1_scl_0_grp";
+    };
+
+    /* IO_PAD_3  - I2C1_SDA - non-muxable */
+        pinctrl_i2c1_sda: i2c1_sda {
+        function = "i2c1_sda";
+        groups = "i2c1_sda_0_grp";
+    };
+
+    /* IO_PAD_4 */
+    pinctrl_uart0_rxd: uart0_rxd {
+        function = "uart0_rxd_in";
+        groups = "uart0_rxd_in_0_grp";
+    };
+
+    /* IO_PAD_5 */
+    pinctrl_uart0_txd: uart0_txd {
+        function = "uart0_txd_out";
+        groups = "uart0_txd_out_0_grp";
+    };
+
+    /* IO_PAD_6 */
+    pinctrl_uart1_rxd: uart1_rxd {
+        function = "uart1_rxd_in";
+        groups = "uart1_rxd_in_0_grp";
+    };
+
+    /* IO_PAD_7 */
+    pinctrl_uart1_txd: uart1_txd {
+        function = "uart1_txd_out";
+        groups = "uart1_txd_out_0_grp";
+    };
+
+    /* IO_PAD_8 */
+    pinctrl_i2s0_sck: i2s0_sck {
+        function = "i2s0_sck";
+        groups = "i2s0_sck_0_grp";
+    };
+
+    /* IO_PAD_9 */
+    pinctrl_i2s0_sdi: i2s0_sdi0 {
+        function = "i2s0_sdi0_in";
+        groups = "i2s0_sdi0_in_0_grp";
+    };
+
+    /* IO_PAD_10 */
+    pinctrl_i2s0_sdo: i2s0_sdo0 {
+        function = "i2s0_sdo0_out";
+        groups = "i2s0_sdo0_out_0_grp";
+    };
+
+    /* IO_PAD_11 */
+    pinctrl_i2s0_ws: i2s0_ws {
+        function = "i2s0_ws";
+        groups = "i2s0_ws_0_grp";
+    };
+
+    /* IO_PAD_12 */
+	pinctrl_flash_cs0_n: flash_cs0_n_out {
+	    function = "flash_spi_cs_0_n_out";
+        groups = "flash_spi_cs_0_n_out_grp";
+    };
+
+    /* IO_PAD_13 */
+    pinctrl_flash_dq_0_mosi: flash_dq_0_mosi_in {
+	    function = "flash_spi_dq_0";
+        groups = "flash_spi_dq_0_grp";
+    };
+
+    /* IO_PAD_14 */
+    pinctrl_flash_dq_1_miso: flash_dq_1_miso_in {
+	    function = "flash_spi_dq_1";
+        groups = "flash_spi_dq_1_grp";
+    };
+
+    /* IO_PAD_15 */
+    pinctrl_flash_dq_2: flash_dq_2_in {
+	    function = "flash_spi_dq_2";
+        groups = "flash_spi_dq_2_grp";
+    };
+
+    /* IO_PAD_16 */
+    pinctrl_flash_dq_3: flash_dq_3_in {
+	    function = "flash_spi_dq_3";
+        groups = "flash_spi_dq_3_grp";
+    };
+
+    /* IO_PAD_17 */
+    pinctrl_flash_reset_n: flash_reset_n_out {
+	    function = "flash_spi_reset_n_out";
+        groups = "flash_spi_reset_n_out_grp";
+    };
+
+    /* IO_PAD_18 */
+    pinctrl_flash_sclk: flash_sclk_out {
+	    function = "flash_spi_sclk_out";
+        groups = "flash_spi_sclk_out_grp";
+    };
+
+
+    /* IO_PAD_19 */
+    pinctrl_pcie_wake_n: pcie_wake_n {
+        function = "pcie_wake_n";
+        groups = "pcie_wake_n_grp";
+    };
+
+    /* IO_PAD_20 */
+    pinctrl_pcie_clkreq_n: pcie_clkreq_n {
+        function = "pcie_clkreq_n";
+        groups = "pcie_clkreq_n_grp";
+    };
+
+    /* IO_PAD_21 */
+    pinctrl_pcie_perst_n_in: pcie_perst_n_in {
+        function = "pcie_perst_n_in";
+        groups = "pcie_perst_n_in_grp";
+    };
+
+    /* IO_PAD_22 */
+    pinctrl_SDIO_DATA0: SDIO_DATA0 {
+        function = "SDIO_DATA0";
+        groups = "SDIO_DATA0_grp";
+    };
+
+    /* IO_PAD_23 */
+    pinctrl_SDIO_DATA1: SDIO_DATA1 {
+        function = "SDIO_DATA1";
+        groups = "SDIO_DATA1_grp";
+    };
+
+    /* IO_PAD_24 */
+    pinctrl_SDIO_DATA2: SDIO_DATA2 {
+        function = "SDIO_DATA2";
+        groups = "SDIO_DATA2_grp";
+    };
+
+    /* IO_PAD_25 */
+    pinctrl_SDIO_DATA3: SDIO_DATA3 {
+        function = "SDIO_DATA3";
+        groups = "SDIO_DATA3_grp";
+    };
+
+    /* IO_PAD_26 */
+    pinctrl_SDIO_CMD: SDIO_CMD {
+        function = "SDIO_CMD";
+        groups = "SDIO_CMD_grp";
+    };
+
+    /* IO_PAD_27 */
+    pinctrl_SDIO_SDCLK: SDIO_SDCLK {
+        function = "SDIO_SDCLK";
+        groups = "SDIO_SDCLK_grp";
+    };
+
+    /* IO_PAD_28 - SAFETY_FATAL_N - non-muxable */
+
+    /* IO_PAD_29 */
+    pinctrl_jtag_tck: jtag_tck_in {
+        function = "jtag_tck_in";
+        groups = "jtag_tck_in_grp";
+    };
+
+    /* IO_PAD_30 */
+    pinctrl_jtag_tdi: jtag_tdi_in {
+        function = "jtag_tdi_in";
+        groups = "jtag_tdi_in_grp";
+    };
+
+    /* IO_PAD_31 */
+    pinctrl_jtag_tdo: jtag_tdo_out {
+        function = "jtag_tdo_out";
+        groups = "jtag_tdo_out_grp";
+    };
+
+    /* IO_PAD_32 */
+    pinctrl_jtag_tms: jtag_tms {
+        function = "jtag_tms";
+        groups = "jtag_tms_grp";
+    };
+
+    /* IO_PAD_33 */
+    pinctrl_jtag_trstn_in: jtag_trstn_in {
+        function = "jtag_trstn_in";
+        groups = "jtag_trstn_in_grp";
+    };
+
+    /* IO_PAD_34 */
+    pinctrl_gpio_0: gpio_0 {
+        function = "aon_pwr_ctrl_out";
+        groups = "aon_pwr_ctrl_out_0_grp";
+    };
+
+    /* IO_PAD_35 */
+    pinctrl_gpio_1: gpio_1 {
+        function = "VDD_SWITCH_PG";
+        groups = "VDD_SWITCH_PG_grp";
+    };
+
+    /* IO_PAD_36  */ 
+    pinctrl_gpio_2: gpio_2 {
+        function = "gpio2";
+        groups = "gpio2_grp";
+    };
+
+    /* IO_PAD_37 */
+    pinctrl_gpio_3: gpio_3 {
+        function = "aon_pwr_cmd_in";
+        groups = "aon_pwr_cmd_in_2_grp";
+    };
+
+    /* IO_PAD_38 */
+    pinctrl_gpio_4: gpio_4 {
+        function = "aon_pwr_stat_out";
+        groups = "aon_pwr_stat_out_1_grp";
+    };
+
+    /* IO_PAD_39 */
+    pinctrl_gpio_5: gpio_5 {
+        function = "boot_rom_failure_out";
+        groups = "boot_rom_failure_out_grp";
+    };
+
+    /* IO_PAD_40 */
+    pinctrl_gpio_6: gpio_6 {
+        function = "gpio6";
+        groups = "gpio6_grp";
+    };
+
+    /* IO_PAD_41 */
+    pinctrl_gpio_7: gpio_7 {
+        function = "uart0_cts_in";
+        groups = "uart0_cts_in_4_grp";
+    };
+
+    /* IO_PAD_42 */
+    pinctrl_gpio_8: gpio_8 {
+        function = "uart0_rts_out";
+        groups = "uart0_rts_out_5_grp";
+    };
+
+    /* IO_PAD_43 */
+    pinctrl_gpio_9: gpio_9 {
+        function = "uart1_cts_in";
+        groups = "uart1_cts_in_4_grp";
+    };
+
+    /* IO_PAD_44 */
+    pinctrl_gpio_10: gpio_10 {
+        function = "uart1_rts_out";
+        groups = "uart1_rts_out_5_grp";
+    };
+
+    /* IO_PAD_45 */
+    pinctrl_gpio_11: gpio_11 {
+        function = "gpio11";
+        groups = "gpio11_grp";
+    };
+
+    /* IO_PAD_46 */
+    pinctrl_gpio_12: gpio_12 {
+        function = "uart3_rts_out";
+        groups = "uart3_rts_out_0_grp";
+    };
+
+    /* IO_PAD_47 */
+    pinctrl_gpio_13: gpio_13 {
+        function = "gpio13";
+        groups = "gpio13_1_grp";
+    };
+
+    /* IO_PAD_48 */
+    pinctrl_gpio_14: gpio_14 {
+        function = "gpio14";
+        groups = "gpio14_2_grp";
+    };
+
+    /* IO_PAD_49 */
+    pinctrl_gpio_15: gpio_15 {
+        function = "gpio15";
+        groups = "gpio15_2_grp";
+    };
+
+    /* IO_PAD_50 */
+    pinctrl_gpio_16: gpio_16 {
+        function = "gpio16";
+        groups = "gpio16_1_grp";
+    };
+
+    /* IO_PAD_51 */
+    pinctrl_gpio_17: gpio_17 {
+        function = "gpio17";
+        groups = "gpio17_1_grp";
+    };
+
+    /* IO_PAD_52 */
+    pinctrl_gpio_18: gpio18 {
+        function = "gpio18";
+        groups = "gpio18_1_grp";
+    };
+
+    /* IO_PAD_53 */
+    pinctrl_gpio_19: gpio_19 {
+        function = "uart2_cts_in";
+        groups = "uart2_cts_in_3_grp";
+    };
+
+    /* IO_PAD_54 */
+    pinctrl_gpio_20: gpio_20 {
+        function = "uart2_rts_out";
+        groups = "uart2_rts_out_3_grp";
+    };
+
+    /* IO_PAD_55 */
+    pinctrl_gpio_21: gpio_21 {
+        function = "gpio21";
+        groups = "gpio21_grp";
+    };
+
+    /* IO_PAD_56 */
+    pinctrl_gpio_22: gpio_22 {
+        function = "spi0_mosi_out";
+        groups = "spi0_mosi_out_1_grp";
+    };
+
+    /* IO_PAD_57 */
+    pinctrl_gpio_23: gpio_23 {
+        function = "spi0_miso_in";
+        groups = "spi0_miso_in_1_grp";
+    };
+
+    /* IO_PAD_58 */
+    pinctrl_gpio_24: gpio_24 {
+        function = "spi0_sclk_out";
+        groups = "spi0_sclk_out_1_grp";
+    };
+};
+
+#define GPIO_LINE_NAMES \
+    "gpio_0 - aon_pwr_ctrl",                         "gpio_1 - VDD_SW_PG",                     "gpio_2 - ddr_phy_data_retention",                         "", \
+    "gpio_4 - aon_pwr_stat",                         "gpio_5 - boot_rom_failure",                     "",                         "", \
+    "",                         "",                     "",                         "gpio_11 - 'sku_id_0", \
+    "",                         "gpio_13 - 'sku_id_1",                     "gpio_14 - 'sku_id_2",                         "gpio_15 - 'sku_id_3", \
+    \
+    "gpio_16 - 'sku_id_4",                         "gpio_17 - sku_id_en",                     "gpio_18 - sku_id_5 ",                         "", \
+    "",                         "gpio_21 - ina_alert",                     "",                         "", \
+    "",                         "",                     "",                         "", \
+    "",                         "",                     "",                         ""
+
+
+&gpio0 {
+    status = "okay";
+    /* The format of gpio-ranges is: <[pin controller phandle], [GPIO controller offset],
+                [pin controller offset], [number of pins]>;
+    */
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_gpio_0>, <&pinctrl_gpio_1>, <&pinctrl_gpio_2>,
+                <&pinctrl_gpio_4>, <&pinctrl_gpio_5>, <&pinctrl_gpio_11>, <&pinctrl_gpio_13>, <&pinctrl_gpio_14>, <&pinctrl_gpio_15> ;
+    gpio-ranges =   <&pinctrl 0 34 3>,
+                    <&pinctrl 4 38 2>,
+                    <&pinctrl 11 45 1>,
+                    <&pinctrl 13 47 3>;
+
+    gpio-line-names = GPIO_LINE_NAMES;
+};
+
+&gpio1 {
+    status = "okay";
+    /* The format of gpio-ranges is: <[pin controller phandle], [GPIO controller offset],
+                [pin controller offset], [number of pins]>;
+    */
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_gpio_16>, <&pinctrl_gpio_17>, <&pinctrl_gpio_18>,
+                <&pinctrl_gpio_21>;
+    gpio-ranges =   <&pinctrl 16 50 3>,
+                    <&pinctrl 21 55 1>;
+
+    gpio-line-names = GPIO_LINE_NAMES;
+};
+
+/delete-node/ &cpu_1;

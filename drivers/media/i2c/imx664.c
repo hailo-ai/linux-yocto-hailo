@@ -18,7 +18,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 #include <linux/kernel.h>
-#include "sensor_id.h"
+#include "hailo_shared_sensor_data.h"
 
 #define DEFAULT_MODE_IDX 0
 
@@ -80,6 +80,8 @@
 
 /* Hcg control */
 #define IMX664_REG_HCG 0X3030
+#define IMX664_REG_HCG_SEF1 0x3031
+#define IMX664_REG_HCG_SEF2 0x3032
 #define IMX664_HCG_MIN 0
 #define IMX664_HCG_MAX 1
 #define IMX664_HCG_STEP 1
@@ -270,6 +272,7 @@ struct exp_gain_ctrl_cluster {
  * @vblank_ctrl: Pointer to vertical blanking control
  * @test_pattern_ctrl: pointer to test pattern control
  * @mode_sel_ctrl: pointer to mode select control
+ * @wdr_priming_ctrl: pointer to WDR priming control - wdr (true/false) to apply on fast toggle
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
  * @vblank: Vertical blanking in lines
@@ -300,6 +303,8 @@ struct imx664 {
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
 	struct exp_gain_ctrl_cluster sef2;
@@ -309,6 +314,8 @@ struct imx664 {
 	bool streaming;
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
+	int wdr_priming_val;
+	enum fast_toggle_state fast_toggle_state;
 };
 
 static const s64 link_freq[] = {
@@ -944,15 +951,37 @@ struct v4l2_ctrl_config imx664_custom_ctrls[] = {
 		.step = IMX664_EXPOSURE_VERY_SHORT_STEP,
 	},
 	{
-	.ops = &imx664_ctrl_ops,
-	.id = IMX664_CID_HCG,
-	.type = V4L2_CTRL_TYPE_BOOLEAN,
-	.flags = V4L2_CTRL_FLAG_UPDATE,
-	.name = "hcg",
-	.step = IMX664_HCG_STEP,
-	.min = IMX664_HCG_MIN,
-	.max = IMX664_HCG_MAX,
-	.def = IMX664_HCG_DEFAULT,
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_HCG,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg",
+		.step = IMX664_HCG_STEP,
+		.min = IMX664_HCG_MIN,
+		.max = IMX664_HCG_MAX,
+		.def = IMX664_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_CUSTOM_RHS1,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "custom_rhs1",
+		.step = IMX664_INTEGER_STEP,
+		.min = 0,
+		.max = 65535,
+		.def = 0,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_WDR_PRIMING,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "wdr_priming",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+		.def = 0,
 	},
 	{
 		.ops = &imx664_get_ctrl_ops,
@@ -1316,12 +1345,31 @@ static int imx664_set_hcg_mode(struct imx664 *imx664, u32 hcg)
 	int ret;
 	ret = imx664_write_reg(imx664, IMX664_REG_HCG, 1, hcg);
 	if (ret) {
-        dev_err(imx664->dev, "Failed to write HCG register: %d\n", ret);
-        return ret;
-    }
+		dev_err(imx664->dev, "Failed to write HCG register: %d\n", ret);
+		return ret;
+	}
 
-    dev_dbg(imx664->dev, "HCG mode set to %s\n", hcg ? "enabled" : "disabled");
-    
+	if (imx664->cur_mode->dol >= 2) {
+		ret = imx664_write_reg(imx664, IMX664_REG_HCG_SEF1, 1, hcg);
+		if (ret) {
+			imx664_write_reg(imx664, IMX664_REG_HCG, 1, !hcg);
+			dev_err(imx664->dev, "Failed to write HCG SEF1 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (imx664->cur_mode->dol >= 3) {
+		ret = imx664_write_reg(imx664, IMX664_REG_HCG_SEF2, 1, hcg);
+		if (ret) {
+			imx664_write_reg(imx664, IMX664_REG_HCG, 1, !hcg);
+			imx664_write_reg(imx664, IMX664_REG_HCG_SEF1, 1, !hcg);
+			dev_err(imx664->dev, "Failed to write HCG SEF2 register: %d\n", ret);
+			return ret;
+		}
+	}
+
+	dev_dbg(imx664->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx664->cur_mode->dol);
+
 	return 0;
 }
 /**
@@ -1555,8 +1603,12 @@ static int imx664_get_ctrl(struct v4l2_ctrl *ctrl)
 		len = 3;
 		break;
 	case IMX664_CID_VMAX:
-		reg = IMX664_REG_LPFR;
-		len = 3;
+		if (imx664->streaming) {
+			reg = IMX664_REG_LPFR;
+			len = 3;
+		} else {
+			ctrl->val = (imx664->vblank + imx664->cur_mode->height);
+		}
 		break;
 	case IMX664_CID_HMAX:
 		reg = IMX664_REG_HMAX;
@@ -1689,7 +1741,20 @@ static int imx664_set_ctrl(struct v4l2_ctrl *ctrl)
 		}
 		pm_runtime_put(imx664->dev);
     	break;
+	case IMX664_CID_WDR_PRIMING:
+		imx664->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
+	case IMX664_CID_CUSTOM_RHS1:
+		/* Stub: control accepted but not implemented for this sensor */
+		ret = 0;
+		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+		if (imx664->fast_toggle_state > FAST_TOGGLE_NONE && imx664->fast_toggle_state < FAST_TOGGLE_STATE_MAX) {
+			// if currently toggling, ignore this v4l control
+			return 0;
+		}
+
 		if (imx664->streaming) {
 			dev_warn(imx664->dev, "Cannot set WDR mode while streaming\n");
 			return -EBUSY;
@@ -1937,9 +2002,14 @@ out:
 static int imx664_init_pad_cfg(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *sd_state)
 {
+	static bool initialized = false;
 	struct imx664_mode *supported_modes;
 	struct imx664 *imx664 = to_imx664(sd);
 	struct v4l2_subdev_format fmt = { 0 };
+
+	/* Return immediately if pad has already been initialized */
+	if (initialized)
+		return 0;
 
 	if (imx664->streaming)
 		return 0;
@@ -1953,6 +2023,8 @@ static int imx664_init_pad_cfg(struct v4l2_subdev *sd,
 		sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	imx664_fill_pad_format(imx664, &supported_modes[DEFAULT_MODE_IDX],
 			       &fmt);
+
+	initialized = true;
 
 	return imx664_set_pad_format(sd, sd_state, &fmt);
 }
@@ -2031,6 +2103,9 @@ static int imx664_start_streaming(struct imx664 *imx664)
 		dev_err(imx664->dev, "fail to start streaming");
 		return ret;
 	}
+
+	imx664->wdr_priming_val = -1;
+
 	dev_info(imx664->dev, "imx664: start_streaming successful (%s)", imx664_get_mode_name(imx664));
 	return 0;
 }
@@ -2326,6 +2401,64 @@ done_endpoint_free:
 	return ret;
 }
 
+// toggle_type param might be useful in the future, we don't need it now though
+static int imx664_priming_apply(struct imx664 *imx664, int toggle_type)
+{
+	int ret;
+	
+	ret = imx664_set_hdr_mode(imx664, imx664->wdr_priming_val);
+	if (ret) {
+		dev_err(imx664->dev, "Failed to set HDR mode (%d) for priming: %d", imx664->wdr_priming_val, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int imx664_fast_toggle_set_state(struct imx664 *imx664, int toggle_state)
+{
+	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
+		dev_err(imx664->dev, "Invalid fast toggle state %d\n", toggle_state);
+		return -EINVAL;
+	}
+
+	imx664->fast_toggle_state = toggle_state;
+
+	switch (toggle_state) {
+	case FAST_TOGGLE_APPLY_PRIMING:
+		return imx664_priming_apply(imx664, toggle_state);
+	default:
+		// No action needed for other states
+		break;
+	}
+	
+	return 0;
+}
+
+static long imx664_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct imx664 *imx664 = to_imx664(sd);
+	int toggle_state;
+	long ret;
+
+	mutex_lock(&imx664->mutex);
+	switch (cmd) {
+	case HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS:
+		if (arg == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		toggle_state = *((int*)arg);
+		ret = imx664_fast_toggle_set_state(imx664, toggle_state);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+	mutex_unlock(&imx664->mutex);
+	return ret;
+}
+
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx664_video_ops = {
 	.s_stream = imx664_set_stream,
@@ -2341,7 +2474,12 @@ static const struct v4l2_subdev_pad_ops imx664_pad_ops = {
 	.set_fmt = imx664_set_pad_format,
 };
 
+static const struct v4l2_subdev_core_ops imx664_core_ops = {
+	.ioctl = imx664_ioctl,
+};
+
 static const struct v4l2_subdev_ops imx664_subdev_ops = {
+	.core = &imx664_core_ops,
 	.video = &imx664_video_ops,
 	.pad = &imx664_pad_ops,
 };
@@ -2407,7 +2545,7 @@ static int imx664_init_controls(struct imx664 *imx664)
 	struct ExposureLimits_t limits;
 	int ret;
 
-	const int num_ctrls = 12;
+	const int num_ctrls = 13;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
 		return ret;
@@ -2458,6 +2596,13 @@ static int imx664_init_controls(struct imx664 *imx664)
 	/* Initialize HCG control */
 	imx664_setup_custom_ctrl(imx664, &imx664->hcg_ctrl, IMX664_CID_HCG);
 
+	/* Custom RHS1 stub (not implemented for this sensor) */
+	imx664_setup_custom_ctrl_limits(imx664, &imx664->custom_rhs1_ctrl, IMX664_CID_CUSTOM_RHS1,
+		0, 65535, 0);
+
+	/* Initialize priming ctrls */
+	imx664_setup_custom_ctrl(imx664, &imx664->wdr_priming_ctrl, IMX664_CID_WDR_PRIMING);
+
 	imx664->vblank_ctrl =
 		v4l2_ctrl_new_std(ctrl_hdlr, &imx664_ctrl_ops, V4L2_CID_VBLANK,
 				  mode->vblank_min, mode->vblank_max, 1,
@@ -2473,6 +2618,11 @@ static int imx664_init_controls(struct imx664 *imx664)
 				IMX664_WDR_MAX, IMX664_WDR_STEP,
 				IMX664_WDR_DEFAULT);
 	
+	if (imx664->mode_sel_ctrl) {
+		// Always call callback, even if called with same value
+		// (this is important for fast toggle - which changes WDR mode outside of control framework)
+		imx664->mode_sel_ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
+	}
 	/* Read only controls */
 	imx664->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
 						&imx664_ctrl_ops,
@@ -2565,6 +2715,9 @@ static int imx664_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	imx664->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	imx664->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+
+	imx664->wdr_priming_val = -1;
+	imx664->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	/* Initialize source pad */
 	imx664->pad.flags = MEDIA_PAD_FL_SOURCE;

@@ -99,16 +99,28 @@ const struct hailo15_video_fmt *hailo15_fourcc_get_format(uint32_t fourcc, __u8 
 };
 EXPORT_SYMBOL(hailo15_fourcc_get_format);
 
+char *hailo15_fourcc_to_string(uint32_t fourcc, char *buf)
+{
+	buf[0] = (fourcc >> 0) & 0xFF;
+ 	buf[1] = (fourcc >> 8) & 0xFF;
+ 	buf[2] = (fourcc >> 16) & 0xFF;
+ 	buf[3] = (fourcc >> 24) & 0xFF;
+ 	buf[4] = '\0';
+ 	return buf;
+}
+EXPORT_SYMBOL(hailo15_fourcc_to_string);
+
 const struct hailo15_video_fmt *hailo15_fourcc_get_out_format(uint32_t fourcc, __u8 num_planes)
 {
 	const struct hailo15_video_fmt *formats = hailo15_get_out_formats();
 	int format;
+	char fourcc_str[5];
 
 	for (format = 0; format < hailo15_get_out_formats_count(); ++format) {
 		if (formats[format].fourcc == fourcc && formats[format].num_planes == num_planes)
 			return &formats[format];
 	}
-
+	pr_err("%s - no matching format for fourcc: 0x%X (%s), num_planes: %u\n", __func__, fourcc, hailo15_fourcc_to_string(fourcc, fourcc_str), num_planes);
 	return NULL;
 };
 EXPORT_SYMBOL(hailo15_fourcc_get_out_format);
@@ -127,15 +139,13 @@ const struct hailo15_video_fmt *hailo15_code_get_format(uint32_t code)
 };
 EXPORT_SYMBOL(hailo15_code_get_format);
 
-struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp_id)
+struct v4l2_subdev *hailo15_get_csi2rx_subdev(struct media_device *mdev, int grp_id)
 {
-	struct media_entity *entity, *csi_entity, *sensor_entity;
-	struct media_pad *csi_pad, *sensor_pad;
+	struct media_entity *entity, *csi_entity;
+	struct media_pad *csi_pad;
 	struct v4l2_subdev *pixel_mux_sd = NULL;
 	struct v4l2_subdev *csi_sd = NULL;
-	struct v4l2_subdev *sensor_sd = NULL;
 	int pad;
-	u32 i;
 
 	if (!mdev) {
 		pr_err("%s: media device is NULL\n", __func__);
@@ -170,6 +180,30 @@ struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp
 	csi_sd = media_entity_to_v4l2_subdev(csi_entity);
 	if (!csi_sd) {
 		pr_err("%s: no csi subdev found for group id %d (pad %d)\n", __func__, grp_id, pad);
+		return NULL;
+	}
+
+	return csi_sd;
+}
+EXPORT_SYMBOL(hailo15_get_csi2rx_subdev);
+
+struct v4l2_subdev *hailo15_get_sensor_subdev(struct media_device *mdev, int grp_id)
+{
+	struct media_entity *sensor_entity;
+	struct media_pad *sensor_pad;
+	struct v4l2_subdev *csi_sd = NULL;
+	struct v4l2_subdev *sensor_sd = NULL;
+	int pad;
+	u32 i;
+
+	if (!mdev) {
+		pr_err("%s: media device is NULL\n", __func__);
+		return NULL;
+	}
+
+	pad = pixel_mux_grp_id_to_sink_pad_index(grp_id);
+	csi_sd = hailo15_get_csi2rx_subdev(mdev, grp_id);
+	if (!csi_sd) {
 		return NULL;
 	}
 

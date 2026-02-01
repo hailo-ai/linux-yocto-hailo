@@ -109,7 +109,7 @@ static const struct v4l2_ctrl_ops hailo15_isp_2dnr_ctrl_ops = {
 	.g_volatile_ctrl = hailo15_isp_2dnr_g_ctrl,
 };
 
-const struct v4l2_ctrl_config hailo15_isp_2dnr_ctrls[] = {
+static const struct v4l2_ctrl_config hailo15_isp_2dnr_ctrls[] = {
 	{
 		.ops = &hailo15_isp_2dnr_ctrl_ops,
 		.id = HAILO15_ISP_CID_2DNR_ENABLE,
@@ -165,7 +165,7 @@ const struct v4l2_ctrl_config hailo15_isp_2dnr_ctrls[] = {
 		.name = "isp_2dnr_sigma",
 		.step = 1,
 		.min = 10,
-		.max = 1200,
+		.max = 10000,
 		.def = 10,
 	},
 };
