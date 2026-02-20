@@ -3,7 +3,7 @@
 
 config CMA_TRACKER
 	bool "CMA allocation tracker"
-	depends on CMA
+	depends on CMA && TRACEPOINTS
 	default y
 	help
 	  Generic memory tracker framework with CMA implementation.
@@ -37,7 +37,6 @@ if CMA_TRACKER
 		  - Full: Always scan the bitmap.
 		  - Cached: Use incremental cache.
 
-	# NOTICE: These 'config' lines must be aligned with 'choice', NOT inside 'help'
 	config CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_DISABLED
 		bool "Disabled"
 		help

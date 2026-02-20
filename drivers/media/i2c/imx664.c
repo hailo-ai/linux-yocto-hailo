@@ -2106,7 +2106,7 @@ static int imx664_start_streaming(struct imx664 *imx664)
 
 	imx664->wdr_priming_val = -1;
 
-	dev_info(imx664->dev, "imx664: start_streaming successful (%s)", imx664_get_mode_name(imx664));
+	dev_info(imx664->dev, "imx664: stream started (%s)", imx664_get_mode_name(imx664));
 	return 0;
 }
 
@@ -2118,8 +2118,15 @@ static int imx664_start_streaming(struct imx664 *imx664)
  */
 static int imx664_stop_streaming(struct imx664 *imx664)
 {
-	return imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
+	int ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
 				IMX664_MODE_STANDBY);
+	if (ret) {
+		dev_err(imx664->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		return ret;
+	}
+	
+	dev_info(imx664->dev, "imx664: stream stopped");
+	return 0;
 }
 
 /**

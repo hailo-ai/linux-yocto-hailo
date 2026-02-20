@@ -858,7 +858,7 @@ static void track_cma_free(const char *name, unsigned long pfn,
 	
 	/* Update free-time stats in the allocation record before freeing (only if enabled) */
 	if (heap_stats)
-		update_free_time_heap_stats(cma_tracker, pfn, heap_stats);
+		update_free_time_heap_stats(cma_tracker, pfn << PAGE_SHIFT, heap_stats);
 
 	mem_tracker_free(cma_tracker, pfn << PAGE_SHIFT, count << PAGE_SHIFT, &priv);
 }
@@ -881,6 +881,12 @@ static void probe_cma_alloc_finish(void *data, const char *name,
 		return;
 
 	START_TIMER(total);
+
+    /* First make sure the allocation succeeded */
+    if (page == NULL) {
+        pr_err("CMA allocation failed for %s with pfn %lu, count %lu, align %u\n", name, pfn, count, align);
+        return;
+    }
 	
 	spin_lock(&heap_stats_enabled_lock);
 	heap_stats_enabled = cma_heap_stats_enabled;
@@ -889,10 +895,11 @@ static void probe_cma_alloc_finish(void *data, const char *name,
 	/* Get heap stats only if enabled */
 	if (heap_stats_enabled) {
 		START_TIMER(get_stats);
-		get_cma_heap_stats(name, &stats, false);
 #if CONFIG_CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE == CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED
+		/* Update cache BEFORE getting stats so we capture post-alloc state */
 		update_used_pages_cache_alloc(name, count);
 #endif /* if CONFIG_CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE == CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED */
+		get_cma_heap_stats(name, &stats, false);
 		END_TIMER(get_stats);
 		stats_ptr = &stats;
 	}
@@ -955,10 +962,11 @@ static void probe_cma_release(void *data, const char *name,
 	/* Get heap stats only if enabled */
 	if (heap_stats_enabled) {
 		START_TIMER(get_stats);
-		get_cma_heap_stats(name, &stats, false);
 #if CONFIG_CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE == CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED
+		/* Update cache BEFORE getting stats so we capture post-free state */
 		update_used_pages_cache_free(name, count);
 #endif /* if CONFIG_CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE == CMA_TRACKER_HEAP_STATS_USED_PAGES_MODE_CACHED */
+		get_cma_heap_stats(name, &stats, false);
 		END_TIMER(get_stats);
 		stats_ptr = &stats;
 	}

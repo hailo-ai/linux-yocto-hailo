@@ -2054,7 +2054,7 @@ static int imx715_start_streaming(struct imx715 *imx715)
 	}
 	imx715->wdr_priming_val = -1;
 
-	dev_info(imx715->dev, "imx715: start_streaming successful (%s)", imx715->mode_string);
+	dev_info(imx715->dev, "imx715: stream started (%s)", imx715->mode_string);
 
 	return 0;
 }
@@ -2067,8 +2067,15 @@ static int imx715_start_streaming(struct imx715 *imx715)
  */
 static int imx715_stop_streaming(struct imx715 *imx715)
 {
-	return imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
+	int ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
 				IMX715_MODE_STANDBY);
+	if (ret) {
+		dev_err(imx715->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		return ret;
+	}
+
+	dev_info(imx715->dev, "imx715: stream stopped");
+	return 0;
 }
 
 /**

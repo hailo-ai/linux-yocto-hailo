@@ -4078,8 +4078,15 @@ static int imx678_start_streaming(struct imx678 *imx678)
  */
 static int imx678_stop_streaming(struct imx678 *imx678)
 {
-	return imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
+	int ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
 				IMX678_MODE_STANDBY);
+	if (ret) {
+		dev_err(imx678->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		return ret;
+	}
+
+	dev_info(imx678->dev, "imx678: stream stopped");
+	return 0;
 }
 
 /**

@@ -64,7 +64,12 @@ static void capture_stack_trace(unsigned long *entries, unsigned int *nr_entries
 	if (!entries || !nr_entries)
 		return;
 	
+#ifdef CONFIG_STACKTRACE
 	*nr_entries = stack_trace_save(entries, max_entries, 2);
+#else
+	/* Stack trace support not available - return empty stack */
+	*nr_entries = 0;
+#endif
 }
 
 /* Get current process context - macro to avoid buffer size issues */
@@ -188,8 +193,8 @@ static char *format_stack_trace(struct mem_tracker *tracker,
 /* Emit event to ftrace for Perfetto integration */
 static void emit_event_to_ftrace(struct mem_tracker *tracker,
 				   const struct mem_event *event,
-				    enum mem_event_type type,
-				    unsigned long address, size_t size)
+				   enum mem_event_type type,
+				   unsigned long address, size_t size)
 {
 	char stack_buf[800];
 	char *stack_str = NULL;
@@ -336,7 +341,7 @@ static void build_event_generic(struct mem_tracker *tracker,
 	} else if (tracker->stack_capture != MEM_TRACKER_STACK_DISABLED) {
 		/* Capture stack if enabled */
 		capture_stack_trace(event->stack_entries, &event->nr_stack_entries,
-				    MEM_TRACKER_MAX_STACK_DEPTH);
+				MEM_TRACKER_MAX_STACK_DEPTH);
 	} else {
 		event->nr_stack_entries = 0;
 	}
@@ -349,8 +354,8 @@ static void build_event_generic(struct mem_tracker *tracker,
 
 /* Build event struct from allocation record (for alloc events) */
 static void build_event_for_alloc(struct mem_tracker *tracker,
-				   struct mem_event *event,
-				   const struct mem_alloc_record *alloc_rec)
+				struct mem_event *event,
+				const struct mem_alloc_record *alloc_rec)
 {
 	if (!alloc_rec)
 		return;
@@ -1668,44 +1673,46 @@ struct mem_tracker *mem_tracker_register(struct mem_tracker_config *config)
 	/* Create debugfs directory */
 	if (!mem_tracker_root) {
 		mem_tracker_root = debugfs_create_dir("mem_trackers", NULL);
-		if (!mem_tracker_root) {
-			ret = -ENODEV;
-			goto err_free_hist;
+		
+		/* Create files only if debugfs directory is available */
+		if (mem_tracker_root) {
+			/* Create session_id file at root level */
+			debugfs_create_file("session_id", 0644, mem_tracker_root, NULL, &session_id_fops);
+			
+			/* Create enable file at root level */
+			debugfs_create_file("enable", 0644, mem_tracker_root, NULL, &enable_fops);
+		} else {
+			pr_warn("mem_tracker: debugfs not available, continuing without debugfs interface\n");
 		}
-		
-		/* Create session_id file at root level */
-		debugfs_create_file("session_id", 0644, mem_tracker_root, NULL, &session_id_fops);
-		
-		/* Create enable file at root level */
-		debugfs_create_file("enable", 0644, mem_tracker_root, NULL, &enable_fops);
 	}
 	
-	tracker->debugfs_dir = debugfs_create_dir(tracker->name, mem_tracker_root);
-	if (!tracker->debugfs_dir) {
-		ret = -ENODEV;
-		goto err_free_hist;
+	if (mem_tracker_root) {
+		tracker->debugfs_dir = debugfs_create_dir(tracker->name, mem_tracker_root);
+		/* Create files only if debugfs directory is available */
+		if (tracker->debugfs_dir) {
+			/* Create debugfs files */
+			debugfs_create_file("summary", 0444, tracker->debugfs_dir, tracker, &summary_fops);
+			debugfs_create_file("active", 0444, tracker->debugfs_dir, tracker, &active_brief_fops);
+			debugfs_create_file("active_detailed", 0444, tracker->debugfs_dir, tracker, &active_detailed_fops);
+			debugfs_create_file("events", 0444, tracker->debugfs_dir, tracker, &events_brief_fops);
+			debugfs_create_file("events_detailed", 0444, tracker->debugfs_dir, tracker, &events_detailed_fops);
+			debugfs_create_file("history", 0444, tracker->debugfs_dir, tracker, &history_brief_fops);
+			debugfs_create_file("history_detailed", 0444, tracker->debugfs_dir, tracker, &history_detailed_fops);
+			debugfs_create_file("buffer_size", 0644, tracker->debugfs_dir, tracker, &buffer_size_fops);
+			debugfs_create_file("stack_capture", 0644, tracker->debugfs_dir, tracker, &stack_capture_fops);
+			
+			pr_info("Memory tracker '%s' registered at /sys/kernel/debug/mem_trackers/%s/\n",
+				tracker->name, tracker->name);
+		} else {
+			pr_warn("mem_tracker: Failed to create debugfs directory for '%s', continuing without debugfs interface\n",
+				tracker->name);
+		}
 	}
-	
-	/* Create debugfs files */
-	debugfs_create_file("summary", 0444, tracker->debugfs_dir, tracker, &summary_fops);
-	debugfs_create_file("active", 0444, tracker->debugfs_dir, tracker, &active_brief_fops);
-	debugfs_create_file("active_detailed", 0444, tracker->debugfs_dir, tracker, &active_detailed_fops);
-	debugfs_create_file("events", 0444, tracker->debugfs_dir, tracker, &events_brief_fops);
-	debugfs_create_file("events_detailed", 0444, tracker->debugfs_dir, tracker, &events_detailed_fops);
-	debugfs_create_file("history", 0444, tracker->debugfs_dir, tracker, &history_brief_fops);
-	debugfs_create_file("history_detailed", 0444, tracker->debugfs_dir, tracker, &history_detailed_fops);
-	debugfs_create_file("buffer_size", 0644, tracker->debugfs_dir, tracker, &buffer_size_fops);
-	debugfs_create_file("stack_capture", 0644, tracker->debugfs_dir, tracker, &stack_capture_fops);
 	
 	tracker->initialized = true;
 	
-	pr_info("Memory tracker '%s' registered at /sys/kernel/debug/mem_trackers/%s/\n",
-		tracker->name, tracker->name);
-	
 	return tracker;
 
-err_free_hist:
-	kfree(tracker->hist_buffer.records);
 err_free_events:
 	kfree(tracker->events_buffer.events);
 err_free_tracker:
@@ -1725,8 +1732,9 @@ void mem_tracker_unregister(struct mem_tracker *tracker)
 	
 	tracker->initialized = false;
 	
-	/* Remove debugfs entries */
-	debugfs_remove_recursive(tracker->debugfs_dir);
+	/* Remove debugfs entries (if debugfs was available) */
+	if (tracker->debugfs_dir)
+		debugfs_remove_recursive(tracker->debugfs_dir);
 	
 	/* Free all active allocations */
 	spin_lock_irqsave(&tracker->alloc_lock, flags);

@@ -1204,6 +1204,8 @@ static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
 		return -EINVAL;
 	}
 
+	/* Disable buffer queuing before cleanup to prevent race */
+	vid_node->queue_accepting_buffers = false;
 	vid_node->streaming = STREAM_OFF;
 	ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_OFF);
 	if (ret) {
@@ -1367,6 +1369,11 @@ static int hailo15_queue_setup(struct vb2_queue *q, unsigned int *nbuffers,
 	if (*nbuffers > MAX_NUM_FRAMES - q->num_buffers)
 		*nbuffers = MAX_NUM_FRAMES - q->num_buffers;
 
+	/* Enable buffer queuing when buffers are allocated */
+	if (*nbuffers > 0) {
+		vid_node->queue_accepting_buffers = true;
+	}
+
 	format =
 		hailo15_fourcc_get_format(vid_node->fmt.fmt.pix_mp.pixelformat, vid_node->fmt.fmt.pix_mp.num_planes);
 	if (!format) {
@@ -1505,6 +1512,14 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	}
 
 	mutex_lock(&vid_node->qlock);
+
+	/* Check if buffer queuing is allowed - prevents race during stream stop */
+	if (!vid_node->queue_accepting_buffers) {
+		mutex_unlock(&vid_node->qlock);
+		pr_info("%s - queue not accepting buffers, returning buffer to vb2\n", __func__);
+		vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
+		return;
+	}
 
 	/*
 	Usually, buffer process (pass buffer to isp driver) is done only on buffer done.
@@ -1720,6 +1735,9 @@ static int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int 
 
 	dev_dbg(vid_node->dev, "start streaming on node %d\n", vid_node->id);
 
+	/* Re-enable buffer queuing at stream start (defensive, should already be set by queue_setup) */
+	vid_node->queue_accepting_buffers = true;
+
 	if (!vid_node->streaming) {
 		ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
 		if (ret) {
@@ -1736,6 +1754,7 @@ static int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int 
 
 	goto out;
 err:
+	hailo15_video_node_subdev_set_stream(vid_node, STREAM_OFF);
 	hailo15_video_node_queue_clean(vid_node, VB2_BUF_STATE_QUEUED);
 out:
 	return ret;
@@ -1910,6 +1929,7 @@ hailo15_video_node_video_device_init(struct hailo15_video_node *vid_node)
 	vid_node->video_dev->vfl_type = VFL_TYPE_VIDEO;
 	vid_node->video_dev->vfl_dir = VFL_DIR_RX;
 	vid_node->streaming = STREAM_OFF;
+	vid_node->queue_accepting_buffers = false; /* Will be set true in queue_setup */
 	vid_node->video_dev->device_caps =
 		V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING | V4L2_CAP_EXT_PIX_FORMAT;
 

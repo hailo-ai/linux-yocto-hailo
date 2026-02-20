@@ -1002,7 +1002,7 @@ static int imx334_start_streaming(struct imx334 *imx334)
 		dev_err(imx334->dev, "fail to start streaming");
 		return ret;
 	}
-	pr_info("imx334: start_streaming successful\n");
+	dev_info(imx334->dev, "imx334: stream started");
 	return 0;
 }
 
@@ -1014,8 +1014,15 @@ static int imx334_start_streaming(struct imx334 *imx334)
  */
 static int imx334_stop_streaming(struct imx334 *imx334)
 {
-	return imx334_write_reg(imx334, IMX334_REG_MODE_SELECT,
+	int ret = imx334_write_reg(imx334, IMX334_REG_MODE_SELECT,
 				1, IMX334_MODE_STANDBY);
+	if (ret) {
+		dev_err(imx334->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		return ret;
+	}
+	
+	dev_info(imx334->dev, "imx334: stream stopped");
+	return 0;
 }
 
 /**

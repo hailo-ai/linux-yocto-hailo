@@ -2243,7 +2243,7 @@ static int imx675_start_streaming(struct imx675 *imx675)
 
 	imx675->wdr_priming_val = -1;
 
-	dev_info(imx675->dev, "imx675: start_streaming successful (%s)", imx675_get_mode_name(imx675));
+	dev_info(imx675->dev, "imx675: stream started (%s)", imx675_get_mode_name(imx675));
 	return 0;
 }
 
@@ -2255,8 +2255,15 @@ static int imx675_start_streaming(struct imx675 *imx675)
  */
 static int imx675_stop_streaming(struct imx675 *imx675)
 {
-	return imx675_write_reg(imx675, IMX675_REG_MODE_SELECT, 1,
+	int ret = imx675_write_reg(imx675, IMX675_REG_MODE_SELECT, 1,
 				IMX675_MODE_STANDBY);
+	if (ret) {
+		dev_err(imx675->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		return ret;
+	}
+
+	dev_info(imx675->dev, "imx675: stream stopped");
+	return 0;
 }
 
 /**

@@ -56,6 +56,7 @@ struct hailo15_video_node {
 	struct mutex ioctl_mutex;
 
 	int streaming;
+	bool queue_accepting_buffers; /* Prevents buffer queuing during stream stop/cleanup */
 	int path;
 	int sequence;
 	int pipeline_init;
