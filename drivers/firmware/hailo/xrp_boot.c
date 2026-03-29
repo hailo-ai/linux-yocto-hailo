@@ -234,7 +234,7 @@ int xrp_boot(struct xvp *xvp)
 
     if (xvp->state == DSP_STATE_FATAL_ERROR) {
         dev_err(xvp->dev,
-            "DSP encountered fatal error before. Reboot requied. Aborting\n");
+            "DSP encountered fatal error before. Reboot required. Aborting\n");
         ret = -EPERM;
         goto fatal_out;
     }
@@ -249,7 +249,9 @@ int xrp_boot(struct xvp *xvp)
             ret = xrp_shutdown_hw(xvp);
             if (ret < 0) {
                 goto out;
-            }    
+            }
+            xrp_release_firmware(xvp);
+            xvp->state = DSP_STATE_CLOSED;
         } else {
             xrp_release_dsp(xvp);
             goto out;     
