@@ -132,15 +132,17 @@ static int __init wait_for_initrd_image(void)
 	int timeout = 0;
 	int ret;
 	const int check_interval = 500; /* 500 milliseconds */
-	const int max_timeout = CONFIG_WAIT_INITRD_IMAGE_TIMEOUT;
+	const int max_timeout = CONFIG_WAIT_INITRD_IMAGE_TIMEOUT * 2; /* Convert seconds to half-seconds for timeout counting */
 
-	// TODO: maybe use .gz
-	printk(KERN_INFO "Waiting max %d sec for /initrd.image to be available...\n", max_timeout);
+	if (max_timeout)
+		printk(KERN_INFO "Waiting max %d sec for /initrd.image...\n", max_timeout / 2);
+	else
+		printk(KERN_INFO "Waiting indefinitely for /initrd.image...\n");
 
-	/* Remove any existing /initrd.image to ensure we get a fresh upload (caused by initramfs::do_populate_rootfs())*/
+	/* Remove any existing /initrd.image to ensure we get a fresh upload (caused by initramfs::do_populate_rootfs()) */
 	init_unlink("/initrd.image");
 
-	while (timeout < max_timeout) {
+	while (max_timeout == 0 || timeout < max_timeout) {
 		/* Check if initrd image file exists and has reasonable size */
 		file = filp_open("/initrd.image", O_RDONLY, 0);
 		if (!IS_ERR(file)) {
@@ -159,8 +161,12 @@ static int __init wait_for_initrd_image(void)
 		
 		/* Print progress every 5 seconds */
 		if (timeout % 10 == 0) {
-			printk(KERN_INFO "Still waiting for /initrd.image to be available... (%d/%d seconds)\n",
-			       timeout / 2, max_timeout);
+			if (max_timeout)
+				printk(KERN_INFO "Still waiting for /initrd.image to be available... (%d/%d seconds)\n",
+					timeout / 2, max_timeout / 2);
+			else
+				printk(KERN_INFO "Still waiting for /initrd.image to be available... (%d seconds)\n",
+					timeout / 2);
 		}
 	}
 

@@ -32,7 +32,7 @@
         csi-id = <0>;
 
         port {
-            sensor_out_csi2rx: endpoint {
+            sensor_imx334_out_csi2rx: endpoint {
                 data-lanes = <1 2 3 4>;
                 remote-endpoint = <&csi2rx_in_sensor>;
 		link-frequencies = /bits/ 64 <891000000>;

@@ -83,9 +83,10 @@ struct hailo15_get_vsm_params {
 
 #define queue_to_node(__q) container_of(__q, struct hailo15_video_node, queue)
 
-int hailo15_video_post_event_create_pipeline(
-	struct hailo15_video_node *vid_node);
-int hailo15_video_post_event_release_pipeline(
-	struct hailo15_video_node *vid_node);
+int hailo15_video_post_event_create_pipeline(struct hailo15_video_node *vid_node);
+int hailo15_video_post_event_release_pipeline(struct hailo15_video_node *vid_node);
+
+int hailo15_video_post_event_create_pipeline_fast_toggle(struct hailo15_video_node *vid_node);
+int hailo15_video_post_event_release_pipeline_fast_toggle(struct hailo15_video_node *vid_node);
 
 #endif /*_HAILO_VIDEO_H */

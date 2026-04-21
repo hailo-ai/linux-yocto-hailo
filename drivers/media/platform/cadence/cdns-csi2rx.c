@@ -176,6 +176,7 @@ struct csi2rx_priv {
 
 	enum csi2rx_mode cur_mode;
 	enum csi2rx_mode priming_mode; // next mode to be applied on fast toggle
+	bool is_fast_toggle_in_progress;
 	enum fast_toggle_state toggle_state;
     int irq;
 	bool pm_enabled;
@@ -247,7 +248,10 @@ static int csi2rx_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case CSI2RX_CID_MODE_SEL:
-		csi2rx->cur_mode = ctrl->val;
+		// TODO: my next PR will allow us to remove this condition
+		if (!csi2rx->is_fast_toggle_in_progress) {
+			csi2rx->cur_mode = ctrl->val;
+		}
 		break;
 	case CSI2RX_CID_MODE_SEL_PRIMING:
 		csi2rx->priming_mode = ctrl->val;
@@ -280,7 +284,11 @@ static int csi2rx_fast_toggle_set_status(struct v4l2_subdev *sd, struct fast_tog
 	switch (toggle_data->state) {
 	case FAST_TOGGLE_APPLY_PRIMING:
 		// Apply the priming mode that was set before the fast toggle
+		csi2rx->is_fast_toggle_in_progress = true;
 		csi2rx->cur_mode = csi2rx->priming_mode;
+		break;
+	case FAST_TOGGLE_NONE:
+		csi2rx->is_fast_toggle_in_progress = false;
 		break;
 	default:
 		// no special operation needed for other states
@@ -961,6 +969,7 @@ static int csi2rx_probe(struct platform_device *pdev)
 
 	csi2rx->cur_mode = CSI2RX_MODE_SDR;
 	csi2rx->priming_mode = CSI2RX_MODE_SDR;
+	csi2rx->is_fast_toggle_in_progress = false;
 	csi2rx->toggle_state = FAST_TOGGLE_NONE;
 
 	ret = csi2rx_init_controls(csi2rx);
