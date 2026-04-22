@@ -15,6 +15,7 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/ch9.h>
 #include <linux/slab.h>
+#include <linux/delay.h>
 #include <linux/soc/hailo/scmi_hailo_ops.h>
 #include <linux/soc/hailo/scmi_hailo_protocol.h>
 
@@ -69,18 +70,13 @@
 #define HAILO_SW_UPDATE_FUNCTION_NAME "hailo_swu_load"
 #endif
 
-static bool disabled = false;
-module_param(disabled, bool, 0644);
-MODULE_PARM_DESC(disabled, "Disable Hailo USB gadget (allows other gadgets to bind)");
-
-/* Global composite device pointer for runtime control */
-static struct usb_composite_dev *hailo_cdev = NULL;
+static bool gadget_enabled = false;
 
 /* Device descriptor */
 static struct usb_device_descriptor hailo_device_desc = {
     .bLength = USB_DT_DEVICE_SIZE,
     .bDescriptorType = USB_DT_DEVICE,
-    .bcdUSB = cpu_to_le16(0x0300), /* USB 3.0 */
+     /* .bcdUSB = DYNAMIC */
     .bDeviceClass = USB_CLASS_VENDOR_SPEC,
     .bDeviceSubClass = 0,
     .bDeviceProtocol = 0,
@@ -121,13 +117,13 @@ static struct usb_gadget_strings *hailo_dev_strings[] = {
 
 /* Function instances for each configuration */
 #if IS_ENABLED(CONFIG_USB_F_HAILO_RFS_LOAD)
-static struct usb_function_instance *rfs_load_func_inst = NULL;
-static struct usb_function *rfs_load_func = NULL;
+static struct usb_function_instance *rfs_load_func_inst;
+static struct usb_function *rfs_load_func;
 #endif
 
 #if IS_ENABLED(CONFIG_USB_F_HAILO_SWU_LOAD)
-static struct usb_function_instance *sw_update_func_inst = NULL;
-static struct usb_function *sw_update_func = NULL;
+static struct usb_function_instance *sw_update_func_inst;
+static struct usb_function *sw_update_func;
 #endif
 
 #if IS_ENABLED(CONFIG_USB_F_HAILO_RFS_LOAD)
@@ -148,7 +144,6 @@ static int hailo_do_rfs_load_config(struct usb_configuration *c)
     if (ret) {
         pr_err("hailo: failed to add RFS Loading function: %d\n", ret);
         usb_put_function(rfs_load_func);
-        rfs_load_func = NULL;
         return ret;
     }
 
@@ -175,10 +170,10 @@ static int hailo_do_sw_update_config(struct usb_configuration *c)
     if (ret) {
         pr_err("hailo: failed to add SW Update function: %d\n", ret);
         usb_put_function(sw_update_func);
-        sw_update_func = NULL;
         return ret;
     }
 
+    pr_info("hailo: SW Update function successfully added to configuration\n");
     return 0;
 }
 #endif /* CONFIG_USB_F_HAILO_SWU_LOAD */
@@ -238,32 +233,24 @@ static int hailo_composite_bind(struct usb_composite_dev *cdev)
     int num_configs = 0;
     int ret;
 
-    if (disabled) {
-        pr_info("Hailo gadget disabled by parameter\n");
-        return -ENODEV;
-    }
-
     pr_info("hailo: composite bind\n");
 
     /* Create function instances once during bind */
 #if IS_ENABLED(CONFIG_USB_F_HAILO_RFS_LOAD)
-    if (!rfs_load_func_inst) {
-        rfs_load_func_inst = usb_get_function_instance(HAILO_RFS_LOAD_FUNCTION_NAME);
-        if (IS_ERR(rfs_load_func_inst)) {
-            pr_err("hailo: failed to get RFS Loading function instance: %ld\n", PTR_ERR(rfs_load_func_inst));
-            return PTR_ERR(rfs_load_func_inst);
-        }
+    rfs_load_func_inst = usb_get_function_instance(HAILO_RFS_LOAD_FUNCTION_NAME);
+    if (IS_ERR(rfs_load_func_inst)) {
+        pr_err("hailo: failed to get RFS Loading function instance: %ld\n", PTR_ERR(rfs_load_func_inst));
+        ret = PTR_ERR(rfs_load_func_inst);
+        goto err_put_instances;
     }
 #endif
 
 #if IS_ENABLED(CONFIG_USB_F_HAILO_SWU_LOAD)
-    if (!sw_update_func_inst) {
-        sw_update_func_inst = usb_get_function_instance(HAILO_SW_UPDATE_FUNCTION_NAME);
-        if (IS_ERR(sw_update_func_inst)) {
-            pr_err("hailo: failed to get SW Update function instance: %ld\n", PTR_ERR(sw_update_func_inst));
-            ret = PTR_ERR(sw_update_func_inst);
-            goto err_put_instances;
-        }
+    sw_update_func_inst = usb_get_function_instance(HAILO_SW_UPDATE_FUNCTION_NAME);
+    if (IS_ERR(sw_update_func_inst)) {
+        pr_err("hailo: failed to get SW Update function instance: %ld\n", PTR_ERR(sw_update_func_inst));
+        ret = PTR_ERR(sw_update_func_inst);
+        goto err_put_instances;
     }
 #endif
 
@@ -319,23 +306,19 @@ static int hailo_composite_bind(struct usb_composite_dev *cdev)
         goto err_put_instances;
     }
 
-    /* Store composite device pointer for runtime control */
-    hailo_cdev = cdev;
-
     pr_info("hailo: composite bind complete with %d configuration(s)\n", num_configs);
     return 0;
 
 err_put_instances:
+    /* No cleanup needed for usb_gstrings_attach or configs - framework handles them on bind failure */
 #if IS_ENABLED(CONFIG_USB_F_HAILO_SWU_LOAD)
-    if (sw_update_func_inst) {
+    if (!IS_ERR_OR_NULL(sw_update_func_inst)) {
         usb_put_function_instance(sw_update_func_inst);
-        sw_update_func_inst = NULL;
     }
 #endif
 #if IS_ENABLED(CONFIG_USB_F_HAILO_RFS_LOAD)
-    if (rfs_load_func_inst) {
+    if (!IS_ERR_OR_NULL(rfs_load_func_inst)) {
         usb_put_function_instance(rfs_load_func_inst);
-        rfs_load_func_inst = NULL;
     }
 #endif
     return ret;
@@ -346,28 +329,21 @@ static int hailo_composite_unbind(struct usb_composite_dev *cdev)
 {
     pr_info("hailo: composite unbind\n");
 
-    /* Clear composite device pointer */
-    hailo_cdev = NULL;
-
 #if IS_ENABLED(CONFIG_USB_F_HAILO_RFS_LOAD)
-    if (rfs_load_func) {
+    if (!IS_ERR_OR_NULL(rfs_load_func)) {
         usb_put_function(rfs_load_func);
-        rfs_load_func = NULL;
     }
-    if (rfs_load_func_inst) {
+    if (!IS_ERR_OR_NULL(rfs_load_func_inst)) {
         usb_put_function_instance(rfs_load_func_inst);
-        rfs_load_func_inst = NULL;
     }
 #endif
 
 #if IS_ENABLED(CONFIG_USB_F_HAILO_SWU_LOAD)
-    if (sw_update_func) {
+    if (!IS_ERR_OR_NULL(sw_update_func)) {
         usb_put_function(sw_update_func);
-        sw_update_func = NULL;
     }
-    if (sw_update_func_inst) {
+    if (!IS_ERR_OR_NULL(sw_update_func_inst)) {
         usb_put_function_instance(sw_update_func_inst);
-        sw_update_func_inst = NULL;
     }
 #endif
 
@@ -388,29 +364,51 @@ static struct usb_composite_driver hailo_composite_driver = {
 /* Sysfs interface for runtime control */
 static ssize_t hailo_gadget_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-    return sprintf(buf, "%s\n", (hailo_cdev && !disabled) ? "enable" : "disable");
+    return sprintf(buf, "%s\n", (gadget_enabled) ? "enable" : "disable");
 }
 
 
 static ssize_t hailo_gadget_store(struct kobject *kobj, struct kobj_attribute *attr,
                                  const char *buf, size_t count)
 {
-    if (strncmp(buf, "disable", strlen("disable")) == 0 || strncmp(buf, "0", strlen("0")) == 0) {
-        if (hailo_cdev) {
-            pr_info("Hailo gadget: disabling via sysfs\n");
-            /* Set disabled flag first to prevent re-binding */
-            disabled = true;
-            /* Unregister composite driver to free UDC completely */
-            usb_composite_unregister(&hailo_composite_driver);
-        }
-    } else if (strncmp(buf, "enable", strlen("enable")) == 0 || strncmp(buf, "1", strlen("1")) == 0) {
-        if (!hailo_cdev && disabled) {
-            pr_info("Hailo gadget: enabling via sysfs\n");
-            disabled = false;
-            /* Re-register composite driver */
-            return usb_composite_probe(&hailo_composite_driver);
-        }
+    bool do_enable;
+    static atomic_t in_progress = ATOMIC_INIT(0);
+    int rc = count;
+
+    if (strncmp(buf, "disable", strlen("disable")) == 0) {
+        do_enable = false;
+    } else if (strncmp(buf, "enable", strlen("enable")) == 0) {
+        do_enable = true;
+    } else {
+        pr_err("Hailo gadget: invalid value '%s', use 'enable' or 'disable'\n", buf);
+        return -EINVAL;
     }
+
+    if (do_enable == gadget_enabled) {
+        pr_info("Hailo gadget: already in requested state '%s'\n", do_enable ? "enable" : "disable");
+        return count;
+    }    
+    
+    if (atomic_cmpxchg(&in_progress, 0, 1) != 0) {
+        pr_warn("Hailo gadget: previous request still pending\n");
+        return -EBUSY;
+    }
+
+    pr_info("Hailo gadget: %s...\n", do_enable ? "enabling" : "disabling");
+    if (do_enable) {
+        rc = usb_composite_probe(&hailo_composite_driver);
+        if (rc) {
+            pr_err("Hailo gadget: enabling failed, rc: %d\n", rc);
+            atomic_set(&in_progress, 0);
+            return rc;
+        }
+    } else {
+        /* Unregister composite driver to free UDC completely */
+        usb_composite_unregister(&hailo_composite_driver);
+    }
+    gadget_enabled = do_enable;
+    pr_info("Hailo gadget: %s\n", gadget_enabled ? "enabled" : "disabled");
+    atomic_set(&in_progress, 0);
     return count;
 }
 
@@ -438,6 +436,9 @@ static int __init hailo_init(void)
     if (ret) {
         sysfs_remove_file(hailo_gadget_kobj, &hailo_gadget_attr.attr);
         kobject_put(hailo_gadget_kobj);
+    } else {
+        pr_info("Hailo gadget: composite driver registered successfully\n");
+        gadget_enabled = true;
     }
 
     return ret;

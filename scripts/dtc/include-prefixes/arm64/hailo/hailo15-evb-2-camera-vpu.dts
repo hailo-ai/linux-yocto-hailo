@@ -5,16 +5,10 @@
 
 /dts-v1/;
 #include "hailo15-evb-base.dtsi"
-#include <dt-bindings/pinctrl/hailo15_cpld.h>
+#include <dt-bindings/misc/hailo15_evb_cpld.h>
 
 / {
     model = "Hailo - Hailo15 EVB 2-Camera VPU Development Board";
-
-    sensor_clk: sensor_clk {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <24000000>;
-    };
 };
 
 &csi2rx0 {
@@ -166,24 +160,9 @@
     };
 };
 
-&i2c_0 {
-    sensor_0: camera-sensor@1a {
-        status = "okay";
-        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
-        reg = <0x1a>;
-        clocks = <&sensor_clk>;
-        clock-names = "inclk";
-        clock-frequency = <24000000>;
-        csi-id = <0>;
-        reset-gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
-        port {
-            sensor_out_csi2rx: endpoint {
-                data-lanes = <1 2 3 4>;
-                remote-endpoint = <&csi2rx_in_sensor>;
-		        link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
-            };
-        };
-     };
+&sensor_0 {
+    status = "okay";
+    reset-gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
 };
 
 &i2c_2 {
@@ -220,10 +199,11 @@
     status = "okay";
 };
 
-&pinctrl {
-    i2c-bus = <&i2c_1>;
-    board-config = <H15_CPLD_BOARD_CONFIG__TWO_CAMERAS_VPU>;
+&cpld {
+    board-config = <H15_EVB_CPLD_BOARD_CONFIG__TWO_CAMERAS_VPU>;
+};
 
+&pinctrl {
     pinctrl_i2c2: i2c2 {
         function = "i2c2";
         groups = "i2c2_1_grp";

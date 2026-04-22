@@ -29,6 +29,14 @@
 #define STREAM_OFF 0
 #define STREAM_ON 1
 
+/* Threshold for logging slow QBUF processing */
+#define HAILO15_QBUF_SLOW_THRESHOLD_MS (10)
+
+/* Threshold for logging slow frame processing in buffer_done.
+ * One frame at 30fps.
+ */
+#define HAILO15_FRAME_SLOW_THRESHOLD_MS (33)
+
 #define VIDEO_INDEX_VALIDATE(index, do_fail)                                   \
 	do {                                                                   \
 		if ((index) >= MAX_VIDEO_NODE_NUM) {                           \
@@ -101,7 +109,7 @@ static int hailo15_g_fmt_vid_out(struct file *file, void *priv,
 	if (WARN_ON(!vid_node))
 		return -EINVAL;
 
-	if (f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+	if (f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		return -EINVAL;
 
 	/* is it really a user-space struct ?*/
@@ -306,7 +314,6 @@ static const struct v4l2_ioctl_ops video_ioctl_ops = {
 	.vidioc_querybuf = vb2_ioctl_querybuf,
 	.vidioc_qbuf = vb2_ioctl_qbuf,
 	.vidioc_dqbuf = vb2_ioctl_dqbuf,
-	.vidioc_expbuf = vb2_ioctl_expbuf,
 };
 
 static int hailo15_video_out_node_stream_cancel(struct hailo15_video_out_node *vid_node)
@@ -450,6 +457,7 @@ static int hailo15_video_out_node_buffer_init(struct vb2_buffer *vb)
 	int plane;
 
 	memset(buf->dma, 0, sizeof(buf->dma));
+	hailo15_buf_list_init(buf);
 	if (vb->num_planes >= FMT_MAX_PLANES) {
 		dev_err(vid_node->dev, "%s - num of planes too big: %u\n", __func__,
 			vb->num_planes);
@@ -500,6 +508,8 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	struct hailo15_video_out_node *vid_node = queue_to_node(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf = container_of(vb, struct vb2_v4l2_buffer, vb2_buf);
 	struct hailo15_buffer *hbuf = container_of(vbuf, struct hailo15_buffer, vb);
+	ktime_t qbuf_start;
+	s64 elapsed_ms;
 
 	if (WARN_ON(!vb) || WARN_ON(!vb->vb2_queue)) {
 		pr_err("%s - WARN_ON(!vb) || WARN_ON(!vb->vb2_queue), returning\n",
@@ -512,9 +522,20 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 		       __func__);
 		return;
 	}
+
+	memset(&hbuf->timing, 0, sizeof(hbuf->timing));
+	qbuf_start = ktime_get();
+	hbuf->timing.qbuf_start = qbuf_start;
+
  	/* TODO call isp buffer_queue (isp will manage the buffer queue)*/
 	trace_hailo_buffer_queued(hbuf, vid_node);
 	hailo15_video_device_process_vb2_buffer(vb);
+
+	elapsed_ms = ktime_ms_delta(ktime_get(), qbuf_start);
+	/* MSW-15089: slow QBUF log removed — can trigger under
+	 * heavy workloads without indicating an actual problem.
+	 */
+	(void)elapsed_ms;
 }
 
 static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
@@ -522,6 +543,8 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 					    int grp_id)
 {
 	struct hailo15_video_out_node *vid_node;
+	ktime_t now;
+	s64 elapsed_ms;
 	int ret;
 
 	vid_node = NULL;
@@ -539,6 +562,16 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	}
 
 	if (buf) {
+		now = ktime_get();
+
+		if (buf->timing.fe_switch_start) {
+			elapsed_ms = ktime_ms_delta(now, buf->timing.fe_switch_start);
+			/* MSW-15089: log removed — triggers frequently under
+			 * HDR + Detection without indicating an actual problem.
+			 */
+			(void)elapsed_ms;
+		}
+
 		buf->queue_sequence = vid_node->sequence;
 		buf->vb.sequence = vid_node->sequence % vid_node->reqbufs;
 		vid_node->sequence++;
