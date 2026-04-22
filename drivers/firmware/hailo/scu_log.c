@@ -73,10 +73,25 @@ static ssize_t scu_log_read(struct file *fp, char __user *buf, size_t count, lof
 	return bytes_read;
 }
 
+static int scu_log_open(struct inode *inode, struct file *fp)
+{
+    struct scu_log_data *data = filep_to_data(fp);
+    data->idx = 0;
+    return 0;
+}
+
+static int scu_log_release(struct inode *inode, struct file *fp)
+{
+    struct scu_log_data *data = filep_to_data(fp);
+    data->idx = 0;
+    return 0;
+}
 
 static const struct file_operations scu_log_fops = {
 	.owner          = THIS_MODULE,
 	.read           = scu_log_read,
+	.open           = scu_log_open,
+	.release        = scu_log_release,
 };
 
 static int panic_event(struct notifier_block *this,

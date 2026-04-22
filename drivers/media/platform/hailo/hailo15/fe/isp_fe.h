@@ -69,11 +69,9 @@ enum {
 
 int isp_fe_init(struct vvcam_fe_dev *dev);
 int isp_fe_destory(struct vvcam_fe_dev *dev);
-int isp_fe_read_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
-int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 int isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
-int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args);
-int isp_fe_get_status(struct vvcam_fe_dev *dev, void __user *args);
+int isp_fe_set_params(struct vvcam_fe_dev *dev, struct isp_fe_params_t *params);
+int isp_fe_get_status(struct vvcam_fe_dev *dev, struct isp_fe_status_t *status);
 int isp_fe_reset(struct vvcam_fe_dev *dev);
 
 #endif
