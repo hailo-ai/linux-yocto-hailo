@@ -18,6 +18,13 @@
 
 &i2c_1 {
     status = "okay";
+
+    cpld: cpld@11 {
+        compatible = "hailo,hailo15-evb-cpld";
+        reg = <0x11>;
+        status = "okay";
+    };
+
     ina231_MPP_AVDDH: MPP_AVDDH@41 {
         compatible = "ti,ina231_precise";
         reg = <0x41>;
@@ -196,7 +203,7 @@
 };
 
 &pinctrl {
-    compatible = "hailo15-cpld,pinctrl";
+    hailo,cpld = <&cpld>;
     pinctrl_eth: eth {
         pins = "eth_rgmii_tx_clk",
                "eth_rgmii_tx_ctl",

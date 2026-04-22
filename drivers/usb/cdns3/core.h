@@ -46,8 +46,9 @@ struct cdns3_platform_data {
 	int (*xhci_init_quirk)(struct usb_hcd *);
 	int (*gadget_init_quirk)(struct usb_gadget *);
 	unsigned long quirks;
-#define CDNS3_DEFAULT_PM_RUNTIME_ALLOW	BIT(0)
-#define CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD	BIT(1)
+#define CDNS3_DEFAULT_PM_RUNTIME_ALLOW BIT(0)
+#define CDNS3_VBUS_VALIDATION_CONTROLLED_BY_SFR BIT(1)
+#define CDNS3_USB_RESET_AS_SYSTEM_REBOOT BIT(2)
 };
 
 /**

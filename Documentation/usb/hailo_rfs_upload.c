@@ -55,17 +55,21 @@
                                                *   - load:xxxxxx   Uploading RFS image, <xxxxxx> bytes received,
                                                *   - invalid:xxxx  Invalid state or error
                                                */
-#define HAILO_REQ__RFS_GET_BUILD_INFO   0x11  /* Get hailo build information */
-#define HAILO_REQ__RFS_LOAD             0x12  /* Load RFS image command */
-#define HAILO_REQ__RFS_GET_BOARD_SKU_ID 0x14 /* Get board SKU ID */
-#define HAILO_REQ__RFS_FINISH           0x13  /* Finish RFS loading */
-#define HAILO_REQ__RFS_CTRL             0x15  /* RFS control operations */
-
+#define HAILO_REQ__RFS_GET_BUILD_INFO       0x11 /* Get hailo build information */
+#define HAILO_REQ__RFS_LOAD                 0x12 /* Load RFS image command */
+#define HAILO_REQ__RFS_GET_BOARD_SKU_ID     0x14 /* Get board SKU ID */
+#define HAILO_REQ__RFS_FINISH               0x13 /* Finish RFS loading */
+#define HAILO_REQ__RFS_CTRL                 0x15 /* RFS control operations */
+#define HAILO_REQ__RFS_GET_PROTOCOL_VERSION 0x16 /* Get protocol version */
 
 /* RFS Control Sub-commands (matching f_hailo_rfs_load.c macros) */
 #define HAILO_REQ__RFS_CTRL__GET_STATUS    0  /* Return ready status (1 byte) */
 #define HAILO_REQ__RFS_CTRL__GET_RX_CNT    1  /* Return bytes received count (4 bytes) */
 #define HAILO_REQ__RFS_CTRL__CLR_RX_CNT    2  /* Reset RFS counter (1 byte response) */
+
+/* Gadget configuration modes */
+#define HAILO_GADGET_CONFIG_RFS_MODE  1   /* RFS upload mode */
+#define HAILO_GADGET_CONFIG_SWU_MODE  2   /* SW update mode */
 
 // USB request types
 #define USB_TYPE_VENDOR             (LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE)
@@ -107,9 +111,10 @@ static void print_usage(const char *prog_name)
     printf("\n");
     printf("OPTIONS:\n");
     printf("  -v, --verbose     Verbose output\n");
-    printf("  -i, --sku-id      Get board SKU ID information\n");
 	printf("  -s, --status      check device status (no upload)\n");
+    printf("  -p, --protocol    get protocol version information\n");
     printf("  -b, --build       get SW build information\n");
+    printf("  -i, --sku-id      Get board SKU ID information\n");
     printf("  -h, --help        Show this help message\n");
     printf("\n");
     printf("EXAMPLES:\n");
@@ -212,13 +217,6 @@ static int find_hailo_device(hailo_device_t *dev)
                         continue;
                     }
 
-                    // Reset USB connection to clear any stale state from previous sessions
-                    ret = libusb_reset_device(dev->handle);
-                    if (ret != 0) {
-                        fprintf(stderr, "Warning: USB device reset failed: %s\n", libusb_error_name(ret));
-                        // Continue anyway - reset failure is not critical
-                    }
-
                     printf("Successfully opened Hailo RFS load device\n");
                     libusb_free_config_descriptor(config);
                     libusb_free_device_list(device_list, 1);
@@ -274,6 +272,9 @@ static int vendor_request(hailo_device_t *dev,
 	    break;
     case HAILO_REQ__RFS_GET_BOARD_SKU_ID:
 	    req_name = "GET_BOARD_SKU_ID";
+	    break;
+    case HAILO_REQ__RFS_GET_PROTOCOL_VERSION:
+	    req_name = "GET_PROTOCOL_VERSION";
 	    break;
     }
 
@@ -377,6 +378,32 @@ static int gadget_rfs__get_build_info(hailo_device_t *dev, char *status_buf, siz
 
 	if (verbose) {
 		printf("%s (%d bytes)\n", (char *)buffer, ret);
+	}
+
+	return 0;
+}
+
+static int gadget_rfs__get_protocol_version(hailo_device_t *dev, uint32_t *version)
+{
+	uint32_t _version;
+	int ret;
+
+	memset(&_version, 0, sizeof(_version));
+	ret = vendor_request(dev, HAILO_REQ__RFS_GET_PROTOCOL_VERSION, 0, 0, (unsigned char *)&_version, sizeof(_version), USB_DIR_IN);
+	if (ret < 0) {
+		return -1;
+	}
+
+	if (ret != 4) {
+		fprintf(stderr, "Protocol version response: expected 4 bytes, got %d bytes\n", ret);
+		return -1;
+	}
+
+	// Convert 4 bytes to uint32_t (little endian)
+	*version = le32toh(_version);
+
+	if (verbose) {
+		printf("Protocol version: 0x%08x (%d bytes)\n", *version, ret);
 	}
 
 	return 0;
@@ -863,42 +890,58 @@ static int upload_rfs_image(hailo_device_t *dev, const char *filename)
         return -1;
     }
 
-    usleep(500000);  // Wait 500ms for device to process completion
-
-    // Get final status and verify (optional - don't fail upload if this fails)
-    if (gadget_rfs__get_status(dev, status, sizeof(status)) == 0) {
-        printf("Final status: %s\n", status);
-        
-        /* Parse status for detailed verification */
-        if (strncmp(status, "idle:", 5) == 0 || strstr(status, "idle:ready")) {
-            printf("✓ RFS upload completed successfully - device is ready\n");
-        } else if (strncmp(status, "load:", 4) == 0) {
-            /* Still shows RFS mode - check if transfer completed */
-            unsigned int rfs_received = 0;
-            if (sscanf(status + 4, "%x", &rfs_received) == 1) {
-                printf("Device reports %u (0x%x) bytes received\n", rfs_received, rfs_received);
-                if (rfs_received == (unsigned int)st.st_size) {
-                    printf("✓ Byte count matches - RFS upload verified\n");
-                } else {
-                    printf("⚠ Byte count mismatch: expected %zu, device received %u\n", 
-                           (size_t)st.st_size, rfs_received);
-                    printf("  However, data transfer completed successfully\n");
-                }
-            } else {
-                printf("⚠ Could not parse RFS byte count from status\n");
-                printf("  However, data transfer completed successfully\n");
-            }
-        } else {
-            printf("⚠ Unexpected final status: %s\n", status);
-            printf("  However, data transfer completed successfully\n");
-        }
-    } else {
-        printf("⚠ Could not retrieve final device status (device may still be processing)\n");
-        printf("  Data transfer completed successfully - this is normal for large files\n");
-    }
-
     printf("✓ RFS upload completed - %zu bytes transferred successfully\n", (size_t)st.st_size);
     return 0;
+}
+
+static int gadget_rfs__set_config(hailo_device_t *dev, int config_num)
+{
+	int ret, current_config_num;
+	const char *mode_name = (config_num == 1) ? "RFS" : "SWU";
+
+    ret = libusb_get_configuration(dev->handle, &current_config_num);
+    if (ret < 0) {
+        fprintf(stderr, "✗ Failed to get current USB configuration: %s\n", libusb_error_name(ret));
+        return 1;
+    }
+
+    if (current_config_num == config_num) {
+        printf("✓ USB configuration %d (%s mode) already active, no change needed\n", config_num, mode_name);
+        return 0;
+    }
+
+	printf("Setting gadget configuration %d (%s mode)...\n", config_num, mode_name);
+    
+	/* Release current interface before changing configuration */
+	ret = libusb_release_interface(dev->handle, HAILO_RFS_LOAD_INTERFACE);
+	if (ret < 0) {
+		fprintf(stderr, "Warning: Failed to release interface: %s\n", libusb_error_name(ret));
+		/* Continue anyway - this might not be critical */
+	}
+	
+	/* Set USB configuration (equivalent to usb_modeswitch --configuration N) */
+	ret = libusb_set_configuration(dev->handle, config_num);
+	if (ret < 0) {
+		fprintf(stderr, "✗ Failed to set USB configuration %d: %s\n", config_num, libusb_error_name(ret));
+		return 1;
+	}
+	
+	printf("✓ USB configuration %d set successfully\n", config_num);
+	
+	/* Give device time to reconfigure */
+	usleep(100000); // 100ms delay for configuration to take effect
+	
+	/* Re-claim the interface */
+	ret = libusb_claim_interface(dev->handle, HAILO_RFS_LOAD_INTERFACE);
+	if (ret < 0) {
+		fprintf(stderr, "✗ Failed to re-claim interface: %s\n", libusb_error_name(ret));
+		return 1;
+	}
+	
+	printf("✓ Interface re-claimed successfully\n");
+	printf("✓ Gadget configuration set to %s mode successfully\n", mode_name);
+	
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -907,21 +950,23 @@ int main(int argc, char *argv[]) {
     int do_get_status = 0;
     int do_get_build_info = 0;
     int do_get_sku_id = 0;
+    int do_get_protocol_version = 0;
     int ret = 1;
     int opt;
 
     // Define long options
     static struct option long_options[] = {
         {"verbose",   no_argument,       0, 'v'},
+        {"protocol",  no_argument,       0, 'p'},
+        {"build",     no_argument,       0, 'b'},
         {"sku-id",    no_argument,       0, 'i'},
         {"status",    no_argument,       0, 's'},
-        {"build",     no_argument,       0, 'b'},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     // Parse arguments using getopt
-    while ((opt = getopt_long(argc, argv, "vsbih", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vsbihp", long_options, NULL)) != -1) {
         switch (opt) {
         case 'v':
             verbose = 1;
@@ -934,6 +979,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'i':
             do_get_sku_id = 1;
+            break;
+        case 'p':
+            do_get_protocol_version = 1;
             break;
         case 'h':
             print_usage(argv[0]);
@@ -961,7 +1009,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (filename == NULL && !do_get_status && !do_get_build_info && !do_get_sku_id) {
+    if (filename == NULL && !do_get_status && !do_get_build_info && !do_get_sku_id && !do_get_protocol_version) {
         fprintf(stderr, "RFS file not specified\n");
         print_usage(argv[0]);
         return 1;
@@ -980,6 +1028,11 @@ int main(int argc, char *argv[]) {
 
     // Find and open device
     ret = find_hailo_device(&device);
+    if (ret < 0) {
+        goto cleanup;
+    }
+
+    ret = gadget_rfs__set_config(&device, HAILO_GADGET_CONFIG_RFS_MODE);
     if (ret < 0) {
         goto cleanup;
     }
@@ -1005,6 +1058,19 @@ int main(int argc, char *argv[]) {
             printf("Board SKU ID: %s\n", board_sku);
         } else {
             fprintf(stderr, "✗ Could not retrieve board SKU ID\n");
+        }
+    }
+
+    if (do_get_protocol_version) {
+        // Protocol version mode
+        uint32_t protocol_version;
+
+        printf("=== Hailo Protocol Information ===\n");
+        ret = gadget_rfs__get_protocol_version(&device, &protocol_version);
+        if (ret == 0) {
+            printf("Protocol version: %u (0x%08x)\n", protocol_version, protocol_version);
+        } else {
+            fprintf(stderr, "✗ Could not retrieve protocol version\n");
         }
     }
 
