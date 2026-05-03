@@ -65,3 +65,15 @@ if CMA_TRACKER
 		Set automatically based on the choice selection above.
 
 endif # CMA_TRACKER
+
+config DMA_TRACKER
+	bool "DMA allocation tracker"
+	depends on TRACEPOINTS
+	default y
+	help
+	  DMA allocation tracker using the generic memory tracker framework.
+
+	  Tracks DMA coherent allocations (dma_alloc_attrs/dma_free_attrs)
+	  and DMA page allocations (dma_alloc_pages/dma_free_pages) system-wide.
+	  Provides debugfs interface at /sys/kernel/debug/mem_trackers/dma/
+	  for monitoring DMA usage and detecting memory leaks.

@@ -22,6 +22,20 @@
 #define MAX_BOARD_ID_STR_LEN (100)
 #define	SCMI_HAILO_BOOT_SUCCESS_AP_SOFTWARE  1
 #define	SCMI_HAILO_BOOT_SUCCESS_SW_UPDATE 99
+#define CHIP_SERIAL_NUMBER_SIZE_WORDS 3
+#define CHIP_SERIAL_NUMBER_SIZE_BYTES (CHIP_SERIAL_NUMBER_SIZE_WORDS * sizeof(u32))
+
+#define HOST_CURRENT_LIMIT_LOW_MA (900)
+#define HOST_CURRENT_LIMIT_MEDIUM_MA (1500)
+#define HOST_CURRENT_LIMIT_HIGH_MA (3000)
+
+/* It is important to keep the string as "NA" because this is what HRT displays to the user */
+#define HOST_CURRENT_NOT_SET_STRING "NA"
+
+
+static const u32 allowed_host_currents[] = {HOST_CURRENT_LIMIT_LOW_MA, HOST_CURRENT_LIMIT_MEDIUM_MA, HOST_CURRENT_LIMIT_HIGH_MA};
+
+
 
 static const struct scmi_hailo_ops *hailo_ops;
 
@@ -36,6 +50,9 @@ static const struct of_device_id hailo_soc_of_match[] = {
 struct __attribute__((packed)) hailo_fuse_file {
 	u8 user_fuse_array[SCMI_HAILO_PROTOCOL_USER_FUSE_DATA_SIZE];
 	u32 active_clusters;
+};
+struct __attribute__((packed)) hailo_chip_serial_file {
+    u32 chip_serial[CHIP_SERIAL_NUMBER_SIZE_WORDS];
 };
 
 /* BIST mask at linux file is a failure indication:
@@ -57,6 +74,7 @@ struct __attribute__((packed)) hailo_identification_attributes_file {
 
 struct hailo_soc {
 	struct hailo_fuse_file fuse_file;
+	struct hailo_chip_serial_file chip_serial_file;
 	struct scmi_hailo_get_boot_info_p2a boot_info;
 	u32 product_id;
 	struct kernfs_node *fuse_kn;
@@ -65,6 +83,8 @@ struct hailo_soc {
 	struct hailo_mbist_status_file mbist_status_file;
 	struct hailo_identification_attributes_file identification_attributes_file;
 	char board_id_str[MAX_BOARD_ID_STR_LEN];
+	u32 host_current_limit_mA;
+	bool host_current_limit_sent_flag;
 };
 
 #define H15__SCU_BOOT_BIT_MASK (3)
@@ -164,6 +184,30 @@ static ssize_t boot_success_ap_software_store(struct device *dev, struct device_
 	}
 
 	return count;
+}
+
+static int hailo_soc_send_boot_success_indication(struct device *dev)
+{
+    struct scmi_hailo_boot_success_indication_a2p params;
+    int ret;
+
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+    /* Check if already marked as successful */
+    if (hailo_soc->boot_info.boot_status_bitmap.boot_success_ap_software)
+        return 0;
+
+    hailo_soc->boot_info.boot_status_bitmap.boot_success_ap_software = SCMI_HAILO_BOOT_SUCCESS_AP_SOFTWARE;
+
+    /* Send SCMI message to SCU FW, indicating linux boot success */
+    params.component = SCMI_HAILO_BOOT_SUCCESS_COMPONENT_AP_SOFTWARE;
+    ret = hailo_ops->send_boot_success_ind(&params);
+    if (ret) {
+        dev_err(dev, "Failed to send boot success indication\n");
+        return ret;
+    }
+
+    return 0;
 }
 
 static ssize_t boot_count_show(struct device *dev, struct device_attribute *attr,
@@ -303,7 +347,7 @@ void board_sku_id_to_str(u32 board_sku_id, char *name, size_t name_size)
 		snprintf(name, name_size, "NA");
 	} else {
 		snprintf(name, name_size, "%u", board_sku_id);
-	}
+		}
 }
 EXPORT_SYMBOL_GPL(board_sku_id_to_str);
 
@@ -316,6 +360,71 @@ static ssize_t board_id_show(struct device *dev, struct device_attribute *attr, 
 
 static DEVICE_ATTR_RO(board_id);
 
+static ssize_t current_limit_show(struct device *dev, struct device_attribute *attr,
+                               char *buf)
+{
+    struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+    if (!hailo_soc->host_current_limit_sent_flag) {
+        return sprintf(buf, HOST_CURRENT_NOT_SET_STRING "\n");
+    }
+
+    return sprintf(buf, "%u\n", hailo_soc->host_current_limit_mA);
+}
+
+static ssize_t current_limit_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+	struct scmi_hailo_send_host_current_limit_a2p params;
+	u32 limit;
+	bool valid_current = false;
+	int ret;
+	size_t i;
+
+	if (hailo_soc->product_id != HAILO_SCMI_PRODUCT_ID__10H &&
+	    hailo_soc->product_id != HAILO_SCMI_PRODUCT_ID__12L) {
+		dev_err(dev,
+			"Setting host current supply limit not supported for this product\n");
+		return -EPERM;
+	}
+
+	if (kstrtou32(buf, 10, &limit))
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(allowed_host_currents); i++) {
+		if (limit == allowed_host_currents[i]) {
+			valid_current = true;
+			break;
+		}
+	}
+
+	if (!valid_current) {
+		dev_err(dev, "Invalid host current limit");
+		return -EINVAL;
+	}
+
+	hailo_ops = scmi_hailo_get_ops();
+	if (IS_ERR(hailo_ops))
+		return PTR_ERR(hailo_ops);
+
+	params.host_current_limit_mA = limit;
+	ret = hailo_ops->send_host_current_limit(&params);
+
+	if (ret) {
+		dev_err(dev, "Failed to send host current limit SCMI\n");
+		return ret;
+	}
+
+	// Mark as written
+	hailo_soc->host_current_limit_mA = limit;
+	hailo_soc->host_current_limit_sent_flag = true;
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(current_limit);
 
 static ssize_t jtag_selector_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -361,6 +470,19 @@ static ssize_t mbist_status_show(struct device *dev, struct device_attribute *at
 }
 
 static DEVICE_ATTR_RO(mbist_status);
+
+
+static ssize_t chip_serial_number_show(struct device *dev, struct device_attribute *attr,
+             char *buf)
+{
+    struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+    memcpy(buf, &hailo_soc->chip_serial_file, sizeof(hailo_soc->chip_serial_file));
+    return sizeof(hailo_soc->chip_serial_file);
+}
+
+static DEVICE_ATTR_RO(chip_serial_number);
+
 
 static ssize_t hailo_scu_fw_version_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
@@ -413,6 +535,8 @@ static struct attribute *hailo_attrs[] = {
 	&dev_attr_identification_attributes.attr,
 	&dev_attr_product.attr,
 	&dev_attr_board_id.attr,
+	&dev_attr_chip_serial_number.attr,
+	&dev_attr_current_limit.attr,
 	NULL
 };
 
@@ -445,7 +569,7 @@ static int hailo_soc_fill_sku_ids(struct hailo_soc *hailo_soc, const char *compa
 	return 0;
 }
 
-static int hailo_soc_fill_fuse_file(struct hailo_fuse_file *fuse_file)
+static int hailo_soc_fill_fuse_and_chip_serial_files(struct hailo_fuse_file *fuse_file, struct hailo_chip_serial_file *chip_serial_file)
 {
 	struct scmi_hailo_get_fuse_info_p2a fuse_info;
 	int ret;
@@ -456,8 +580,9 @@ static int hailo_soc_fill_fuse_file(struct hailo_fuse_file *fuse_file)
 	}
 
 	memcpy(&fuse_file->user_fuse_array, &fuse_info.user_fuse, sizeof(struct scmi_hailo_user_fuse));
-
 	fuse_file->active_clusters = fuse_info.active_clusters;
+
+	memcpy(&chip_serial_file->chip_serial, &fuse_info.chip_serial, sizeof(fuse_info.chip_serial));
 
 	return 0;
 }
@@ -637,6 +762,8 @@ static int hailo_soc_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	hailo_soc->host_current_limit_sent_flag = false;
+
 	soc_dev_attr->family = "Hailo-1x";
 	if (strcmp(compat, "hailo,hailo15") == 0)
 		soc_dev_attr->machine = "Hailo-15";
@@ -653,9 +780,9 @@ static int hailo_soc_probe(struct platform_device *pdev)
 
 	soc_dev_attr->custom_attr_group = hailo_groups[0];
 
-	ret = hailo_soc_fill_fuse_file(&hailo_soc->fuse_file);
+	ret = hailo_soc_fill_fuse_and_chip_serial_files(&hailo_soc->fuse_file, &hailo_soc->chip_serial_file);
 	if (ret) {
-		dev_err(&pdev->dev, "Failed to fill fuse info\n");
+		dev_err(&pdev->dev, "Failed to fill fuse info and chip serial number\n");
 		return ret;
 	}
 
@@ -732,6 +859,15 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	hailo_soc->soc_dev = soc_dev;
 	dev_set_drvdata(dev, hailo_soc);
 
+	/* This is relevent only to Asus = USB(flash) + 10H */
+	if (hailo_soc->product_id == HAILO_SCMI_PRODUCT_ID__10H &&
+        (hailo_soc->boot_info.active_boot_image_storage & H15__SCU_BOOT_BIT_MASK) == BOOT_SOURCE_SPI_FLASH) {
+        /* Send boot success indication during probe */
+        ret = hailo_soc_send_boot_success_indication(dev);
+        if (ret) {
+            dev_err(&pdev->dev, "Failed to send boot success indication: %d\n", ret);
+        }
+    }
 	return 0;
 }
 

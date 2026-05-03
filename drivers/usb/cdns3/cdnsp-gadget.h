@@ -1339,6 +1339,7 @@ struct cdnsp_port {
 #define CDNSP_EXT_PORT_OFF(x)		((x) & 0xff)
 #define CDNSP_EXT_PORT_COUNT(x)		(((x) >> 8) & 0xff)
 
+
 /**
  * struct cdnsp_device - represent USB device.
  * @dev: Pointer to device structure associated whit this controller.
@@ -1423,6 +1424,7 @@ struct cdnsp_device {
 	u8 device_address;
 	int may_wakeup;
 	u16 hci_version;
+	bool port_sys_reset_requested;
 
 	/* data structures */
 	struct cdnsp_device_context_array *dcbaa;
@@ -1459,6 +1461,7 @@ struct cdnsp_device {
 	struct cdnsp_port usb2_port;
 	struct cdnsp_port usb3_port;
 	struct cdnsp_port *active_port;
+	struct work_struct reboot_work;
 	u16 test_mode;
 };
 

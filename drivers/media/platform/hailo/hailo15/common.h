@@ -5,6 +5,7 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-device.h>
 #include <dt-bindings/soc/hailo15_video_path.h>
+#include "fe/fe_dev.h"
 
 #define STRIDE_ALIGN 16
 #define FMT_MAX_PLANES 3
@@ -43,6 +44,7 @@
 #define ISPIOC_V4L2_GET_NULL_ADDR       _IOR('I', BASE_VIDIOC_PRIVATE + 11, uint32_t)
 #define ISPIOC_V4L2_SET_ENABLE_SP2_ERR  _IOWR('I', BASE_VIDIOC_PRIVATE + 12, bool)
 #define ISPIOC_V4L2_SET_MCM_MODE_PRIMING _IOWR('I', BASE_VIDIOC_PRIVATE + 13, uint32_t)
+#define ISPIOC_V4L2_SET_HDR_COMPRESSION  _IOWR('I', BASE_VIDIOC_PRIVATE + 14, uint32_t)
 
 // V4L2 (type = 'V') ioctls
 #define HAILO15_PAD_REQBUFS             _IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_reqbufs)
@@ -403,6 +405,14 @@ struct isp_reg_data {
 	uint32_t value;
 };
 
+struct hailo15_buf_timing {
+	ktime_t qbuf_start;
+	ktime_t fe_switch_start;
+	ktime_t fe_switch_end;
+	ktime_t rdma_ready;
+	ktime_t frame_end;
+};
+
 struct hailo15_buffer {
 	struct vb2_v4l2_buffer vb;
 	struct media_pad *pad;
@@ -413,7 +423,75 @@ struct hailo15_buffer {
 	struct v4l2_subdev *sd;
 	//trace bookkeeping
 	uint32_t queue_sequence;
+
+	/* Timing diagnostics for QBUF flow and ISP pipeline */
+	struct hailo15_buf_timing timing;
 };
+
+/**
+ * hailo15_buf_list_init - initialize a hailo15_buffer's irqlist.
+ * @buf: the hailo15_buffer to initialize
+ *
+ * Must be called at buffer init time so that list_empty() checks in
+ * hailo15_buf_list_del/add work correctly.
+ */
+static inline void hailo15_buf_list_init(struct hailo15_buffer *buf)
+{
+	INIT_LIST_HEAD(&buf->irqlist);
+}
+
+/**
+ * hailo15_buf_list_add - safely add a hailo15_buffer to the head of a list.
+ * @buf: the hailo15_buffer to add
+ * @head: the list_head to add to
+ *
+ * Detects double-add (buffer already linked in a list) and emits a WARN.
+ * Requires buf to be initialized via hailo15_buf_list_init.
+ */
+#define hailo15_buf_list_add(buf, head) \
+	_hailo15_buf_list_add(buf, head, true, __func__)
+
+/**
+ * hailo15_buf_list_add_tail - safely add a hailo15_buffer to the tail of a list.
+ * @buf: the hailo15_buffer to add
+ * @head: the list_head to add to
+ */
+#define hailo15_buf_list_add_tail(buf, head) \
+	_hailo15_buf_list_add(buf, head, false, __func__)
+
+static inline void _hailo15_buf_list_add(struct hailo15_buffer *buf,
+					  struct list_head *head,
+					  bool to_head, const char *caller)
+{
+	if (WARN(!list_empty(&buf->irqlist),
+		 "%s - attemtped adding buf index %d (grp_id %d) to list, but buf already in a list.",
+		 caller, buf->vb.vb2_buf.index, buf->grp_id))
+		return;
+	if (to_head)
+		list_add(&buf->irqlist, head);
+	else
+		list_add_tail(&buf->irqlist, head);
+}
+
+/**
+ * hailo15_buf_list_del - safely remove a hailo15_buffer from its irqlist.
+ * @buf: the hailo15_buffer to remove
+ *
+ * Verifies the buffer is actually linked in a list before removing it.
+ * If not, a WARN is emitted with the buffer index and grp_id for diagnosis.
+ * Requires buf to be initialized via hailo15_buf_list_init.
+ */
+#define hailo15_buf_list_del(buf) _hailo15_buf_list_del(buf, __func__)
+
+static inline void _hailo15_buf_list_del(struct hailo15_buffer *buf,
+					 const char *caller)
+{
+	if (WARN(list_empty(&buf->irqlist),
+		 "%s - attempted deleting buf index %d (grp_id %d), but buf is not in a list.",
+		 caller, buf->vb.vb2_buf.index, buf->grp_id))
+		return;
+	list_del_init(&buf->irqlist);
+}
 
 struct hailo15_buf_ctx {
 	struct hailo15_buf_ops *ops;
@@ -570,11 +648,25 @@ enum pixel_mux_pads {
 	PIXEL_MUX_PAD_MAX,
 };
 
+/* TODO for version 1.12.0 - change API (together with medialib) to pass more than 1 enum value - pass struct instead! */
 enum fast_toggle_type {
-	FAST_TOGGLE_SDR_SDR = 0,
-	FAST_TOGGLE_SDR_HDR = 1,
-	FAST_TOGGLE_HDR_SDR = 2,
-	FAST_TOGGLE_HDR_HDR = 3,
+	TOGGLE_MERCURY_SDR_SDR = 0,
+	TOGGLE_MERCURY_SDR_HDR = 1,
+	TOGGLE_MERCURY_HDR_SDR = 2,
+	TOGGLE_MERCURY_HDR_HDR = 3, /* unsupported */
+	TOGGLE_MERCURY_SDR_PREISP = 4,
+	TOGGLE_MERCURY_PREISP_SDR = 5,
+	TOGGLE_MERCURY_HDR_PREISP = 6, /* unsupported */
+	TOGGLE_MERCURY_PREISP_HDR = 7, /* unsupported */
+
+	TOGGLE_PLUTO_SDR_SDR = 8, /* unsupported */
+	TOGGLE_PLUTO_SDR_HDR = 9,
+	TOGGLE_PLUTO_HDR_SDR = 10,
+	TOGGLE_PLUTO_HDR_HDR = 11, /* unsupported */
+	TOGGLE_PLUTO_SDR_PREISP = 12,
+	TOGGLE_PLUTO_PREISP_SDR = 13,
+	TOGGLE_PLUTO_HDR_PREISP = 14,
+	TOGGLE_PLUTO_PREISP_HDR = 15,
 	FAST_TOGGLE_TYPE_MAX,
 };
 
@@ -610,7 +702,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_PATH(int grp_id)
 	}
 }
 
-static inline int HAILO15_VID_GRP_TO_VDID(int grp_id)
+static inline uint8_t HAILO15_VID_GRP_TO_VDID(int grp_id)
 {
 	switch (grp_id) {
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
@@ -620,8 +712,12 @@ static inline int HAILO15_VID_GRP_TO_VDID(int grp_id)
 	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
 		return 1;
+	case HAILO15_VID_GRP_MCM_IN:
+		// currently MCM-IN path is only in use
+		// for VDID 0.
+		return 0;
 	default:
-		return -1;
+		return VIV_INVALID_VDID;
 	}
 }
 

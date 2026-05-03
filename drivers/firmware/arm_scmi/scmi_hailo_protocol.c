@@ -100,6 +100,12 @@ static int scmi_hailo_send_boot_success_ind(const struct scmi_protocol_handle *p
 	return ret;
 }
 
+static int scmi_hailo_send_host_current_limit(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_host_current_limit_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SEND_HOST_CURRENT_LIMIT_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
+
 static int scmi_hailo_send_swupdate_ind(const struct scmi_protocol_handle *ph)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SWUPDATE_INDICATION_ID, NULL, 0, NULL, 0);
@@ -182,6 +188,7 @@ static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.get_source_clock = scmi_hailo_get_source_clock,
 	.get_identification_attributes = scmi_hailo_get_identification_attributes,
 	.get_sku_id = scmi_hailo_get_sku_id,
+	.send_host_current_limit = scmi_hailo_send_host_current_limit,
 };
 
 static int scmi_hailo_protocol_init(const struct scmi_protocol_handle *ph)
