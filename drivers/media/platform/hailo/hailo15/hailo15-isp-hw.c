@@ -18,124 +18,294 @@
 #define HAILO15_LINE_BUF_CFG_FIFO_FILL_MASK 0x1FFF
 #define HAILO15_LINE_BUF_CFG_FIFO_FILL_SHIFT 14
 
-/* New struct-based read register function */
-static uint32_t hailo15_isp_read_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
+/* Raw register access helpers */
+static inline uint32_t hailo15_isp_raw_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 {
-	uint32_t val = 0;
-	uint8_t vdid = VIV_INVALID_VDID;
-	int ret = -1;
-	int use_vdid = reg_op->vdid;
+	return readl(isp_dev->base + reg);
+}
+
+static inline void hailo15_isp_raw_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg, uint32_t val)
+{
+	writel(val, isp_dev->base + reg);
+}
+
+int hailo15_isp_ioctl_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg, uint32_t *val)
+{
+	if (!isp_dev || !val)
+		return -EINVAL;
+
+	/* Verify FE is disabled - ioctl access requires direct hardware access */
+	if (isp_dev->fe_enable) {
+		pr_err("%s - Cannot read register 0x%x via ioctl when FE is enabled\n",
+		       __func__, reg);
+		return -EBUSY;
+	}
+
+	*val = hailo15_isp_raw_read_reg(isp_dev, reg);
+	return 0;
+}
+EXPORT_SYMBOL(hailo15_isp_ioctl_read_reg);
+
+int hailo15_isp_ioctl_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg, uint32_t val)
+{
+	if (!isp_dev)
+		return -EINVAL;
+
+	/* Verify FE is disabled - ioctl access requires direct hardware access */
+	if (isp_dev->fe_enable) {
+		pr_err("%s - Cannot write register 0x%x via ioctl when FE is enabled\n",
+		       __func__, reg);
+		return -EBUSY;
+	}
+
+	hailo15_isp_raw_write_reg(isp_dev, reg, val);
+	return 0;
+}
+EXPORT_SYMBOL(hailo15_isp_ioctl_write_reg);
+
+int hailo15_isp_read_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
+			      uint32_t reg, uint32_t *val)
+{
+	int ret;
+
+	/* This function might sleep in FE case. Validate also when not in FE case. */
+	might_sleep();
+
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_vdid_register(reg),
+		 "hailo15_isp_read_vdid_reg called with non-VDID reg 0x%x\n", reg))
+		return -EINVAL;
+
+	if (!isp_dev || !val)
+		return -EINVAL;
+
+	if (WARN(vdid == VIV_INVALID_VDID,
+		 "%s - VIV_INVALID_VDID for reg 0x%x\n", __func__, reg))
+		return -EINVAL;
 
 	/* no fe case */
 	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
-		return readl(isp_dev->base + reg_op->reg);
-	}
-
-	/* fe case */
-	if (use_vdid == -1) {
-		isp_dev->fe_dev->fe_get_vdid(isp_dev->fe_dev, &vdid);
-	} else {
-		vdid = (uint8_t)use_vdid;
-	}
-
-	if (vdid == VIV_INVALID_VDID) {
-		pr_err("%s - VIV_INVALID_VDID for reg 0x%x\n", __func__, reg_op->reg);
+		if (WARN(vdid != 0,
+			 "%s - invalid vdid %d for disabled FE\n", __func__, vdid))
+			return -EINVAL;
+		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
 		return 0;
 	}
 
-	ret = isp_dev->fe_dev->fe_read_reg(isp_dev->fe_dev, vdid, reg_op->reg, &val);
-	if (!ret)
-		return val;
+	/* fe case */
+	ret = isp_dev->fe_dev->read_vdid_reg(isp_dev->fe_dev, vdid, reg, val);
+	if (ret) {
+		pr_err("%s - Failed to read VDID reg 0x%x with vdid %d, ret = %d\n",
+		       __func__, reg, vdid, ret);
+		isp_dev->fe_enable = 0;
+		return ret;
+	}
 
-	if (use_vdid == -1)
-		pr_err("%s - Failed to read reg from fe, ret = %d\n", __func__, ret);
-	else
-		pr_err("%s - Failed to read reg from fe with vdid %d ret = %d\n", __func__, use_vdid, ret);
-
-	isp_dev->fe_enable = 0;
 	return 0;
 }
+EXPORT_SYMBOL(hailo15_isp_read_vdid_reg);
 
-/* Legacy function maintained for compatibility */
-uint32_t hailo15_isp_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
+int hailo15_isp_read_control_reg(struct hailo15_isp_device *isp_dev,
+				 uint32_t reg, uint32_t *val)
 {
-	struct hailo15_reg_op reg_op = {
-		.reg = reg,
-		.value = 0,  /* Not used for reads */
-		.vdid = -1   /* Use default behavior (get from FE if enabled) */
-	};
+	int ret;
 
-	return hailo15_isp_read_reg_op(isp_dev, &reg_op);
-}
-EXPORT_SYMBOL(hailo15_isp_read_reg);
+	/* This function might sleep in FE case. Validate also when not in FE case. */
+	might_sleep();
 
-/* New struct-based write register function */
-static void hailo15_isp_write_reg_op(struct hailo15_isp_device *isp_dev, const struct hailo15_reg_op *reg_op)
-{
-	uint8_t vdid = VIV_INVALID_VDID;
-	int ret = -1;
-	int use_vdid = reg_op->vdid;
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_control_register(reg),
+		 "hailo15_isp_read_control_reg called with non-control reg 0x%x\n", reg))
+		return -EINVAL;
+
+	if (!isp_dev || !val)
+		return -EINVAL;
 
 	/* no fe case */
 	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
-		writel(reg_op->value, isp_dev->base + reg_op->reg);
-		return;
+		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
+		return 0;
 	}
 
 	/* fe case */
-	if (use_vdid == -1) {
-		isp_dev->fe_dev->fe_get_vdid(isp_dev->fe_dev, &vdid);
+	ret = isp_dev->fe_dev->read_control_reg(isp_dev->fe_dev, reg, val);
+	if (ret) {
+		pr_err("%s - Failed to read control reg 0x%x, ret = %d\n",
+		       __func__, reg, ret);
+		isp_dev->fe_enable = 0;
+		return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(hailo15_isp_read_control_reg);
+
+void hailo15_isp_irq_read_control_reg(struct hailo15_isp_device *isp_dev,
+				     uint32_t reg, uint32_t *val)
+{
+	int ret;
+
+	if (WARN(!in_interrupt(),
+		 "hailo15_isp_irq_read_control_reg called outside IRQ context for reg 0x%x\n", reg))
+		return;
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_non_fe_control_register(reg),
+		 "hailo15_isp_irq_read_control_reg called with FE control reg 0x%x\n", reg))
+		return;
+	if (WARN(!isp_dev || !val,
+		 "hailo15_isp_irq_read_control_reg called with NULL isp_dev or val\n"))
+		return;
+
+	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+		/* no fe case */
+		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
 	} else {
-		vdid = (uint8_t)use_vdid;
+		ret = isp_dev->fe_dev->irq_read_control_reg(isp_dev->fe_dev, reg, val);
+		if (WARN(ret, "hailo15_isp_irq_read_control_reg failed for reg 0x%x, ret = %d\n",
+			 reg, ret))
+			*val = 0;
+	}
+}
+EXPORT_SYMBOL(hailo15_isp_irq_read_control_reg);
+
+void hailo15_isp_irq_read_fe_control_reg(struct hailo15_isp_device *isp_dev,
+					uint32_t reg, uint32_t *val)
+{
+	int ret;
+
+	if (WARN(!in_interrupt(),
+		 "hailo15_isp_irq_read_fe_control_reg called outside IRQ context for reg 0x%x\n", reg))
+		return;
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_fe_control_register(reg),
+		 "hailo15_isp_irq_read_fe_control_reg called with non-FE-control reg 0x%x\n", reg))
+		return;
+	if (WARN(!isp_dev || !val,
+		 "hailo15_isp_irq_read_fe_control_reg called with NULL isp_dev or val\n"))
+		return;
+
+	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+		/* no fe case */
+		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
+	} else {
+		/* fe case */
+		ret = isp_dev->fe_dev->irq_read_fe_control_reg(isp_dev->fe_dev, reg, val);
+		if (WARN(ret, "hailo15_isp_irq_read_fe_control_reg failed for reg 0x%x, ret = %d\n",
+			 reg, ret))
+			*val = 0;
+	}
+}
+EXPORT_SYMBOL(hailo15_isp_irq_read_fe_control_reg);
+
+int hailo15_isp_write_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
+			       uint32_t reg, uint32_t val)
+{
+	int ret;
+
+	might_sleep();
+
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_vdid_register(reg),
+		 "hailo15_isp_write_vdid_reg called with non-VDID reg 0x%x\n", reg))
+		return -EINVAL;
+
+	if (!isp_dev)
+		return -EINVAL;
+
+	if (WARN(vdid == VIV_INVALID_VDID,
+		 "%s - VIV_INVALID_VDID for reg 0x%x\n", __func__, reg))
+		return -EINVAL;
+
+	/* no fe case */
+	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+		if (WARN(vdid != 0,
+			 "%s - invalid vdid %d for disabled FE\n", __func__, vdid))
+			return -EINVAL;
+		hailo15_isp_raw_write_reg(isp_dev, reg, val);
+		return 0;
 	}
 
-	if (vdid == VIV_INVALID_VDID) {
-		pr_err("%s - VIV_INVALID_VDID for reg 0x%x\n", __func__, reg_op->reg);
-		return;
+	/* fe case */
+	ret = isp_dev->fe_dev->write_vdid_reg(isp_dev->fe_dev, vdid, reg, val);
+	if (ret) {
+		pr_err("%s - Failed to write VDID reg 0x%x with vdid %d, ret = %d\n",
+		       __func__, reg, vdid, ret);
+		isp_dev->fe_enable = 0;
+		return ret;
 	}
 
-	ret = isp_dev->fe_dev->fe_write_reg(isp_dev->fe_dev, vdid, reg_op->reg, reg_op->value);
-	if (!ret)
+	return 0;
+}
+EXPORT_SYMBOL(hailo15_isp_write_vdid_reg);
+
+int hailo15_isp_write_control_reg(struct hailo15_isp_device *isp_dev,
+				  uint32_t reg, uint32_t val)
+{
+	int ret;
+
+	/* This function might sleep in FE case. Validate also when not in FE case. */
+	might_sleep();
+
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_control_register(reg),
+		 "hailo15_isp_write_control_reg called with non-control reg 0x%x\n", reg))
+		return -EINVAL;
+
+	if (!isp_dev)
+		return -EINVAL;
+
+	/* no fe case */
+	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+		hailo15_isp_raw_write_reg(isp_dev, reg, val);
+		return 0;
+	}
+
+	/* fe case */
+	ret = isp_dev->fe_dev->write_control_reg(isp_dev->fe_dev, reg, val);
+	if (ret) {
+		pr_err("%s - Failed to write control reg 0x%x, ret = %d\n",
+		       __func__, reg, ret);
+		isp_dev->fe_enable = 0;
+		return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(hailo15_isp_write_control_reg);
+
+void hailo15_isp_irq_write_control_reg(struct hailo15_isp_device *isp_dev,
+				      uint32_t reg, uint32_t val)
+{
+	int ret;
+
+	if (WARN(!in_interrupt(),
+		 "hailo15_isp_irq_write_control_reg called outside IRQ context for reg 0x%x\n", reg))
+		return;
+	/* Validate register classification even without FE */
+	if (WARN(!isp_fe_is_non_fe_control_register(reg),
+		 "hailo15_isp_irq_write_control_reg called with FE control reg 0x%x\n", reg))
+		return;
+	if (WARN(!isp_dev,
+		 "hailo15_isp_irq_write_control_reg called with NULL isp_dev\n"))
 		return;
 
-	if (use_vdid == -1)
-		pr_err("%s - Failed to write reg to fe ret = %d\n", __func__, ret);
-	else
-		pr_err("%s - Failed to write reg to fe with vdid %d ret = %d\n", __func__, use_vdid, ret);
-
-	isp_dev->fe_enable = 0;
+	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+		/* no fe case */
+		hailo15_isp_raw_write_reg(isp_dev, reg, val);
+	} else {
+		ret = isp_dev->fe_dev->irq_write_control_reg(isp_dev->fe_dev, reg, val);
+		WARN(ret, "hailo15_isp_irq_write_control_reg failed for reg 0x%x, ret = %d\n", reg, ret);
+	}
 }
+EXPORT_SYMBOL(hailo15_isp_irq_write_control_reg);
 
-/* Legacy function maintained for compatibility */
-void hailo15_isp_write_reg(struct hailo15_isp_device *isp_dev, uint32_t reg,
-			   uint32_t val)
+static inline uint32_t hailo15_isp_wrapper_read_reg(struct hailo15_isp_device *isp_dev, uint32_t reg)
 {
-	struct hailo15_reg_op reg_op = {
-		.reg = reg,
-		.value = val,
-		.vdid = -1  /* Use default behavior (get from FE if enabled) */
-	};
-
-	hailo15_isp_write_reg_op(isp_dev, &reg_op);
-}
-EXPORT_SYMBOL(hailo15_isp_write_reg);
-
-/* Convenience functions for register operations with specific vdid */
-static void hailo15_isp_write_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg,
-	uint32_t val, int vdid)
-{
-	struct hailo15_reg_op reg_op = HAILO15_REG_OP_WITH_VDID(reg, val, vdid);
-	hailo15_isp_write_reg_op(isp_dev, &reg_op);
+	return readl(isp_dev->wrapper_base + reg);
 }
 
-static uint32_t hailo15_isp_read_reg_with_vdid(struct hailo15_isp_device *isp_dev, uint32_t reg, int vdid)
-{
-	struct hailo15_reg_op reg_op = HAILO15_REG_READ_WITH_VDID(reg, vdid);
-	return hailo15_isp_read_reg_op(isp_dev, &reg_op);
-}
-
-static void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
-				   uint32_t reg, uint32_t val)
+static inline void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_dev,
+						 uint32_t reg, uint32_t val)
 {
 	writel(val, isp_dev->wrapper_base + reg);
 }
@@ -211,9 +381,9 @@ void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
 }
 
 void hailo15_isp_reset_hw(struct hailo15_isp_device* isp_dev){
-	writel(VI_IRCL_RESET_ISP, isp_dev->base + VI_IRCL);
+	hailo15_isp_raw_write_reg(isp_dev, VI_IRCL, VI_IRCL_RESET_ISP);
 	mdelay(10);
-	writel(VI_IRCL_RESET_ISP_CLEAR, isp_dev->base + VI_IRCL);
+	hailo15_isp_raw_write_reg(isp_dev, VI_IRCL, VI_IRCL_RESET_ISP_CLEAR);
 }
 EXPORT_SYMBOL(hailo15_isp_reset_hw);
 
@@ -233,20 +403,68 @@ static enum mcm_rd_fmt hailo15_isp_mcm_rd_cfg(int mcm_mode) {
     }
 }
 
-static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device* isp_dev, int grp_id){
+/*
+ * Configure MCM write path compression format in ISP_MCM_CTRL register.
+ * Uses mcm_wr0_fmt bits[7:5] for channel 0 (sensor0),
+ * or mcm_wr1_fmt bits[10:8] for channel 1 (sensor1).
+ */
+static void hailo15_isp_set_mcm_write_compression(
+	struct hailo15_isp_device *isp_dev, uint8_t vdid, bool compress)
+{
+	uint32_t mcm_ctrl;
+	uint32_t fmt_mask, fmt_16bit, fmt_20bit;
 
-	int width, height, vdid;
-	uint32_t mi_mcm_ctrl, mcm_rd_cfg, mi_ctrl, mi_mcm_fmt, mi_imsc,
+	if (vdid == 0) {
+		fmt_mask  = MCM_WR0_FMT_MASK;
+		fmt_16bit = MCM_WR0_FMT_16BIT;
+		fmt_20bit = MCM_WR0_FMT_20BIT;
+	} else {
+		fmt_mask  = MCM_WR1_FMT_MASK;
+		fmt_16bit = MCM_WR1_FMT_16BIT;
+		fmt_20bit = MCM_WR1_FMT_20BIT;
+	}
+
+	hailo15_isp_read_control_reg(isp_dev, ISP_MCM_CTRL, &mcm_ctrl);
+	mcm_ctrl &= ~fmt_mask;
+	mcm_ctrl |= (compress ? fmt_20bit : fmt_16bit);
+	hailo15_isp_write_control_reg(isp_dev, ISP_MCM_CTRL, mcm_ctrl);
+}
+
+/*
+ * Get the MCM read path format based on compression flag.
+ * Returns the appropriate mcm_rd_fmt enum value for the MCM_RD_CFG register.
+ * Kept as a separate function for symmetry with hailo15_isp_set_mcm_write_compression().
+ */
+static enum mcm_rd_fmt hailo15_isp_get_mcm_read_fmt(bool compress)
+{
+	return compress ? MCM_RD_FMT_20BIT : MCM_RD_FMT_16BIT;
+}
+
+static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device *isp_dev, int grp_id)
+{
+	int width, height;
+	uint32_t mi_mcm_ctrl, mi_ctrl, mi_mcm_fmt, mi_imsc,
 		isp_acq_prop, llength;
+	uint8_t vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
 
 	uint32_t rd_cfg_for_mcm_mode = hailo15_isp_mcm_rd_cfg(isp_dev->mcm_mode);
+
+	if (hailo15_isp_is_format_hdr(&isp_dev->input_fmt[HAILO15_VID_GRP_TO_ISP_SINK_PAD(grp_id)])) {
+		bool compress = isp_dev->hdr_compression_enabled;
+
+		hailo15_isp_set_mcm_write_compression(isp_dev, vdid, compress);
+		rd_cfg_for_mcm_mode = hailo15_isp_get_mcm_read_fmt(compress);
+
+		/* Set HDR input bayer format bits[22:20] to all-ones for HDR mode */
+		hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, &isp_acq_prop);
+		isp_acq_prop |= ACQ_PROP_HDR_INPUT_BAYER_FORMAT_MASK;
+		hailo15_isp_write_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, isp_acq_prop);
+	}
 
 	if (rd_cfg_for_mcm_mode == MCM_RD_FMT_INVALID) {
 		pr_err("Invalid MCM mode %d\n", isp_dev->mcm_mode);
 		return;
 	}
-
-	vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
 
 	width = isp_dev->input_fmt[HAILO15_VID_GRP_TO_ISP_SINK_PAD(grp_id)].format.width;
 	height = isp_dev->input_fmt[HAILO15_VID_GRP_TO_ISP_SINK_PAD(grp_id)].format.height;
@@ -255,40 +473,39 @@ static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device* isp_dev, i
 	llength = isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED ?
 		(width * 3) / 2 : width * sizeof(uint16_t);
 
-	mi_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_CTRL, vdid);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_CTRL, &mi_ctrl);
 	mi_ctrl &= ~MI_CTRL_MCM_RAW_RDMA_START_CON;
 	mi_ctrl |= MI_CTRL_MCM_RAW_RDMA_PATH_ENABLE;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_CTRL, mi_ctrl, vdid);
-	mi_mcm_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_MCM_CTRL, vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_DMA_RAW_PIC_WIDTH, width, vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_DMA_RAW_PIC_LLENGTH, llength, vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_DMA_RAW_PIC_LVAL, llength, vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_DMA_RAW_PIC_SIZE, llength*height, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_CTRL, mi_ctrl);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_MCM_CTRL, &mi_mcm_ctrl);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_DMA_RAW_PIC_WIDTH, width);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_DMA_RAW_PIC_LLENGTH, llength);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_DMA_RAW_PIC_LVAL, llength);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_DMA_RAW_PIC_SIZE, llength*height);
 
-	mcm_rd_cfg = rd_cfg_for_mcm_mode;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MCM_RD_CFG, mcm_rd_cfg, vdid);
+	hailo15_isp_write_control_reg(isp_dev, MCM_RD_CFG, rd_cfg_for_mcm_mode);
 
-	mi_mcm_fmt = hailo15_isp_read_reg_with_vdid(isp_dev, MI_MCM_FMT, vdid);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_MCM_FMT, &mi_mcm_fmt);
 	mi_mcm_fmt |= isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED ? MCM_RD_RAW12_BIT : MCM_RD_RAW16_BIT;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_FMT, mi_mcm_fmt, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_FMT, mi_mcm_fmt);
 
 	/* pin_mapping in MCM raw12 should be 0 (undo append 4 zeros mode)*/
 	if (isp_dev->mcm_mode == ISP_MCM_MODE_RAW12_PACKED) {
-		isp_acq_prop = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_ACQ_PROP, vdid);
+		hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, &isp_acq_prop);
 		isp_acq_prop &= ~BIT(18);
-		hailo15_isp_write_reg_with_vdid(isp_dev, ISP_ACQ_PROP, isp_acq_prop, vdid);
+		hailo15_isp_write_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, isp_acq_prop);
 	}
 
 	if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
 		mi_mcm_ctrl |= MCM_WR_AUTO_UPDATE;
 	}
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl | MCM_RD_CFG_UPD, vdid);
-	mi_imsc = hailo15_isp_read_reg_with_vdid(isp_dev, MI_IMSC, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_CTRL, mi_mcm_ctrl | MCM_RD_CFG_UPD);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_IMSC, &mi_imsc);
 	mi_imsc |= MCM_DMA_RAW_READY;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_IMSC, mi_imsc, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_IMSC, mi_imsc);
 	if (isp_dev->mcm_mode == ISP_MCM_MODE_STITCHING) {
-		hailo15_isp_write_reg_with_vdid(isp_dev, MCM_RETIMING0, MCM_RETIMING_VSYNC, vdid);
-		hailo15_isp_write_reg_with_vdid(isp_dev, MCM_RETIMING1, MCM_RETIMING_HSYNC, vdid);
+		hailo15_isp_write_control_reg(isp_dev, MCM_RETIMING0, MCM_RETIMING_VSYNC);
+		hailo15_isp_write_control_reg(isp_dev, MCM_RETIMING1, MCM_RETIMING_HSYNC);
 	}
 }
 
@@ -300,7 +517,7 @@ void hailo15_isp_configure_frame_size(struct hailo15_isp_device *isp_dev,
 	int bytesperline;
 	uint32_t y_size_init_addr, cb_size_init_addr, cr_size_init_addr;
 	int path = HAILO15_VID_GRP_TO_ISP_PATH(grp_id);
-	int vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
+	uint8_t vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
 
 	if (path >= ISP_MAX_PATH || path < 0) {
 		pr_err("%s - invalid path: %d\n", __func__, path);
@@ -331,24 +548,24 @@ void hailo15_isp_configure_frame_size(struct hailo15_isp_device *isp_dev,
 	bytesperline =
 		hailo15_plane_get_bytesperline(format, line_length, PLANE_Y);
 
-	hailo15_isp_write_reg_with_vdid(isp_dev, y_size_init_addr,
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, y_size_init_addr,
 			      hailo15_plane_get_sizeimage(
 				      format, isp_dev->fmt[path].format.height,
-				      bytesperline, PLANE_Y), vdid);
+				      bytesperline, PLANE_Y));
 
 	bytesperline =
 		hailo15_plane_get_bytesperline(format, line_length, PLANE_CB);
-	hailo15_isp_write_reg_with_vdid(isp_dev, cb_size_init_addr,
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, cb_size_init_addr,
 			      hailo15_plane_get_sizeimage(
 				      format, isp_dev->fmt[path].format.height,
-				      bytesperline, PLANE_CB), vdid);
+				      bytesperline, PLANE_CB));
 
 	bytesperline =
 		hailo15_plane_get_bytesperline(format, line_length, PLANE_CR);
-	hailo15_isp_write_reg_with_vdid(isp_dev, cr_size_init_addr,
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, cr_size_init_addr,
 			      hailo15_plane_get_sizeimage(
 				      format, isp_dev->fmt[path].format.height,
-				      bytesperline, PLANE_CR), vdid);
+				      bytesperline, PLANE_CR));
 }
 EXPORT_SYMBOL(hailo15_isp_configure_frame_size);
 
@@ -356,7 +573,7 @@ int hailo15_isp_is_path_enabled(struct hailo15_isp_device *isp_dev, int path)
 {
 	uint32_t enabled_mask;
 	uint32_t mi_ctrl;
-	int vdid;
+	uint8_t vdid;
 
 	if (path >= ISP_MAX_PATH || path < 0)
 		return 0;
@@ -368,56 +585,67 @@ int hailo15_isp_is_path_enabled(struct hailo15_isp_device *isp_dev, int path)
 	enabled_mask = path == ISP_MP ? MP_YCBCR_PATH_ENABLE_MASK :
 					SP2_YCBCR_PATH_ENABLE_MASK;
 
-	mi_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_CTRL, vdid);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_CTRL, &mi_ctrl);
 
 	return !!(mi_ctrl & enabled_mask);
 }
 static inline void
 hailo15_isp_configure_rdma_frame_base(struct hailo15_isp_device *isp_dev,
-				    dma_addr_t addr[FMT_MAX_PLANES], int vdid)
+					dma_addr_t addr[FMT_MAX_PLANES], uint8_t vdid,
+					struct hailo15_buf_timing *timing)
 {
-	int mi_mcm_ctrl;
+	uint32_t mi_mcm_ctrl;
+	int ret;
 
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_MCM_DMA_RAW_PIC_START_AD, addr[PLANE_Y], vdid);
-	mi_mcm_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_MCM_CTRL, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_MCM_DMA_RAW_PIC_START_AD, addr[PLANE_Y]);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_MCM_CTRL, &mi_mcm_ctrl);
 	mi_mcm_ctrl |= MCM_RD_CFG_UPD;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_MCM_CTRL, mi_mcm_ctrl, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_MCM_CTRL, mi_mcm_ctrl);
 
 	/* FE switch will write to MI_CTRL with MI_CTRL_MCM_RAW_RDMA_START to trigger MCM RDMA start
 	   It will do so after the FE is finished (fe_switch wait for completion, and then executes this write)
 	*/
 	if(isp_dev->fe_enable) {
-		isp_dev->fe_dev->fe_switch(isp_dev->fe_dev, &isp_dev->fe_switch);
+		if (timing)
+			timing->fe_switch_start = ktime_get();
+
+		ret = isp_dev->fe_dev->fe_switch(isp_dev->fe_dev, &isp_dev->fe_switch);
+		if (ret) {
+			pr_err("%s - failed to switch FE, ret = %d\n", __func__, ret);
+			return;
+		}
+		if (timing)
+			timing->fe_switch_end = ktime_get();
 	}
 }
 
 void
 hailo15_isp_configure_mcm_raw_frame_base(struct hailo15_isp_device *isp_dev,
-				    dma_addr_t addr[FMT_MAX_PLANES], unsigned int vdid)
+				    dma_addr_t addr[FMT_MAX_PLANES], uint8_t vdid)
 {
 	uint32_t raw_base_reg = vdid == 0 ? MI_MCM_RAW0_BASE_AD_INIT : MI_MCM_RAW1_BASE_AD_INIT;
-	hailo15_isp_write_reg_with_vdid(isp_dev, raw_base_reg, addr[PLANE_Y], vdid);
+	hailo15_isp_write_control_reg(isp_dev, raw_base_reg, addr[PLANE_Y]);
 }
 EXPORT_SYMBOL(hailo15_isp_configure_mcm_raw_frame_base);
 
 static inline void
 hailo15_isp_configure_mp_frame_base(struct hailo15_isp_device *isp_dev,
-				    dma_addr_t addr[FMT_MAX_PLANES], int vdid)
+				    dma_addr_t addr[FMT_MAX_PLANES], uint8_t vdid)
 {
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_MP_Y_BASE_AD_INIT, addr[PLANE_Y], vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_MP_CB_BASE_AD_INIT, addr[PLANE_CB], vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_MP_CR_BASE_AD_INIT, addr[PLANE_CR], vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_MP_Y_BASE_AD_INIT, addr[PLANE_Y]);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_MP_CB_BASE_AD_INIT, addr[PLANE_CB]);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_MP_CR_BASE_AD_INIT, addr[PLANE_CR]);
 }
 
 static inline void
 hailo15_isp_configure_sp2_frame_base(struct hailo15_isp_device *isp_dev,
-				     dma_addr_t addr[FMT_MAX_PLANES], int vdid)
+				     dma_addr_t addr[FMT_MAX_PLANES], uint8_t vdid)
 {
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_SP2_Y_BASE_AD_INIT, addr[PLANE_Y], vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_SP2_CB_BASE_AD_INIT,
-			      addr[PLANE_CB], vdid);
-	hailo15_isp_write_reg_with_vdid(isp_dev, MIV2_SP2_CR_BASE_AD_INIT,
-			      addr[PLANE_CR], vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_SP2_Y_BASE_AD_INIT, addr[PLANE_Y]);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_SP2_CB_BASE_AD_INIT,
+			      addr[PLANE_CB]);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MIV2_SP2_CR_BASE_AD_INIT,
+			      addr[PLANE_CR]);
 }
 
 void hailo15_isp_configure_frame_base(struct hailo15_isp_device *isp_dev,
@@ -425,7 +653,7 @@ void hailo15_isp_configure_frame_base(struct hailo15_isp_device *isp_dev,
 				      int grp_id)
 {
 	int pad = HAILO15_VID_GRP_TO_ISP_PATH(grp_id);
-	int vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
+	uint8_t vdid = HAILO15_VID_GRP_TO_VDID(grp_id);
 	struct hailo15_buffer *buf = isp_dev->cur_buf[grp_id];
 
 	if (buf){
@@ -442,7 +670,8 @@ void hailo15_isp_configure_frame_base(struct hailo15_isp_device *isp_dev,
 	}
 
 	if(ISP_MCM_IN == pad){
-		hailo15_isp_configure_rdma_frame_base(isp_dev, addr, vdid);
+		hailo15_isp_configure_rdma_frame_base(isp_dev, addr, vdid,
+			buf ? &buf->timing : NULL);
 	}
 }
 EXPORT_SYMBOL(hailo15_isp_configure_frame_base);
@@ -740,7 +969,7 @@ static void hailo15_isp_handle_multi_sensor_frame_rx(struct hailo15_isp_device *
 		isp_dev->cur_buf_path = isp_dev->fe_switch.next_vdid[0] == 0 ? HAILO15_VID_GRP_SX_CSI0_ISP_MP :
 			HAILO15_VID_GRP_SX_CSI1_ISP_MP;
 		hailo15_isp_configure_rdma_frame_base(isp_dev, &(isp_dev->cur_rdma_buf->phys_addr),
-		isp_dev->fe_switch.next_vdid[0]);
+			isp_dev->fe_switch.next_vdid[0], NULL);
 
 		/* if we were in toggle state before and we need to stop, we just push 1 more frame
 			so we can indicate that toggle is disabled and stop the stream */
@@ -759,18 +988,24 @@ static void hailo15_isp_handle_frame_rx_rdma(struct hailo15_isp_device *isp_dev,
 					     int irq_status)
 {
 	int sink_pad;
+	struct hailo15_buffer *buf;
 
 	if(!isp_dev->mcm_mode){
 		return;
 	}
 
 	sink_pad = HAILO15_VID_GRP_TO_ISP_SINK_PAD(isp_dev->cur_buf_path);
+	buf = isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN];
 
 	if(__hailo15_isp_frame_rx_rdma_ready(irq_status)){
 		isp_dev->dma_ready = 1;
+		if (buf)
+			buf->timing.rdma_ready = ktime_get();
 	}
 	if(__hailo15_isp_frame_rx_mp(irq_status) || __hailo15_isp_frame_rx_sp2(irq_status)){
 		isp_dev->frame_end = 1;
+		if (buf)
+			buf->timing.frame_end = ktime_get();
 	}
 	if(isp_dev->frame_end){
 		atomic_set(&isp_dev->frame_received[sink_pad], 1);
@@ -934,7 +1169,7 @@ void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work)
 					isp_dev->fe_switch.next_vdid[1] = isp_port;
 					isp_dev->cur_buf_path = isp_port == HAILO15_ISP_SINK_PAD_S0 ? HAILO15_VID_GRP_SX_CSI0_ISP_MP :
 						HAILO15_VID_GRP_SX_CSI1_ISP_MP;
-					hailo15_isp_configure_rdma_frame_base(isp_dev, &first_sensor_buf->phys_addr, isp_port);
+					hailo15_isp_configure_rdma_frame_base(isp_dev, &first_sensor_buf->phys_addr, isp_port, NULL);
 				}
 			}
 		}
@@ -982,15 +1217,19 @@ static void hailo15_isp_mis_work(struct work_struct *work)
 		(struct hailo15_irq_deffered_work *)container_of(
 			work, struct hailo15_irq_deffered_work, irq_deffered_w);
 	struct hailo15_isp_device *isp_dev = irq_deffered_work->isp_dev;
+	uint8_t vdid = 0;
+	int ret;
 	uint32_t isp_imsc;
-	int vdid = 0;
+	uint32_t delta_h, delta_v;
 
 	if (irq_deffered_work->irq_status & ISP_MIS_DATA_LOSS) {
 		if (!isp_dev->mcm_mode) {
 			pr_err("fatal: isp data loss detected!\n");
-			isp_imsc = hailo15_isp_read_reg(isp_dev, ISP_IMSC);
+			ret = hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_IMSC, &isp_imsc);
+			if (ret)
+				goto exit;
 			isp_imsc &= ~(ISP_MIS_DATA_LOSS);
-			hailo15_isp_write_reg(isp_dev, ISP_IMSC, isp_imsc);
+			hailo15_isp_write_vdid_reg(isp_dev, vdid, ISP_IMSC, isp_imsc);
 		} else {
 			pr_err_ratelimited("isp data loss detected in mcm mode %d\n", isp_dev->mcm_mode);
 		}
@@ -998,12 +1237,18 @@ static void hailo15_isp_mis_work(struct work_struct *work)
 
 	if (isp_dev->irq_status.isp_mis & (ISP_MIS_VSM_DONE)) {
 		// currently only supported on vdid 0
-		isp_dev->current_vsm.dx = hailo15_isp_process_delta(
-			hailo15_isp_read_reg_with_vdid(isp_dev, ISP_VSM_DELTA_H, vdid));
-		isp_dev->current_vsm.dy = hailo15_isp_process_delta(
-			hailo15_isp_read_reg_with_vdid(isp_dev, ISP_VSM_DELTA_V, vdid));
+		ret = hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_VSM_DELTA_H, &delta_h);
+		if (ret)
+			goto exit;
+		ret = hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_VSM_DELTA_V, &delta_v);
+		if (ret)
+			goto exit;
+
+		isp_dev->current_vsm.dx = hailo15_isp_process_delta(delta_h);
+		isp_dev->current_vsm.dy = hailo15_isp_process_delta(delta_v);
 	}
 
+exit:
 	kfree(irq_deffered_work);
 }
 
@@ -1011,15 +1256,15 @@ static void hailo15_isp_handle_frame_rx_sp2_raw(struct hailo15_isp_device *isp_d
 					    int irq_status)
 {
 	uint32_t mi_ctrl;
-	int vdid;
+	uint8_t vdid;
 
 	if (!__hailo15_isp_frame_rx_sp2_raw(irq_status))
 		return;
 
 	vdid = HAILO15_VID_GRP_TO_VDID(isp_dev->cur_buf_path);
-	mi_ctrl = hailo15_isp_read_reg_with_vdid(isp_dev, MI_CTRL, vdid);
+	hailo15_isp_read_vdid_reg(isp_dev, vdid, MI_CTRL, &mi_ctrl);
 	mi_ctrl |= SP2_RAW_RDMA_START | SP2_RAW_RDMA_START_CON;
-	hailo15_isp_write_reg_with_vdid(isp_dev, MI_CTRL, mi_ctrl, vdid);
+	hailo15_isp_write_vdid_reg(isp_dev, vdid, MI_CTRL, mi_ctrl);
 }
 
 void hailo15_isp_handle_frame_rx(struct work_struct *work)
@@ -1047,23 +1292,26 @@ static void hailo15_isp_handle_afm_int(struct work_struct *work)
 			work, struct hailo15_irq_deffered_work, irq_deffered_w);
 	struct hailo15_isp_device *isp_dev = irq_deffered_work->isp_dev;
 	uint32_t sum_a, sum_b, sum_c, lum_a, lum_b, lum_c;
-	int vdid;
+	uint8_t vdid;
 
 	vdid = HAILO15_VID_GRP_TO_VDID(isp_dev->cur_buf_path);
 
-	sum_a = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_SUM_A, vdid);
-	sum_b = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_SUM_B, vdid);
-	sum_c = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_SUM_C, vdid);
-	lum_a = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_LUM_A, vdid);
-	lum_b = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_LUM_B, vdid);
-	lum_c = hailo15_isp_read_reg_with_vdid(isp_dev, ISP_AFM_LUM_C, vdid);
+	if (hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_SUM_A, &sum_a) ||
+	    hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_SUM_B, &sum_b) ||
+	    hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_SUM_C, &sum_c) ||
+	    hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_LUM_A, &lum_a) ||
+	    hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_LUM_B, &lum_b) ||
+	    hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_AFM_LUM_C, &lum_c)) {
+		pr_err("%s - Failed to read AFM registers\n", __func__);
+		goto exit;
+	}
 
 	mutex_lock(&isp_dev->af_kevent->data_lock);
 	if (isp_dev->af_kevent->ready == 1) {
 		pr_debug("%s - AF event not handled in time, dropping measurements\n",
 			__func__);
 		mutex_unlock(&isp_dev->af_kevent->data_lock);
-		return;
+		goto exit;
 	}
 
 	isp_dev->af_kevent->sum_a = sum_a;
@@ -1077,6 +1325,8 @@ static void hailo15_isp_handle_afm_int(struct work_struct *work)
 	mutex_unlock(&isp_dev->af_kevent->data_lock);
 
 	wake_up_interruptible_all(&isp_dev->af_kevent->wait_q);
+
+exit:
 	kfree(irq_deffered_work);
 }
 
@@ -1143,9 +1393,32 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	}
 	spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 
+	memset(&isp_dev->irq_status, 0, sizeof(isp_dev->irq_status));
+
+	if(isp_dev->fe_enable){
+		/* mis is raw cpu read */
+		hailo15_isp_irq_read_fe_control_reg(isp_dev, FE_MIS, &isp_dev->irq_status.isp_fe);
+
+		if(isp_dev->irq_status.isp_fe != 0){
+			raised_irq_count++;
+		}
+
+		if(isp_dev->fe_dev){
+			isp_dev->fe_dev->fe_dma_irq(isp_dev->fe_dev);
+		}
+
+		if(isp_dev->irq_status.isp_fe & 1){
+			isp_dev->fe_ready = 1;
+		}
+		if (isp_dev->irq_status.isp_fe){
+			// skip processing of all other interrupts until fe transaction complete
+			goto post_irq_events;
+		}
+	}
+
 	/* clear the hw interrupt - mis is raw cpu read, icr is raw cpu write */
-	isp_dev->irq_status.isp_mis = hailo15_isp_read_reg(isp_dev, ISP_MIS);
-	hailo15_isp_write_reg(isp_dev, ISP_ICR, isp_dev->irq_status.isp_mis);
+	hailo15_isp_irq_read_control_reg(isp_dev, ISP_MIS, &isp_dev->irq_status.isp_mis);
+	hailo15_isp_irq_write_control_reg(isp_dev, ISP_ICR, isp_dev->irq_status.isp_mis);
 
 	if (isp_dev->irq_status.isp_mis != 0) {
 		raised_irq_count++;
@@ -1188,12 +1461,8 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 
 	hailo15_process_irq_stats_events(isp_dev, HAILO15_ISP_IRQ_EVENT_ISP_MIS, isp_dev->irq_status.isp_mis);
 
-	/* mis is raw cpu read */
-	isp_dev->irq_status.isp_miv2_mis =
-		hailo15_isp_read_reg(isp_dev, MIV2_MIS);
-
-	/* icr is raw cpu write */
-	hailo15_isp_write_reg(isp_dev, MIV2_ICR, isp_dev->irq_status.isp_miv2_mis);
+	hailo15_isp_irq_read_control_reg(isp_dev, MIV2_MIS, &isp_dev->irq_status.isp_miv2_mis);
+	hailo15_isp_irq_write_control_reg(isp_dev, MIV2_ICR, isp_dev->irq_status.isp_miv2_mis);
 
 	/* queue raw frame mcm work */
 	masked_mis = isp_dev->irq_status.isp_miv2_mis & (MIV2_MCM_RAW0_FRAME_END | MIV2_MCM_RAW1_FRAME_END);
@@ -1240,34 +1509,13 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		isp_dev->irq_status.isp_miv2_mis &= ~MIV2_MCM_DMA_RAW_READY_MASK;
 	}
 
-	/* mis is raw cpu read */
-	isp_dev->irq_status.isp_miv2_mis1 =
-		hailo15_isp_read_reg(isp_dev, MIV2_MIS1);
-
-	/* icr is raw cpu write */
-	hailo15_isp_write_reg(isp_dev, MIV2_ICR1,
-			      isp_dev->irq_status.isp_miv2_mis1);
+	hailo15_isp_irq_read_control_reg(isp_dev, MIV2_MIS1, &isp_dev->irq_status.isp_miv2_mis1);
+	hailo15_isp_irq_write_control_reg(isp_dev, MIV2_ICR1, isp_dev->irq_status.isp_miv2_mis1);
 	if (isp_dev->irq_status.isp_miv2_mis1 != 0) {
 		raised_irq_count++;
 	}
 
-	if(isp_dev->fe_enable){
-		/* mis is raw cpu read */
-		isp_dev->irq_status.isp_fe = hailo15_isp_read_reg(isp_dev, FE_MIS);
-
-		if(isp_dev->irq_status.isp_fe != 0){
-			raised_irq_count++;
-		}
-
-		if(isp_dev->fe_dev){
-			isp_dev->fe_dev->fe_dma_irq(isp_dev->fe_dev);
-		}
-
-		if(isp_dev->irq_status.isp_fe & 1){
-			isp_dev->fe_ready = 1;
-		}
-	}
-
+post_irq_events:
 	event_size = hailo15_isp_get_event_queue_size(isp_dev);
 
 	if (event_size >= HAILO15_ISP_EVENT_QUEUE_SIZE - raised_irq_count) {
@@ -1288,10 +1536,6 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 		}
 	}
 
-	if(isp_dev->fe_enable && isp_dev->irq_status.isp_mis & ISP_MIS_FRAME_OUT){
-		tasklet_schedule(&isp_dev->fe_tasklet);
-	}
-
 
 }
 
@@ -1309,19 +1553,19 @@ irqreturn_t hailo15_isp_err_irq_process(struct hailo15_isp_device *isp_dev, int 
 		pr_err("wrapper_cfg is null\n");
 		return IRQ_NONE;
 	}
-	errors = readl(isp_dev->wrapper_base + wrapper_cfg->err_int_status_offset);
+	errors = hailo15_isp_wrapper_read_reg(isp_dev, wrapper_cfg->err_int_status_offset);
 	/* Ignore if there are no isp errors */
 	if (!errors) {
 		return IRQ_NONE;
 	}
-	mask = readl(isp_dev->wrapper_base + wrapper_cfg->err_int_mask_offset);
+	mask = hailo15_isp_wrapper_read_reg(isp_dev, wrapper_cfg->err_int_mask_offset);
 	hailo15_print_irq_error_message((struct err_status_reg *)&isp_dev->wrapper_cfg->isp_err_interrupt_reg, errors & mask, irq);
 
 	/* Clear the error IRQs */
-	writel(errors, isp_dev->wrapper_base + wrapper_cfg->err_int_w1c_offset);
+	hailo15_isp_wrapper_write_reg(isp_dev, wrapper_cfg->err_int_w1c_offset, errors);
 
 	/* Clear the current error bits in the mask */
-	writel(mask & ~errors, isp_dev->wrapper_base + wrapper_cfg->err_int_mask_offset);
+	hailo15_isp_wrapper_write_reg(isp_dev, wrapper_cfg->err_int_mask_offset, mask & ~errors);
 
 	return IRQ_HANDLED;
 }
@@ -1334,11 +1578,6 @@ irqreturn_t hailo15_isp_irq_process(struct hailo15_isp_device *isp_dev)
 }
 EXPORT_SYMBOL(hailo15_isp_irq_process);
 
-void mcm_fe_irq_tasklet(unsigned long arg){
-	struct hailo15_isp_device *isp_dev = (struct hailo15_isp_device*)arg;
-	isp_dev->fe_dev->fe_isp_irq_work(isp_dev->fe_dev);
-}
-EXPORT_SYMBOL(mcm_fe_irq_tasklet);
 
 
 MODULE_LICENSE("GPL v2");

@@ -1211,7 +1211,7 @@ static int hailo15_rxwrapper_set_subdev_sensor_format(struct hailo15_rxwrapper_p
 	struct v4l2_subdev_format sensor_fmt = {0};
 	int ret = 0;
 
-    	memcpy(&sensor_fmt, fmt, sizeof(struct v4l2_subdev_format));
+	memcpy(&sensor_fmt, fmt, sizeof(struct v4l2_subdev_format));
 
 	sensor_sd = hailo15_get_sensor_subdev(hailo15_rxwrapper->sd.v4l2_dev->mdev, sd->grp_id);
 	if (!sensor_sd) {
@@ -1404,7 +1404,7 @@ static int hailo15_rxwrapper_queue_empty(struct hailo15_dma_ctx *ctx,
 
 	/* Delete all list elements - and dequeue them back to the userspace (w/o deferred work) */
 	list_for_each_entry_safe (buf, nbuf, &hailo15_rxwrapper->buf_queue[grp_id], irqlist) {
-		list_del(&buf->irqlist);
+		hailo15_buf_list_del(buf);
 		hailo15_dma_buffer_dequeue(ctx, grp_id, buf);
 	}
 
@@ -1566,7 +1566,7 @@ static void hailo15_rxwrapper_buffer_done(struct hailo15_rxwrapper_priv *hailo15
 		/* cur_buf should be removed from list of rxwrapper bufs and then dequeued back to user (without catching spinlock) */
 		dequeued_buf = hailo15_rxwrapper->cur_buf[grp_id];
 		if (dequeued_buf) {
-			list_del(&dequeued_buf->irqlist);
+			hailo15_buf_list_del(dequeued_buf);
 		}
 
  		/* Update cur and next bufs */
@@ -1674,8 +1674,9 @@ static int hailo15_rxwrapper_fast_toggle_set_status(struct hailo15_rxwrapper_pri
 	trace_rxw_fast_toggle_set_status(sd->grp_id, toggle_data->type, toggle_data->state);
 
 	// arg is checked many times before calling this function
-	if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
-		// Switching to HDR: rxwrapper assumes the sd->grp_id is P2A grp id
+	if (toggle_data->type == TOGGLE_MERCURY_SDR_HDR || toggle_data->type == TOGGLE_MERCURY_SDR_PREISP
+		|| toggle_data->type == TOGGLE_PLUTO_SDR_PREISP || toggle_data->type == TOGGLE_PLUTO_HDR_PREISP) {
+		// Switching to use p2a: rxwrapper assumes the sd->grp_id is P2A grp id
 		// so we must set that here in order to pass checks
 		// we must restore the original grp_id at the end of the function
 		orig_grp_id = sd->grp_id;
@@ -1687,7 +1688,7 @@ static int hailo15_rxwrapper_fast_toggle_set_status(struct hailo15_rxwrapper_pri
 	} else if (toggle_data->state == FAST_TOGGLE_APPLY_PRIMING) {
 	} else if (toggle_data->state == FAST_TOGGLE_ACTIVE) {
 		// Apply priming
-		if (toggle_data->type == FAST_TOGGLE_SDR_SDR) {
+		if (toggle_data->type == TOGGLE_MERCURY_SDR_SDR) {
 			// sdr->sdr currently does not require priming
 			ret = 0;
 		}
@@ -1695,26 +1696,40 @@ static int hailo15_rxwrapper_fast_toggle_set_status(struct hailo15_rxwrapper_pri
 			ret = hailo15_rxwrapper_apply_priming(hailo15_rxwrapper, sd);
 		}
 
+		if (ret) {
+			dev_err(hailo15_rxwrapper->dev, "%s: failed to apply priming\n", __func__);
+			return ret;
+		}
+
 		// Start stream
-		if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
+		if (toggle_data->type == TOGGLE_MERCURY_SDR_HDR || toggle_data->type == TOGGLE_MERCURY_SDR_PREISP
+			|| toggle_data->type == TOGGLE_PLUTO_SDR_PREISP || toggle_data->type == TOGGLE_PLUTO_HDR_PREISP) {
 			ret = hailo15_rxwrapper_apply_set_stream(hailo15_rxwrapper, sd, 1);
 		}
 
 		hailo15_rxwrapper->is_fast_toggle_priming = false;
 	} else if (toggle_data->state == FAST_TOGGLE_TEARDOWN) {
-		if (toggle_data->type == FAST_TOGGLE_HDR_SDR) {
-			// Switching from HDR to SDR: rxwrapper assumes the sd->grp_id is P2A grp id
+		if (toggle_data->type == TOGGLE_MERCURY_HDR_SDR || toggle_data->type == TOGGLE_MERCURY_PREISP_SDR
+			|| toggle_data->type == TOGGLE_PLUTO_PREISP_SDR || toggle_data->type == TOGGLE_PLUTO_PREISP_HDR) {
+			// rxwrapper assumes the sd->grp_id is P2A grp id
 			// we need to teardown (stop the stream) at this fast toggle state
 			orig_grp_id = sd->grp_id;
 			sd->grp_id = HAILO15_VID_GRP_SX_CSI0_P2A;
 			ret = hailo15_rxwrapper_apply_set_stream(hailo15_rxwrapper, sd, 0);
 			sd->grp_id = orig_grp_id;
 		}
+
+		if (toggle_data->type == TOGGLE_PLUTO_SDR_HDR || toggle_data->type == TOGGLE_PLUTO_HDR_SDR) {
+			// Save current format as the priming format - so that during fast toggle the format will be re-applied
+			// This is because the user doesn't call set_fmt on vid0 again in pluto with the same value
+			hailo15_rxwrapper->pad_fmts_priming[RXWRAPPER_SINK_PAD_0] = hailo15_rxwrapper->pad_fmts[RXWRAPPER_SINK_PAD_0];
+		}
 	} else if (toggle_data->state == FAST_TOGGLE_NONE) {
 		hailo15_rxwrapper->is_fast_toggle_priming = false;
 	}
 
-	if (toggle_data->type == FAST_TOGGLE_SDR_HDR) {
+	if (toggle_data->type == TOGGLE_MERCURY_SDR_HDR || toggle_data->type == TOGGLE_MERCURY_SDR_PREISP
+		|| toggle_data->type == TOGGLE_PLUTO_SDR_PREISP || toggle_data->type == TOGGLE_PLUTO_HDR_PREISP) {
 		sd->grp_id = orig_grp_id;
 	}
 	return ret;
@@ -1804,7 +1819,7 @@ static int hailo15_rxwrapper_buffer_queue(struct hailo15_dma_ctx *ctx, struct ha
 	rxw_priv = container_of(sd, struct hailo15_rxwrapper_priv, sd);
 
 	spin_lock_irqsave(&rxw_priv->buf_lock, flags);
-	list_add_tail(&buf->irqlist, &rxw_priv->buf_queue[buf->grp_id]);
+	hailo15_buf_list_add_tail(buf, &rxw_priv->buf_queue[buf->grp_id]);
 	spin_unlock_irqrestore(&rxw_priv->buf_lock, flags);
 	buf->queue_sequence = rxw_priv->queue_sequence++;
 	trace_hailo_buffer_queued(buf);

@@ -113,14 +113,21 @@ static struct v4l2_subdev *hailo15_video_remote_subdev(struct hailo15_video_node
 	return subdev;
 }
 
-static int hailo15_video_create_pipeline(struct hailo15_video_node *vid_node)
+static int hailo15_video_create_pipeline(struct hailo15_video_node *vid_node, bool is_fast_toggle)
 {
 	int ret = 0;
 
 	if (vid_node->pipeline_init == 0 &&
 		!hailo15_is_p2a_grp_id(vid_node->path) &&
 		!hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
-		ret = hailo15_video_post_event_create_pipeline(vid_node);
+
+		// post event create pipeline
+		if (is_fast_toggle) {
+			ret = hailo15_video_post_event_create_pipeline_fast_toggle(vid_node);
+		} else {
+			ret = hailo15_video_post_event_create_pipeline(vid_node);
+		}
+
 		if (ret) {
 			pr_err("%s - post event failed and returned: %d\n",
 				   __func__, ret);
@@ -141,7 +148,7 @@ static int hailo15_enum_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 
 	if (!vid_node->pipeline_init) {
-		ret = hailo15_video_create_pipeline(vid_node);
+		ret = hailo15_video_create_pipeline(vid_node, false);
 		if (ret) {
 			return ret;
 		}
@@ -169,7 +176,7 @@ static int hailo15_g_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 
 	if (!vid_node->pipeline_init) {
-		ret = hailo15_video_create_pipeline(vid_node);
+		ret = hailo15_video_create_pipeline(vid_node, false);
 		if (ret) {
 			return ret;
 		}
@@ -282,7 +289,7 @@ static int hailo15_s_fmt_vid_cap(struct file *file, void *priv,
 	VALIDATE_STREAM_OFF(vid_node, return -EBUSY);
 
 	if (!vid_node->pipeline_init) {
-		ret = hailo15_video_create_pipeline(vid_node);
+		ret = hailo15_video_create_pipeline(vid_node, false);
 		if (ret) {
 			return ret;
 		}
@@ -318,7 +325,7 @@ static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
 
 	mutex_lock(&vid_node->qlock);
 	list_for_each_entry_safe (buf, nbuf, &vid_node->buf_queue, irqlist) {
-		list_del_init(&buf->irqlist);
+		hailo15_buf_list_del(buf);
 		trace_vid_cap_buffer_dequeue(vid_node->path, buf->vb.vb2_buf.index,
 					     buf->dma[0], ktime_get_ns());
 		vb2_buffer_done(&buf->vb.vb2_buf, state);
@@ -870,8 +877,8 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	// trace_printk("%s - posting release pipeline event start\n", __func__);
 
 	trace_vid_cap_fast_toggle_release_pipeline(vid_node->path, toggle_type);
-
-	ret = hailo15_video_post_event_release_pipeline(vid_node);
+	
+	ret = hailo15_video_post_event_release_pipeline_fast_toggle(vid_node);
 	if (ret) {
 		pr_err("%s - post event release pipeline failed\n", __func__);
 		return ret;
@@ -882,7 +889,7 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 
 	/* ------------- TURN ON - stream start logic (assume no pixel format changes) --------------- */
 
-	if (toggle_type != FAST_TOGGLE_SDR_SDR) {
+	if (toggle_type != TOGGLE_MERCURY_SDR_SDR) {
 		trace_vid_cap_fast_toggle_apply_priming(vid_node->path, toggle_type);
 		// Specifically for sdr->sdr - no need for priming - so don't apply priming values
 		ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_APPLY_PRIMING, toggle_type);
@@ -894,7 +901,7 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	trace_vid_cap_fast_toggle_create_pipeline(vid_node->path, toggle_type);
 
 	// pipeline create
-	ret = hailo15_video_create_pipeline(vid_node);
+	ret = hailo15_video_create_pipeline(vid_node, true);
 	if (ret) {
 		pr_err("%s - failed to create pipeline during fast toggle: %d\n", __func__, ret);
 		return ret;
@@ -919,10 +926,10 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 						   buf->vb.vb2_buf.index,
 						   buf->dma[0],
 						   toggle_type);
-	list_add(&buf->irqlist, &vid_node->buf_queue);
+	hailo15_buf_list_add(buf, &vid_node->buf_queue);
 	vid_node->fast_toggle_priming_buf = NULL;
 	if (vid_node->prev_buf != NULL) {
-		list_add_tail(&vid_node->prev_buf->irqlist, &vid_node->buf_queue);
+		hailo15_buf_list_add_tail(vid_node->prev_buf, &vid_node->buf_queue);
 		vid_node->prev_buf = NULL;
 	}
 	vid_node->is_first_buffer_processed = true;
@@ -934,7 +941,7 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	ret = hailo15_video_device_process_vb2_buffer(&buf->vb.vb2_buf, true);
 	if (ret) {
 		mutex_lock(&vid_node->qlock);
-		list_del(&buf->irqlist);
+		hailo15_buf_list_del(buf);
 		mutex_unlock(&vid_node->qlock);
 		dev_err(vid_node->dev, "can't process priming buffer on node %d with error %d\n", vid_node->id, ret);
 		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
@@ -953,6 +960,28 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	return ret;
 }
 
+// TODO for v1.12 - once the user pass more than a single number to represent which toggle to perform
+// we'll need to adjust this function.
+static bool fast_toggle_is_supported(enum fast_toggle_type toggle_type)
+{
+	switch(toggle_type) {
+		case TOGGLE_MERCURY_SDR_SDR:
+		case TOGGLE_MERCURY_SDR_HDR:
+		case TOGGLE_MERCURY_HDR_SDR:
+		case TOGGLE_MERCURY_SDR_PREISP:
+		case TOGGLE_MERCURY_PREISP_SDR:
+		case TOGGLE_PLUTO_SDR_HDR:
+		case TOGGLE_PLUTO_HDR_SDR:
+		case TOGGLE_PLUTO_SDR_PREISP:
+		case TOGGLE_PLUTO_PREISP_SDR:
+		case TOGGLE_PLUTO_HDR_PREISP:
+		case TOGGLE_PLUTO_PREISP_HDR:
+			return true;
+		default:
+			return false;
+	}
+}
+
 static int fast_toggle(struct hailo15_video_node *vid_node, enum fast_toggle_type toggle_type)
 {
 	int ret = 0;
@@ -968,7 +997,7 @@ static int fast_toggle(struct hailo15_video_node *vid_node, enum fast_toggle_typ
 		return -EAGAIN;
 	}
 
-	if (toggle_type >= FAST_TOGGLE_TYPE_MAX) {
+	if (fast_toggle_is_supported(toggle_type) == false) {
 		pr_err("%s - invalid toggle type %d\n", __func__, toggle_type);
 		return -EINVAL;
 	}
@@ -1420,6 +1449,7 @@ static int hailo15_video_node_buffer_init(struct vb2_buffer *vb)
 	int plane;
 
 	memset(buf->dma, 0, sizeof(buf->dma));
+	hailo15_buf_list_init(buf);
 	if (vb->num_planes > FMT_MAX_PLANES) {
 		pr_info("%s - num of planes too big: %u\n", __func__,
 			vb->num_planes);
@@ -1561,7 +1591,7 @@ buffer_queue_exit_good:
 	/* Add given buffer to list of queued buffers - this list is being emptied on buf_done
 	 * (we insert/process new buffer exactly after the previous one is done)
 	 */
-	list_add_tail(&buf->irqlist, &vid_node->buf_queue);
+	hailo15_buf_list_add_tail(buf, &vid_node->buf_queue);
 	trace_vid_cap_buffer_queue(vid_node->path, buf->vb.vb2_buf.index,
 				  buf->dma[0], ktime_get_ns());
 
@@ -1634,7 +1664,7 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	   and potentially re-inserted into the irqlist while it is still in the irqlist. */
 	if (buf) {
 		mutex_lock(&vid_node->qlock);
-		list_del(&buf->irqlist);
+		hailo15_buf_list_del(buf);
 		mutex_unlock(&vid_node->qlock);
 	}
 	if (vid_node->prev_buf) {

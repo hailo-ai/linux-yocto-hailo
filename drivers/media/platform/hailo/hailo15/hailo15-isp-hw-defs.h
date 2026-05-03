@@ -1,19 +1,6 @@
 #ifndef __HAILO15_ISP_HW_DEFS_H
 #define __HAILO15_ISP_HW_DEFS_H
 
-/* Register operation struct for unified register access with vdid support */
-struct hailo15_reg_op {
-	uint32_t reg;    /* register offset */
-	uint32_t value;  /* register value */
-	int vdid;        /* vdid (-1 means get from FE if enabled) */
-};
-
-/* Convenience macros for register operations */
-#define HAILO15_REG_OP_DEFAULT(register, val) { .reg = (register), .value = (val), .vdid = -1 }
-#define HAILO15_REG_OP_WITH_VDID(register, val, vid) { .reg = (register), .value = (val), .vdid = (vid) }
-#define HAILO15_REG_READ_DEFAULT(register) { .reg = (register), .value = 0, .vdid = -1 }
-#define HAILO15_REG_READ_WITH_VDID(register, vid) { .reg = (register), .value = 0, .vdid = (vid) }
-
 #define INPUT_WIDTH 3840
 #define INPUT_HEIGHT 2160
 #define ISP_MP_Y_RING_FRAMES 2
@@ -25,6 +12,7 @@ struct hailo15_reg_op {
 #define VI_IRCL_RESET_ISP_CLEAR 0
 #define ISP_ACQ_PROP 0x00000404
 #define ISP_IMSC 0x000005bc
+#define ISP_MCM_CTRL 0x00001200
 #define MIV2_MP_YCBCR_FRAME_END_MASK BIT(0)
 #define MIV2_SP2_YCBCR_FRAME_END_MASK BIT(4)
 #define MIV2_MCM_DMA_RAW_READY_MASK BIT(24)
@@ -52,6 +40,9 @@ struct hailo15_reg_op {
 #define MIV2_MP_CR_BASE_AD_INIT 0x134c
 #define MIV2_SP2_CR_BASE_AD_INIT 0x1520
 #define MIV2_SP2_RAW_FRAME_END BIT(5)
+
+#define FE_CTRL 0x3D60
+#define FE_ICR 0x3D78
 
 #define MCM_RETIMING0 0x1284
 #define MCM_RETIMING1 0x1288
@@ -155,6 +146,19 @@ struct hailo15_reg_op {
 #define MI_IMSC 0x16C0
 #define MCM_DMA_RAW_READY BIT(24)
 
+/* MCM write format fields in ISP_MCM_CTRL register */
+/* mcm_wr0_fmt: bits[7:5] - MCM channel 0 (sensor0) */
+#define MCM_WR0_FMT_MASK    (BIT(5) | BIT(6) | BIT(7))
+#define MCM_WR0_FMT_16BIT   BIT(7)              /* b100 = 4 */
+#define MCM_WR0_FMT_20BIT   (BIT(7) | BIT(5))   /* b101 = 5 */
+
+/* mcm_wr1_fmt: bits[10:8] - MCM channel 1 (sensor1) */
+#define MCM_WR1_FMT_MASK    (BIT(8) | BIT(9) | BIT(10))
+#define MCM_WR1_FMT_16BIT   BIT(10)             /* b100 = 4 */
+#define MCM_WR1_FMT_20BIT   (BIT(10) | BIT(8))  /* b101 = 5 */
+
+#define ACQ_PROP_HDR_INPUT_BAYER_FORMAT_MASK (BIT(20) | BIT(21) | BIT(22))
+
 enum mcm_rd_fmt {
     MCM_RD_FMT_8BIT = 0,
     MCM_RD_FMT_10BIT = 1,
@@ -194,6 +198,8 @@ enum isp_mcm_mode {
 #define ISP_VSM_DELTA_SIGN_MASK BIT(11)
 
 #define FE_MIS 0x3d74
+#define MIPI_MIS 0x1C10
+#define MIPI_ICR 0x1C14
 
 /*ISP*/
 #define ISP_CTRL 0x400

@@ -14,7 +14,7 @@ pipelines:
             - fi
             - pipe: atlassian/trigger-pipeline:5.1.0
               variables:
-                BITBUCKET_ACCESS_TOKEN: $HAILO_YOCTO_VALIDATION_TOKEN_NEW
+                BITBUCKET_ACCESS_TOKEN: $HAILO_YOCTO_VALIDATION_TOKEN_2026
                 REPOSITORY: 'hailo-yocto-validation'
                 REF_NAME: 'develop'
                 CUSTOM_PIPELINE_NAME: 'update_vpu_revisions_pipeline'
