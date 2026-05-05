@@ -8,9 +8,10 @@
 
 #include "pinctrl-hailo15.h"
 #include "pinctrl-hailo15-descriptions.h"
-#include "pinctrl-hailo15-cpld.h"
+#include <linux/i2c.h>
 #include <linux/of_platform.h>
 #include <linux/pinctrl/pinconf-generic.h>
+#include <linux/soc/hailo/hailo15-evb-cpld.h>
 
 static const unsigned char drive_strength_lookup[16] = {
 	0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
@@ -503,11 +504,51 @@ int hailo15_pinctrl_check_valid_direction(unsigned int offset, bool input)
 	return 0;
 }
 
+static int hailo15_evb_cpld_init(struct hailo15_pinctrl *pinctrl,
+			    struct device_node *node)
+{
+	struct device_node *np;
+	struct i2c_client *client;
+
+	np = of_parse_phandle(node, "hailo,cpld", 0);
+	if (!np)
+		return 0;
+
+	if (!of_device_is_available(np)) {
+		of_node_put(np);
+		return 0;
+	}
+
+	client = of_find_i2c_device_by_node(np);
+	of_node_put(np);
+	if (!client) {
+		return -EPROBE_DEFER;
+	}
+
+	pinctrl->cpld = i2c_get_clientdata(client);
+	put_device(&client->dev);
+
+	if (!pinctrl->cpld) {
+		return -EPROBE_DEFER;
+	}
+	return 0;
+}
+
 static int hailo15_gpio_set_direction(struct pinctrl_dev *pctrl_dev,
 				      struct pinctrl_gpio_range *range,
 				      unsigned int offset, bool input)
 {
-	return hailo15_pinctrl_check_valid_direction(offset, input);
+	struct hailo15_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
+	int err;
+
+	err = hailo15_pinctrl_check_valid_direction(offset, input);
+	if (err < 0)
+		return err;
+
+	if (!pinctrl->cpld)
+		return 0;
+
+	return hailo15_evb_cpld_set_gpio_direction(pinctrl->cpld, offset, input);
 }
 
 static const struct pinmux_ops hailo15_pinmux_ops = {
@@ -521,17 +562,6 @@ static const struct pinmux_ops hailo15_pinmux_ops = {
 	.strict = true,
 };
 
-static const struct pinmux_ops hailo15_cpld_pinmux_ops = {
-	.get_functions_count = hailo15_get_functions_count,
-	.get_function_name = hailo15_get_function_name,
-	.get_function_groups = hailo15_get_function_groups,
-	.set_mux = hailo15_set_mux,
-	.gpio_request_enable = hailo15_gpio_request_enable,
-	.gpio_disable_free = hailo15_gpio_disable_free,
-	.gpio_set_direction = hailo15_cpld_gpio_set_direction,
-	.strict = true,
-};
-
 static const struct pinctrl_desc hailo15_pinctrl_desc = {
 	.pctlops = &hailo15_pctrl_ops,
 	.pmxops = &hailo15_pinmux_ops,
@@ -539,28 +569,8 @@ static const struct pinctrl_desc hailo15_pinctrl_desc = {
 	.name = "pinctrl-hailo15",
 };
 
-static const struct pinctrl_desc hailo15_cpld_pinctrl_desc = {
-	.pctlops = &hailo15_pctrl_ops,
-	.pmxops = &hailo15_cpld_pinmux_ops,
-	.confops = &hailo15_pinconf_ops,
-	.name = "pinctrl-cpld-hailo15",
-};
-
-static const struct hailo15_pinctrl_data hailo15_pinctrl_data = {
-	.pctl_desc = &hailo15_pinctrl_desc,
-};
-
-static const struct hailo15_pinctrl_data hailo15_cpld_pinctrl_data = {
-	.pctl_desc = &hailo15_cpld_pinctrl_desc,
-	.init = hailo15_cpld_init,
-};
-
 static const struct of_device_id hailo15_pinctrl_of_match[] = {
-	{ .compatible = "hailo15,pinctrl", .data = &hailo15_pinctrl_data },
-	{
-		.compatible = "hailo15-cpld,pinctrl",
-		.data = &hailo15_cpld_pinctrl_data,
-	},
+	{ .compatible = "hailo15,pinctrl" },
 	{},
 };
 
@@ -701,8 +711,6 @@ static void initialize_current_state(struct device *dev, struct hailo15_pinctrl 
 
 static int hailo15_pinctrl_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *id;
-	const struct hailo15_pinctrl_data *data;
 	struct hailo15_pinctrl *pinctrl;
 	struct device *dev = &pdev->dev;
 	struct resource *res;
@@ -742,22 +750,11 @@ static int hailo15_pinctrl_probe(struct platform_device *pdev)
 		return PTR_ERR(pinctrl->gpio_pads_config_base);
 	}
 
-	id = of_match_node(hailo15_pinctrl_of_match, node);
-	if (!id)
-		return -ENODEV;
+	pinctrl->pctl_desc = hailo15_pinctrl_desc;
 
-	data = id->data;
-	if (!data || !data->pctl_desc)
-		return -EINVAL;
-
-	pinctrl->pctl_desc = *data->pctl_desc;
-
-	if (data->init) {
-		ret = data->init(pinctrl, node);
-		if (ret != 0) {
-			return ret;
-		}
-	}
+	ret = hailo15_evb_cpld_init(pinctrl, node);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, pinctrl);
 

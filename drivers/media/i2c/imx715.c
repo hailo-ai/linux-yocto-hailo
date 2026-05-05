@@ -97,6 +97,13 @@
 #define IMX715_HCG_STEP 1
 #define IMX715_HCG_DEFAULT 0
 
+/* HDR custom rhs1 */
+#define IMX715_CUSTOM_RHS1_PRIMING_MIN -1
+#define IMX715_CUSTOM_RHS1_PRIMING_DEF -1
+#define IMX715_CUSTOM_RHS1_MIN 0
+#define IMX715_CUSTOM_RHS1_MAX 65535
+#define IMX715_CUSTOM_RHS1_PRIMING_MAX IMX715_CUSTOM_RHS1_MAX
+
 /* Group hold register */
 #define IMX715_REG_HOLD 0x3001
 
@@ -304,6 +311,7 @@ struct imx715 {
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
@@ -317,6 +325,7 @@ struct imx715 {
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
 	int wdr_priming_val;
+	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
 };
 
@@ -327,7 +336,7 @@ static const s64 link_freq[] = {
 /* Sensor mode registers -- Tested OK */
 static const struct imx715_reg mode_3840x2160_regs[] = {
 	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x00}, // XMSTA Master mode operation start		*imx715
+	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
 	/* Hailo Modules are assembled with a 37.125 MHz INCK, modify this section for other oscillators  */
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x7F}, // BC_WAIT_TIME INCK
@@ -406,7 +415,7 @@ static const struct imx715_reg mode_3840x2160_regs[] = {
 /* Mode wasn't tested */
 static const struct imx715_reg mode_1920x1080_sdr_binning_regs[] = {
 	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x00}, // XMSTA Master mode operation start		*imx715
+	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x5D}, // BC_WAIT_TIME
 	{0x300A, 0x42}, // CP_WAIT_TIME
@@ -574,7 +583,7 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_8fps_regs[] = {
 
 /* Mode wasn't tested */
 static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
-	{0x3002, 0x00}, // XMSTA Master mode operation start		*imx715
+	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x5D}, // BC_WAIT_TIME
 	{0x300A, 0x42}, // CP_WAIT_TIME
@@ -656,7 +665,7 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 
 static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x00}, // XMSTA Master mode operation start		*imx715
+	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
 	{0x3008, 0x7F}, // BCWAIT_TIME 0x07F
 	{0x300A, 0x5B}, // CPWAIT_TIME 0x05B
 	{0x3033, 0x04}, // SYS_MODE = 1782Mbps
@@ -906,9 +915,20 @@ struct v4l2_ctrl_config imx715_custom_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_UPDATE,
 		.name = "custom_rhs1",
 		.step = IMX715_INTEGER_STEP,
-		.min = 0,
-		.max = 65535,
+		.min = IMX715_CUSTOM_RHS1_MIN,
+		.max = IMX715_CUSTOM_RHS1_MAX,
 		.def = 0,
+	},
+	{
+		.ops = &imx715_ctrl_ops,
+		.id = IMX715_CID_CUSTOM_RHS1_PRIMING,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "custom_rhs1_priming",
+		.step = IMX715_INTEGER_STEP,
+		.min = IMX715_CUSTOM_RHS1_PRIMING_MIN,
+		.max = IMX715_CUSTOM_RHS1_PRIMING_MAX,
+		.def = IMX715_CUSTOM_RHS1_PRIMING_DEF,
 	},
 	{
 		.ops = &imx715_ctrl_ops,
@@ -1130,10 +1150,15 @@ static int imx715_write_regs(struct imx715 *imx715,
 static int imx715_set_hcg_mode(struct imx715 *imx715, u32 hcg)
 {
 	int ret;
+
+	ret = imx715_write_reg(imx715, IMX715_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+
 	ret = imx715_write_reg(imx715, IMX715_REG_HCG, 1, hcg);
 	if (ret) {
 		dev_err(imx715->dev, "Failed to write HCG register: %d\n", ret);
-		return ret;
+		goto release_hold;
 	}
 
 	if (imx715->cur_mode->dol >= 2) {
@@ -1141,7 +1166,7 @@ static int imx715_set_hcg_mode(struct imx715 *imx715, u32 hcg)
 		if (ret) {
 			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
 			dev_err(imx715->dev, "Failed to write HCG SEF1 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
@@ -1151,13 +1176,16 @@ static int imx715_set_hcg_mode(struct imx715 *imx715, u32 hcg)
 			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
 			imx715_write_reg(imx715, IMX715_REG_HCG_SEF1, 1, !hcg);
 			dev_err(imx715->dev, "Failed to write HCG SEF2 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
-	dev_dbg(imx715->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx715->cur_mode->dol);
+	dev_dbg(imx715->dev, "HCG mode set to %s, in mode with dol=%d\n",
+		hcg ? "enabled" : "disabled", imx715->cur_mode->dol);
 
-	return 0;
+release_hold:
+	imx715_write_reg(imx715, IMX715_REG_HOLD, 1, 0);
+	return ret;
 }
 
 /**
@@ -1407,27 +1435,27 @@ static int imx715_update_exp_vblank_controls(struct imx715* imx715)
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx715, &limits);
 
-	ret = imx715_set_ctrl_range_and_value(imx715, imx715->lef.exp_ctrl, limits.exp_lef_min,
+	ret = __v4l2_ctrl_modify_range(imx715->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX715_EXPOSURE_STEP, limits.exp_lef_default);
 	if (ret) {
-		dev_err(imx715->dev, "Failed to update LEF exposure range and value\n");
+		dev_err(imx715->dev, "Failed to modify LEF exposure range\n");
 		return ret;
 	}
 
 	if (imx715->cur_mode->dol >= 2) {
-		ret = imx715_set_ctrl_range_and_value(imx715, imx715->sef1.exp_ctrl, limits.exp_sef1_min,
+		ret = __v4l2_ctrl_modify_range(imx715->sef1.exp_ctrl, limits.exp_sef1_min,
 			limits.exp_sef1_max, IMX715_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
 		if (ret) {
-			dev_err(imx715->dev, "Failed to update SEF1 exposure range and value\n");
+			dev_err(imx715->dev, "Failed to modify SEF1 exposure range\n");
 			return ret;
 		}
 	}
 
 	if (imx715->cur_mode->dol >= 3) {
-		ret = imx715_set_ctrl_range_and_value(imx715, imx715->sef2.exp_ctrl, limits.exp_sef2_min,
+		ret = __v4l2_ctrl_modify_range(imx715->sef2.exp_ctrl, limits.exp_sef2_min,
 			limits.exp_sef2_max, IMX715_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
 		if (ret) {
-			dev_err(imx715->dev, "Failed to update SEF2 exposure range and value\n");
+			dev_err(imx715->dev, "Failed to modify SEF2 exposure range\n");
 			return ret;
 		}
 	}
@@ -1730,7 +1758,7 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
 		/* Set controls only if sensor is in power on state */
 		if (!pm_runtime_get_if_in_use(imx715->dev))
 			return 0;
-		
+
 		dev_dbg(imx715->dev, "Setting HCG to %u\n", ctrl->val);
 
 		ret = imx715_set_hcg_mode(imx715, ctrl->val);
@@ -1741,6 +1769,11 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
     	break;
 	case IMX715_CID_WDR_PRIMING:
 		imx715->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
+	case IMX715_CID_CUSTOM_RHS1_PRIMING:
+		/* custom rhs1 not implemented yet, so is priming */
+		imx715->custom_rhs1_priming_val = ctrl->val;
 		ret = 0;
 		break;
 	case IMX715_CID_CUSTOM_RHS1:
@@ -1966,12 +1999,12 @@ static int imx715_set_pad_format(struct v4l2_subdev *sd,
 
 	imx715_fill_pad_format(imx715, mode, fmt);
 
-	// even if which is V4L2_SUBDEV_FORMAT_TRY, update current format for tuning case
-	memcpy(&imx715->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
-	imx715->cur_mode = mode;
-#ifdef IMX715_UPDATE_CONTROLS_TRY_FMT
-		ret = imx715_update_controls(imx687, mode);
-#endif
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+	} else {
+		memcpy(&imx715->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
+		imx715->cur_mode = mode;
+	}
 
 out:
 	mutex_unlock(&imx715->mutex);
@@ -2023,6 +2056,11 @@ static int imx715_start_streaming(struct imx715 *imx715)
 	const struct imx715_reg_list *reg_list;
 	int ret;
 
+	/* Save all writable control values before handler setup may overwrite them */
+	struct hailo_ctrl_snapshot snap;
+
+	hailo_ctrl_snapshot_save(imx715->sd.ctrl_handler, &snap);
+
 	/* Write sensor mode registers */
 	pr_debug("%s - hdr_enabled: %d\n", __func__, imx715->hdr_enabled);
 	reg_list = &imx715->cur_mode->reg_list;
@@ -2032,27 +2070,36 @@ static int imx715_start_streaming(struct imx715 *imx715)
 		return ret;
 	}
 
-	/* Setup handler will write actual exposure and gain */
+	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
 	ret = __v4l2_ctrl_handler_setup(imx715->sd.ctrl_handler);
 	if (ret) {
 		dev_err(imx715->dev, "fail to setup handler (%d)", ret);
 		return ret;
 	}
 
-	/* Start streaming */
+	/* Restore any control values corrupted by handler_setup side effects
+	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
+	hailo_ctrl_snapshot_restore(&snap);
+
+	/* Standby cancel */
 	ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
 			       IMX715_MODE_STREAMING);
 	if (ret) {
-		dev_err(imx715->dev, "fail to start streaming");
+		dev_err(imx715->dev, "Failed to cancel standby on stream start: %d\n", ret);
 		return ret;
 	}
-	/* Start streaming */
+
+	/* Wait 24ms for internal regulator stabilization */
+	usleep_range(24000, 25000);
+
+	/* Master mode start */
 	ret = imx715_write_reg(imx715, IMX715_REG_XMSTA, 1, 0);
 	if (ret) {
-		dev_err(imx715->dev, "fail to start streaming");
+		dev_err(imx715->dev, "Failed to start master mode on stream start: %d\n", ret);
 		return ret;
 	}
 	imx715->wdr_priming_val = -1;
+	imx715->custom_rhs1_priming_val = -1;
 
 	dev_info(imx715->dev, "imx715: stream started (%s)", imx715->mode_string);
 
@@ -2067,10 +2114,19 @@ static int imx715_start_streaming(struct imx715 *imx715)
  */
 static int imx715_stop_streaming(struct imx715 *imx715)
 {
-	int ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
+	int ret;
+
+	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+	ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
 				IMX715_MODE_STANDBY);
 	if (ret) {
-		dev_err(imx715->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		dev_err(imx715->dev, "Failed to set standby on stream stop: %d\n", ret);
+		return ret;
+	}
+
+	ret = imx715_write_reg(imx715, IMX715_REG_XMSTA, 1, 1);
+	if (ret) {
+		dev_err(imx715->dev, "Failed to stop master mode on stream stop: %d\n", ret);
 		return ret;
 	}
 
@@ -2172,7 +2228,23 @@ imx715_find_nearest_frame_interval_mode(struct imx715 *imx715,
 		}
 	}
 
-	if(!found){
+	if (!found) {
+		/*
+		 * No mode matches curr_fmt (width/height/code). This can happen when
+		 * the pipeline sets a format that doesn't exactly match our mode list,
+		 * or when s_frame_interval is called before format is fully applied.
+		 * Fall back to current mode so the caller gets success and the
+		 * actual interval; no mode change is performed.
+		 */
+		if (imx715->cur_mode) {
+			*mode = imx715->cur_mode;
+			dev_info(imx715->dev,
+				 "s_frame_interval: no mode matched curr_fmt, using cur_mode %ux%u %u/%u fps\n",
+				 imx715->cur_mode->width, imx715->cur_mode->height,
+				 imx715->cur_mode->frame_interval.denominator,
+				 imx715->cur_mode->frame_interval.numerator);
+			return 0;
+		}
 		return -ENOTSUPP;
 	}
 
@@ -2372,6 +2444,9 @@ static int imx715_priming_apply(struct imx715 *imx715, int toggle_type)
 		return ret;
 	}
 
+	/* Custom RHS1 priming apply (if it's -1, it means no custom value was set, so skip) */
+	/* Note: custom RHS1 write not yet implemented for this sensor */
+
 	return 0;
 }
 
@@ -2459,6 +2534,9 @@ static int imx715_power_on(struct device *dev)
 	gpiod_set_value_cansleep(imx715->reset_gpio, 0);
 	gpiod_set_value_cansleep(imx715->reset_gpio, 1);
 
+	/* XCLR high to INCK start must be >= 1us */
+	udelay(2);
+
 	ret = clk_prepare_enable(imx715->inclk);
 	if (ret) {
 		dev_err(imx715->dev, "fail to enable inclk");
@@ -2506,7 +2584,7 @@ static int imx715_init_controls(struct imx715 *imx715)
 	struct ExposureLimits_t limits;
 	int ret;
 
-	const int num_ctrls = 13;
+	const int num_ctrls = 14;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
 		return ret;
@@ -2563,6 +2641,7 @@ static int imx715_init_controls(struct imx715 *imx715)
 
 	/* Initialize priming ctrls */
 	imx715_setup_custom_ctrl(imx715, &imx715->wdr_priming_ctrl, IMX715_CID_WDR_PRIMING);
+	imx715_setup_custom_ctrl(imx715, &imx715->custom_rhs1_priming_ctrl, IMX715_CID_CUSTOM_RHS1_PRIMING);
 
 	imx715->vblank_ctrl =
 		v4l2_ctrl_new_std(ctrl_hdlr, &imx715_ctrl_ops, V4L2_CID_VBLANK,
@@ -2678,6 +2757,7 @@ static int imx715_probe(struct i2c_client *client)
 	imx715->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
 	imx715->wdr_priming_val = -1;
+	imx715->custom_rhs1_priming_val = -1;
 	imx715->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	/* Initialize source pad */

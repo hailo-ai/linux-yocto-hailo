@@ -39,7 +39,6 @@ static atomic_t mem_tracker_enabled = ATOMIC_INIT(1);
 
 /* Session ID for tracking recording sessions - updated by user-space scripts */
 static u64 current_session_id = 0;
-static u64 last_seen_session_id = 0;
 static DEFINE_SPINLOCK(session_id_lock);
 
 /* Forward declaration */
@@ -658,11 +657,11 @@ static void emit_new_session_history(struct mem_tracker *tracker)
 	spin_lock(&session_id_lock);
 	session_id = current_session_id;
 	
-	if (session_id != 0 && session_id != last_seen_session_id) {
+	if (session_id != 0 && session_id != tracker->last_seen_session_id) {
 		pr_warn("[mem_tracker] New tracing session detected! session_id=%llu (last_seen was %llu)\n", 
-			session_id, last_seen_session_id);
+			session_id, tracker->last_seen_session_id);
 		new_session = true;
-		last_seen_session_id = session_id;
+		tracker->last_seen_session_id = session_id;
 	}
 	spin_unlock(&session_id_lock);
 	
@@ -1325,35 +1324,71 @@ static ssize_t session_id_write(struct file *file, const char __user *buf,
 }
 
 /* Global enable debugfs handlers */
-static int enable_seq_show(struct seq_file *m, void *v)
+static int global_enable_seq_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%d\n", atomic_read(&mem_tracker_enabled));
+	return 0;
+}
+
+static ssize_t global_enable_write(struct file *file, const char __user *buf,
+				   size_t count, loff_t *ppos)
+{
+	char kbuf[32];
+	unsigned int enabled;
+	int ret;
+
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+
+	if (copy_from_user(kbuf, buf, count))
+		return -EFAULT;
+	kbuf[count] = '\0';
+
+	ret = kstrtouint(kbuf, 0, &enabled);
+	if (ret)
+		return ret;
+
+	if (enabled > 1)
+		return -EINVAL;
+
+	atomic_set(&mem_tracker_enabled, enabled ? 1 : 0);
+
+	return count;
+}
+
+/* Per-tracker enable debugfs handlers */
+static int enable_seq_show(struct seq_file *m, void *v)
+{
+	struct mem_tracker *tracker = m->private;
+	seq_printf(m, "%d\n", atomic_read(&tracker->enabled));
 	return 0;
 }
 
 static ssize_t enable_write(struct file *file, const char __user *buf,
 			    size_t count, loff_t *ppos)
 {
+	struct seq_file *m = file->private_data;
+	struct mem_tracker *tracker = m->private;
 	char kbuf[32];
 	unsigned int enabled;
 	int ret;
-	
+
 	if (count >= sizeof(kbuf))
 		return -EINVAL;
-	
+
 	if (copy_from_user(kbuf, buf, count))
 		return -EFAULT;
 	kbuf[count] = '\0';
-	
+
 	ret = kstrtouint(kbuf, 0, &enabled);
 	if (ret)
 		return ret;
-	
+
 	if (enabled > 1)
 		return -EINVAL;
-	
-	atomic_set(&mem_tracker_enabled, enabled ? 1 : 0);
-	
+
+	atomic_set(&tracker->enabled, enabled ? 1 : 0);
+
 	return count;
 }
 
@@ -1400,6 +1435,7 @@ DEFINE_SEQ_FOPS(history_detailed);
 DEFINE_SEQ_FOPS_RW(buffer_size);
 DEFINE_SEQ_FOPS_RW(stack_capture);
 DEFINE_SEQ_FOPS_RW(session_id);
+DEFINE_SEQ_FOPS_RW(global_enable);
 DEFINE_SEQ_FOPS_RW(enable);
 
 /*
@@ -1596,9 +1632,12 @@ unsigned int mem_tracker_get_stack_capture(struct mem_tracker *tracker)
 }
 EXPORT_SYMBOL_GPL(mem_tracker_get_stack_capture);
 
-bool mem_tracker_is_enabled(void)
+bool mem_tracker_is_enabled(struct mem_tracker *tracker)
 {
-	return atomic_read(&mem_tracker_enabled) != 0;
+	if (!tracker)
+		return false;
+	return atomic_read(&mem_tracker_enabled) != 0 &&
+	       atomic_read(&tracker->enabled) != 0;
 }
 EXPORT_SYMBOL_GPL(mem_tracker_is_enabled);
 
@@ -1626,7 +1665,8 @@ struct mem_tracker *mem_tracker_register(struct mem_tracker_config *config)
 	tracker->ops = config->ops;
 	tracker->buffer_size = config->buffer_size ? : MEM_TRACKER_DEFAULT_BUFFER_SIZE;
 	tracker->stack_capture = config->stack_capture;
-	
+	atomic_set(&tracker->enabled, config->enable ? 1 : 0);	
+
 	/* Initialize lists, RB-tree, and locks */
 	INIT_LIST_HEAD(&tracker->alloc_list);
 	tracker->alloc_tree = RB_ROOT;
@@ -1680,7 +1720,7 @@ struct mem_tracker *mem_tracker_register(struct mem_tracker_config *config)
 			debugfs_create_file("session_id", 0644, mem_tracker_root, NULL, &session_id_fops);
 			
 			/* Create enable file at root level */
-			debugfs_create_file("enable", 0644, mem_tracker_root, NULL, &enable_fops);
+			debugfs_create_file("enable", 0644, mem_tracker_root, NULL, &global_enable_fops);
 		} else {
 			pr_warn("mem_tracker: debugfs not available, continuing without debugfs interface\n");
 		}
@@ -1700,7 +1740,8 @@ struct mem_tracker *mem_tracker_register(struct mem_tracker_config *config)
 			debugfs_create_file("history_detailed", 0444, tracker->debugfs_dir, tracker, &history_detailed_fops);
 			debugfs_create_file("buffer_size", 0644, tracker->debugfs_dir, tracker, &buffer_size_fops);
 			debugfs_create_file("stack_capture", 0644, tracker->debugfs_dir, tracker, &stack_capture_fops);
-			
+			debugfs_create_file("enable", 0644, tracker->debugfs_dir, tracker, &enable_fops);
+
 			pr_info("Memory tracker '%s' registered at /sys/kernel/debug/mem_trackers/%s/\n",
 				tracker->name, tracker->name);
 		} else {
