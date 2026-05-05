@@ -211,6 +211,7 @@ struct mem_tracker_config {
 	unsigned int buffer_size;	/* Size of circular buffers */
 	unsigned int stack_capture;	/* 0=off, 1=raw addresses, 2=symbolized */
 	struct mem_tracker_ops *ops;	/* Type-specific operations */
+	bool enable;
 };
 
 /*
@@ -236,6 +237,9 @@ struct mem_tracker {
 	
 	/* Unique ID generation */
 	atomic64_t next_allocation_uid;
+
+	/* Session tracking */
+	u64 last_seen_session_id;
 	
 	/* Circular buffer for events */
 	struct {
@@ -258,6 +262,7 @@ struct mem_tracker {
 	/* Configuration */
 	unsigned int buffer_size;
 	unsigned int stack_capture;	/* 0=off, 1=raw addresses, 2=symbolized */
+	atomic_t enabled;		/* Per-tracker enable flag */
 	bool initialized;
 	
 	/* Debugfs */
@@ -296,8 +301,8 @@ unsigned int mem_tracker_get_buffer_size(struct mem_tracker *tracker);
 void mem_tracker_set_stack_capture(struct mem_tracker *tracker, unsigned int mode);
 unsigned int mem_tracker_get_stack_capture(struct mem_tracker *tracker);
 
-/* Global enable/disable */
-bool mem_tracker_is_enabled(void);
+/* Is memory tracket enabled/disabled */
+bool mem_tracker_is_enabled(struct mem_tracker *tracker);
 
 #endif /* _LINUX_MEM_TRACKER_H */
 

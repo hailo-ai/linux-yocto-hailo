@@ -1365,13 +1365,13 @@ config WAIT_INITRD_IMAGE
 config WAIT_INITRD_IMAGE_TIMEOUT
 	int "Timeout for waiting for /initrd.image become available (seconds)"
 	depends on WAIT_INITRD_IMAGE
-	default 300
-	range 1 300
+	default 0
+	range 0 300
 	help
 	  Maximum time to wait for an /initrd.image to become available
 	  before giving up and continuing with normal boot process.
 
-	  Default is 300 seconds. Valid range is 1-300 seconds.
+	  Default is 0 = unlimited wait time. Valid range is 0-300 seconds.
 
 config BOOT_CONFIG
 	bool "Boot config support"
