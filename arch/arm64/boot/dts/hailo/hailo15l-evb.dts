@@ -15,31 +15,18 @@
     i2c-sda-falling-time-ns = <1000>;
     pinctrl-names = "default";
     pinctrl-0 = <&pinctrl_i2c0_scl>, <&pinctrl_i2c0_sda>;
+};
 
-        sensor_0: camera-sensor@1a {
-        status = "ok";
-        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
-        reg = <0x1a>;
-        clocks = <&sensor_clk>;
-        clock-names = "inclk";
-        clock-frequency = <24000000>;
-        csi-id = <0>;
-        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
-        port {
-            sensor_out_csi2rx: endpoint {
-                data-lanes = <1 2 3 4>;
-                remote-endpoint = <&csi2rx_in_sensor>;
-		        link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
-            };
-        };
-     };
+&sensor_0 {
+    status = "ok";
+    reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 };
 
 &i2c_1 {
     status = "okay";
     i2c-sda-falling-time-ns = <1000>;
     pinctrl-names = "default";
-    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;    
+    pinctrl-0 = <&pinctrl_i2c1_scl>, <&pinctrl_i2c1_sda>;
 /* Todo -  IV&P sensor, M.2 Ekey, Audio codec, clock buffer, DCDC, Gyro */
 //    codec_tlv320aic3104: tlv320aic3104@18 {
 //        #sound-dai-cells = <0>;
@@ -69,13 +56,13 @@
         reg = <0x41>;
         shunt-resistor = <100000>;
         max-current = <11>;
-    };  
+    };
     ina231_INA_DDR_VDDQX: INA_DDR_VDDQX@42 {
         compatible = "ti,ina231_precise";
         reg = <0x42>;
         shunt-resistor = <50000>;
         max-current = <330>;
-    };  
+    };
     ina231_INA_ALL_PLLS_VDDA: INA_ALL_PLLS_VDDA@43 {
         compatible = "ti,ina231_precise";
         reg = <0x43>;
@@ -149,7 +136,7 @@
         shunt-resistor = <50000>;
         max-current = <280>;
     };
-    
+
     lcd@45 {
         status = "okay";
         compatible = "raspberrypi,7inch-touchscreen-panel";
@@ -179,7 +166,7 @@
         reg = <0x23>;
         gpio-controller;
         #gpio-cells = <2>; // For GPIO number and flags
-        
+
         gpio-line-names =
               "DDR_DATA_RET_3V3", "D7_RED", "D9_GREEN", "D11_GREEN",
               "D14_GREEN", "D6_GREEN", "D23_GREEN", "D22_GREEN",
@@ -256,7 +243,7 @@
     status = "okay";
     non-removable;
     sdhci-caps = <0 0x01000000>; // Force VOLT33 capability
-    bus-width = <4>;    
+    bus-width = <4>;
     phy-config {
             card-is-emmc = <0x0>;
             cmd-pad-values = <0x1 0x3 0x1 0x1>; // txslew_ctrl_n, txslew_ctrl_p, weakpull_enable, rxsel
@@ -406,6 +393,12 @@
 };
 
 &pinctrl {
+    early-assignment-pin-groups =
+        "uart0_rxd_in_0_grp",
+        "uart0_txd_out_0_grp",
+        "uart1_rxd_in_0_grp",
+        "uart1_txd_out_0_grp";
+
  /* IO_PAD_0 */
     pinctrl_i2c0_scl: i2c0_scl {
         function = "i2c0_scl";
@@ -863,7 +856,7 @@
         function = "uart2_rts_out";
         groups = "uart2_rts_out_4_grp";
     };
-    
+
     /* IO_PAD_76 */
     pinctrl_gpio_16: gpio_16 {
         function = "i2c2_scl";

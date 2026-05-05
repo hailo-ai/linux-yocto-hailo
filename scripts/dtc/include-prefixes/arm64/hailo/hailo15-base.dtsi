@@ -8,7 +8,7 @@
 
 
 / {
-    soc {
+    soc:soc {
         compatible = "hailo,hailo15";
     };
 
