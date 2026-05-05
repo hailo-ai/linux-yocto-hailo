@@ -580,6 +580,7 @@ struct scmi_hailo_proto_ops {
 	int (*get_source_clock)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
 	int (*get_identification_attributes)(const struct scmi_protocol_handle *ph, struct scmi_hailo_identification_attributes_p2a *params);
 	int (*get_sku_id)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_sku_id_p2a *params);
+	int (*send_host_current_limit)(const struct scmi_protocol_handle *ph, struct scmi_hailo_send_host_current_limit_a2p *params);
 };
 
 #endif /* IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL) */

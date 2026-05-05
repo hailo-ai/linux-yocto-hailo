@@ -1955,7 +1955,7 @@ static irqreturn_t gem_wol_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-#define MACB_ERROR_INTERRUPT_FLAGS (MACB_BIT(TXERR) | MACB_BIT(HRESP) | MACB_BIT(ISR_TUND) | MACB_BIT(ISR_RLE) | MACB_BIT(ISR_ROVR) | (1 << 15))
+#define MACB_ERROR_INTERRUPT_FLAGS (MACB_BIT(TXERR) | MACB_BIT(HRESP))
 
 static void macb_schedule_invalid_interrupt_handling(struct macb *bp, int count, int status)
 {

@@ -43,6 +43,7 @@
 #define SCMI_HAILO_GET_SOURCE_CLK_ID 20
 #define SCMI_HAILO_GET_IDENTIFICATION_ATTRIBUTES_ID 21
 #define SCMI_HAILO_GET_SKU_ID 22
+#define SCMI_HAILO_SEND_HOST_CURRENT_LIMIT_ID 23
 
 /*******************************
  * SCMI-Hailo notification IDs *
@@ -152,6 +153,7 @@ struct scmi_hailo_user_fuse {
 struct scmi_hailo_get_fuse_info_p2a {
     struct scmi_hailo_user_fuse user_fuse;
     uint32_t active_clusters;
+    uint32_t chip_serial[3];
 } __packed;
 
 /*****************************************
@@ -261,6 +263,16 @@ struct scmi_hailo_crc_error_notification {
     uint16_t csm_unit_idx;
     uint16_t csm_channel_idx;
 } __packed;
+
+
+/***********************************************
+ * Host max current supply limit message definitions *
+ ***********************************************/
+struct scmi_hailo_send_host_current_limit_a2p {
+    /* Host supply current limit is sent by Linux during boot and later can be overriden by user through HRT API*/
+    uint32_t host_current_limit_mA;
+} __packed;
+
 
 /****************************************************
  * SCMI-Hailo boot success indication component IDs *

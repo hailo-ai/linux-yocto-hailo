@@ -8,12 +8,6 @@
 #include "hailo15-base.dtsi"
 
 / {
-    sensor_clk: sensor_clk {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <24000000>;
-    };
-
     memory {
         device_type = "memory";
         reg = <0x00000000 0x80000000 0x00000000 0x80000000>;

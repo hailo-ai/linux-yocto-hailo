@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/irq.h>
 #include <linux/dmi.h>
+#include <linux/reboot.h>
 
 #include "core.h"
 #include "gadget-export.h"
@@ -539,7 +540,7 @@ int cdnsp_wait_for_cmd_compl(struct cdnsp_device *pdev)
 					!CMD_RING_BUSY(val), 1,
 					CDNSP_CMD_TIMEOUT);
 	if (ret) {
-		dev_err(pdev->dev, "ERR: Timeout while waiting for command\n");
+		dev_err(pdev->dev, "ERR: Timeout while waiting for command, ret %d\n", ret);
 		trace_cdnsp_cmd_timeout(pdev->cmd_ring, &cmd_trb->generic);
 		pdev->cdnsp_state = CDNSP_STATE_DYING;
 		return -ETIMEDOUT;
@@ -683,6 +684,39 @@ static int cdnsp_update_eps_configuration(struct cdnsp_device *pdev,
 	return ret;
 }
 
+static void cdnsp_warm_reset_work_handler(struct work_struct *work)
+{
+    struct cdnsp_device *pdev = container_of(work, struct cdnsp_device, reboot_work);
+    dev_info(pdev->dev, "Executing device reboot due to USB reset\n");
+    kernel_restart(NULL);
+}
+
+static void cdnsp_handle_warm_reset(struct cdnsp_device *pdev)
+{
+	struct cdns *cdns = dev_get_drvdata(pdev->dev);
+	u32 portsc;
+
+	if (!pdev->active_port)
+		return;
+
+	if (!cdns->pdata || !(cdns->pdata->quirks & CDNS3_USB_RESET_AS_SYSTEM_REBOOT))
+		return;
+
+	portsc = readl(&pdev->active_port->regs->portsc);
+
+	/* Schedule system reboot if configured and conditions are met */
+	if (pdev->gadget.state == USB_STATE_CONFIGURED && pdev->port_sys_reset_requested) {
+		schedule_work(&pdev->reboot_work);
+		pdev->port_sys_reset_requested = false;
+	}
+
+	/* Clear PORT_WRC if set */
+	if (portsc & PORT_WRC) {
+		writel(cdnsp_port_state_to_neutral(portsc) | PORT_WRC,
+		       &pdev->active_port->regs->portsc);
+	}
+}
+
 /*
  * This submits a Reset Device Command, which will set the device state to 0,
  * set the device address to 0, and disable all the endpoints except the default
@@ -703,6 +737,9 @@ int cdnsp_reset_device(struct cdnsp_device *pdev)
 	slot_ctx = cdnsp_get_slot_ctx(&pdev->out_ctx);
 	slot_state = GET_SLOT_STATE(le32_to_cpu(slot_ctx->dev_state));
 	trace_cdnsp_reset_device(slot_ctx);
+
+	/* Handle reset on USB3 port */
+	cdnsp_handle_warm_reset(pdev);
 
 	if (slot_state <= SLOT_STATE_DEFAULT &&
 	    pdev->eps[0].ep_state & EP_HALTED) {
@@ -1537,6 +1574,24 @@ static int cdnsp_gadget_set_selfpowered(struct usb_gadget *g,
 	return 0;
 }
 
+static void cdns_sfr_clear_vbus(struct cdns *cdns)
+{
+	u32 reg;
+
+	reg = readl(&cdns->otg_cdnsp_regs->override);
+	reg &= ~OVERRIDE_SESS_VLD_SFR;
+	writel(reg, &cdns->otg_cdnsp_regs->override);
+}
+
+static void cdns_sfr_set_vbus(struct cdns *cdns)
+{
+	u32 reg;
+
+	reg = readl(&cdns->otg_cdnsp_regs->override);
+	reg |= OVERRIDE_SESS_VLD_SFR;
+	writel(reg, &cdns->otg_cdnsp_regs->override);
+}
+
 static int cdnsp_gadget_pullup(struct usb_gadget *gadget, int is_on)
 {
 	struct cdnsp_device *pdev = gadget_to_cdnsp(gadget);
@@ -1554,13 +1609,15 @@ static int cdnsp_gadget_pullup(struct usb_gadget *gadget, int is_on)
 
 	if (!is_on) {
 		cdnsp_reset_device(pdev);
-		if (cdns->pdata && !(cdns->pdata->quirks & CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD)) {
+		if (cdns->pdata && (cdns->pdata->quirks & CDNS3_VBUS_VALIDATION_CONTROLLED_BY_SFR))
+			cdns_sfr_clear_vbus(cdns);
+		else
 			cdns_clear_vbus(cdns);
-		}
 	} else {
-		if (cdns->pdata && !(cdns->pdata->quirks & CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD)) {
+		if (cdns->pdata && (cdns->pdata->quirks & CDNS3_VBUS_VALIDATION_CONTROLLED_BY_SFR))
+			cdns_sfr_set_vbus(cdns);
+		else
 			cdns_set_vbus(cdns);
-		}
 	}
 
 	spin_unlock_irqrestore(&pdev->lock, flags);
@@ -1946,6 +2003,10 @@ static int __cdnsp_gadget_init(struct cdns *cdns)
 		goto free_endpoints;
 	}
 
+	/* Initialize warm reset reboot work */
+    INIT_WORK(&pdev->reboot_work, cdnsp_warm_reset_work_handler);
+	pdev->port_sys_reset_requested = false;
+
 	ret = devm_request_threaded_irq(pdev->dev, cdns->dev_irq,
 					cdnsp_irq_handler,
 					cdnsp_thread_irq_handler, IRQF_SHARED,
@@ -1976,6 +2037,7 @@ static void cdnsp_gadget_exit(struct cdns *cdns)
 	struct cdnsp_device *pdev = cdns->gadget_dev;
 
 	devm_free_irq(pdev->dev, cdns->dev_irq, pdev);
+	cancel_work_sync(&pdev->reboot_work);
 	pm_runtime_mark_last_busy(cdns->dev);
 	pm_runtime_put_autosuspend(cdns->dev);
 	usb_del_gadget_udc(&pdev->gadget);
