@@ -13,7 +13,7 @@
         reg = <0x00000000 0x80000000 0x00000000 0x80000000>;
     };
 
-    soc {
+    soc:soc {
         compatible = "hailo,hailo15l";
     };
 
@@ -131,13 +131,45 @@
 
         clocks = <&scmi_clk HAILO15_SCMI_CLOCK_IDX_HCLK>;
 
-        status = "disabled";
+        status = "okay";
 
         spi0_flash0: flash@0 {
             #address-cells = <1>;
             #size-cells = <1>;
             compatible = "jedec,spi-nor";
             reg = <0>; /* chip select */
+        };
+
+        spi0_flash2: nand_flash@2 {
+            status = "disabled";
+            #address-cells = <1>;
+            #size-cells = <1>;
+            compatible = "spi-nand";
+            reg = <2>; /* chip select 2 - NAND flash */
+            spi-max-frequency = <50000000>;
+            spi-tx-bus-width = <4>;
+            spi-rx-bus-width = <4>;
+
+            partitions {
+                compatible = "fixed-partitions";
+                #address-cells = <1>;
+                #size-cells = <1>;
+
+                partition@0 {
+                    label = "bootloader";
+                    reg = <0x0 0x200000>; /* start=0MB, size=2MB */
+                };
+
+                partition@200000 {
+                    label = "fitImage";
+                    reg = <0x200000 0x1200000>; /* start=2MB, size=18MB */
+                };
+
+                partition@1400000 {
+                    label = "rootfs";
+                    reg = <0x1400000 0x1EC00000>; /* start=20MB, size=492MB (fills remaining 512MB NAND) */
+                };
+            };
         };
     };
 

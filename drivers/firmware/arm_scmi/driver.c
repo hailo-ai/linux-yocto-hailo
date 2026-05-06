@@ -1883,6 +1883,7 @@ static int scmi_probe(struct platform_device *pdev)
 			dev_err(dev, "Firmware version mismatch: linux(kernel)=0x%x, fw=0x%x\n",
 				 SCU_FW_SCMI_VERSION,
 				 handle->version->impl_ver);
+			panic("Version mismatch!");
 			goto notification_exit;
 		}
 #endif
@@ -1890,6 +1891,7 @@ static int scmi_probe(struct platform_device *pdev)
 			dev_err(dev, "Firmware version mismatch: linux(devicetree)=0x%x, fw=0x%x\n",
 				fw_ver,
 				handle->version->impl_ver);
+			panic("Version mismatch!");
 			goto notification_exit;
 		}
 	}
