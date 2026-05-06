@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/of_irq.h>
+#include <linux/of_address.h>
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
 #include <linux/platform_device.h>
@@ -23,6 +24,7 @@
 #include <linux/types.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
+#include <linux/phy/phy.h>
 #include "core.h"
 #include "drd.h"
 #include "cdnsp-gadget.h"
@@ -48,6 +50,10 @@
 #define USB2_PHY_CONFIG_REG 0x4C
 #define ISO_IP2SOC_MASK 0x40
 #define VBUS_SELECT_MASK 0x08  //vbus select 1 for device mode
+
+#define SUB_INTERRUPT_HOST 0
+#define SUB_INTERRUPT_DEVICE 1
+#define SUB_INTERRUPT_OTG 2
 #define NUM_SUB_INTERRUPTS 3
 
 #define PORT_OVERRIDE_SLEEPM_SFR BIT(27)
@@ -74,26 +80,93 @@
 #define PORT_OVERRIDE_BC_PULLDOWNCTRL BIT(1)
 #define PORT_OVERRIDE_LDPULLUP BIT(0)
 
-/* usb3 controller xhci registers */
-#define XEC_PRE_REG_250NS 0x21e8
-#define XEC_PRE_REG_1US 0x21ec
-#define XEC_PRE_REG_10US 0x21f0
-#define XEC_PRE_REG_100US 0x21f4
-#define XEC_PRE_REG_125US 0x21f8
-#define XEC_PRE_REG_1MS 0x21fc
-#define XEC_PRE_REG_10MS 0x2200
-#define XEC_PRE_REG_100MS 0x2204
-#define XEC_LPM_PRE_REG_250NS 0x2208
-#define XEC_LPM_PRE_REG_1US 0x220c
-#define XEC_LPM_PRE_REG_10US 0x2210
-#define XEC_LPM_PRE_REG_100US 0x2214
-#define XEC_LPM_PRE_REG_125US 0x2218
-#define XEC_LPM_PRE_REG_1MS 0x221c
-#define XEC_LPM_PRE_REG_10MS 0x2220
-#define XEC_LPM_PRE_REG_100MS 0x2224
+#define DECLARE_REG_U32(reg_name, offset, shift, width) \
+	enum { reg_name##__OFFSET = (offset) }; \
+	enum { reg_name##__SHIFT = (shift) }; \
+	enum { reg_name##__MASK = GENMASK((shift) + (width) - 1, (shift)) }
+
+/* xhci/device Timers regs relative offsets */
+DECLARE_REG_U32(XEC_PRE_REG_250NS, 0x21e8, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_1US, 0x21ec, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_10US, 0x21f0, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_100US, 0x21f4, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_125US, 0x21f8, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_1MS, 0x21fc, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_10MS, 0x2200, 0, 24);
+DECLARE_REG_U32(XEC_PRE_REG_100MS, 0x2204, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_250NS, 0x2208, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_1US, 0x220c, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_10US, 0x2210, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_100US, 0x2214, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_125US, 0x2218, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_1MS, 0x221c, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_10MS, 0x2220, 0, 24);
+DECLARE_REG_U32(XEC_LPM_PRE_REG_100MS, 0x2224, 0, 24);
+
+DECLARE_REG_U32(XEC_CFG_3XPORT_LTSSM_1_CFG_LTSSM_TIMER_POLL_LFPS_VAL, 0x2044, 16, 9);
+DECLARE_REG_U32(D_XEC_USBSSP_CHICKEN_BITS, 0x2228, 19, 1);
+
+/* Devcie Rx buferr configuration regs relative offsets */
+DECLARE_REG_U32(D_XEC_XBUF_RX_STAT, 0x2258, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_RX_STAT_MASK, 0x226C, 0, 9);
+DECLARE_REG_U32(D_XEC_XBUF_RX_TAG_0, 0x225C, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_RX_TAG_MASK_0, 0x2270, 0, 9);
+DECLARE_REG_U32(D_XEC_XBUF_RX_DATA_0, 0x2260, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_RX_DATA_MASK_0, 0x2274, 0, 9);
+DECLARE_REG_U32(D_XEC_XBUF_RX_TAG_1, 0x2264, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_RX_TAG_MASK_1, 0x2278, 0, 9);
+DECLARE_REG_U32(D_XEC_XBUF_RX_DATA_1, 0x2268, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_RX_DATA_MASK_1, 0x227C, 0, 9);
+
+/* Devcie Tx buferr configuration regs relative offsets */
+DECLARE_REG_U32(D_XEC_XBUF_TX_CMD, 0x2280, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_CMD_MASK, 0x22C4, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_0, 0x2284, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_1, 0x228C, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_2, 0x2294, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_3, 0x229C, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_4, 0x22A4, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_5, 0x22AC, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_6, 0x22B4, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_7, 0x22BC, 0, 7);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_0, 0x2288, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_1, 0x2290, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_2, 0x2298, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_3, 0x22A0, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_4, 0x22A8, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_5, 0x22B0, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_6, 0x22B8, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_7, 0x22C0, 0, 11);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_0, 0x22C8, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_1, 0x22D0, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_2, 0x22D8, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_3, 0x22E0, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_4, 0x22E8, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_5, 0x22F0, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_6, 0x22F8, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_TAG_MASK_7, 0x2300, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_0, 0x22CC, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_1, 0x22D4, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_2, 0x22DC, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_3, 0x22E4, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_4, 0x22EC, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_5, 0x22F4, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_6, 0x22FC, 0, 10);
+DECLARE_REG_U32(D_XEC_XBUF_TX_DATA_MASK_7, 0x2304, 0, 10);
+
+#define write_u32_reg(regs_base, reg_name, value) \
+	do { \
+		u32 reg_val = readl((regs_base) + (reg_name##__OFFSET)); \
+		reg_val = ((reg_val) & ~(reg_name##__MASK)) | (((value) << (reg_name##__SHIFT)) & (reg_name##__MASK)); \
+		writel(reg_val, (regs_base) + (reg_name##__OFFSET)); \
+	} while (0)
+
+#define read_u32_reg(regs_base, reg_name) \
+	(((readl((regs_base) + (reg_name##__OFFSET))) & (reg_name##__MASK)) >> (reg_name##__SHIFT))
 
 struct cdns_hailo {
 	void __iomem *usb_config;
+	void __iomem *cdns_dev_regs;
 	struct clk_bulk_data *core_clks;
 	int num_core_clks;
 	struct clk *pclk;
@@ -101,8 +174,15 @@ struct cdns_hailo {
 	struct reset_control *usb_apb_rst;
 	bool disconnected_overcurrent;
 	bool no_usb2_phy_avdd_core_power;
+	bool usb2_is_inactive;
 	struct irq_domain *irq_domain;
 	int dr_mode;
+	raw_spinlock_t irq_lock;
+	u32 sw_irq_mask;
+	u32 sof_timers_reset_base_clock_rate;
+	u32 lpm_timers_reset_base_clock_rate;
+	u32 sof_timers_base_clock_rate;
+	u32 lpm_timers_base_clock_rate;
 };
 
 static inline u32 cdns_hailo_readl(struct cdns_hailo *data, u32 offset)
@@ -118,13 +198,73 @@ static inline void cdns_hailo_writel(struct cdns_hailo *data, u32 offset, u32 va
 static const struct clk_bulk_data hailo_cdns3_core_clks[] = {
 	{ .id = "usb_lpm_clk" },
 	{ .id = "usb2_refclk" },
-	{ .id = "usb_aclk" },
 	{ .id = "usb_sof_clk" },
+	{ .id = "usb_aclk" },
+};
+
+static const struct clk_bulk_data hailo_cdns3_core_clks__no_usb2_refclk[] = {
+	{ .id = "usb_lpm_clk" },
+	{ .id = "usb_sof_clk" },
+	{ .id = "usb_aclk" },
+};
+
+
+static u32 sw_irq_to_hw_irq_mask(u32 sw_irq_mask)
+{
+	u32 hw_mask = 0;
+
+	if (sw_irq_mask & BIT(SUB_INTERRUPT_HOST))
+		hw_mask |= IRQ_MASK_HOST;
+	if (sw_irq_mask & BIT(SUB_INTERRUPT_DEVICE))
+		hw_mask |= IRQ_MASK_DEVICE;
+	if (sw_irq_mask & BIT(SUB_INTERRUPT_OTG))
+		hw_mask |= IRQ_MASK_OTG;
+
+	return hw_mask;
+}
+
+/* interrupt mask control pin the  usb device interrupt mask
+	BIT 0. Info interrupt request used on all modes: 0 -masked ,1-enabled
+	BIT 1. otgirq ,Dual mode control interrupt request: 0 -masked ,1-enabled
+	BIT 2. host_system_error ,A sideband signaling that is active when catastrophic system error occurs: 0 -masked ,1-enabled
+	BIT 3. itp indicates that an ITP packet has been received used for Device and OTG modes. 0 -masked ,1-enabled
+	Note for itp to be enabled itb should be enabled also at USB_ITB_INTR_MASK_REG
+*/
+static void cdns3_hailo_irq_mask(struct irq_data *d)
+{
+	struct cdns_hailo *data = irq_data_get_irq_chip_data(d);
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&data->irq_lock, flags);
+	data->sw_irq_mask &= ~BIT(d->hwirq);
+	cdns_hailo_writel(data, USB_INFO_INTR_MASK, sw_irq_to_hw_irq_mask(data->sw_irq_mask));
+	raw_spin_unlock_irqrestore(&data->irq_lock, flags);
+}
+
+static void cdns3_hailo_irq_unmask(struct irq_data *d)
+{
+	struct cdns_hailo *data = irq_data_get_irq_chip_data(d);
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&data->irq_lock, flags);
+	data->sw_irq_mask |= BIT(d->hwirq);
+	cdns_hailo_writel(data, USB_INFO_INTR_MASK, sw_irq_to_hw_irq_mask(data->sw_irq_mask));
+	raw_spin_unlock_irqrestore(&data->irq_lock, flags);
+}
+
+
+struct irq_chip cdns3_hailo_irq_chip = {
+	.name		= "cdns3-hailo-irqchip",
+	.irq_mask	= cdns3_hailo_irq_mask,
+	.irq_unmask	= cdns3_hailo_irq_unmask,
+	.flags		= IRQCHIP_SKIP_SET_WAKE,
 };
 
 static int cdns_hailo_irq_domain_map(struct irq_domain *d, unsigned int irq, irq_hw_number_t hwirq)
 {
-    irq_set_chip_and_handler(irq, &dummy_irq_chip, handle_level_irq);
+    struct cdns_hailo *data = d->host_data;
+    irq_set_chip_and_handler(irq, &cdns3_hailo_irq_chip, handle_level_irq);
+    irq_set_chip_data(irq, data);
     return 0;
 }
 
@@ -143,17 +283,17 @@ static irqreturn_t cdns_hailo_irq_handler(int irq, void *dev_id)
     status = cdns_hailo_readl(data,  USB_INFO_INTR_STATUS_REG);
     // Dispatch to sub-interrupts using mapped IRQs
     if (status & IRQ_MASK_HOST) {
-        virq = irq_find_mapping(data->irq_domain, 0);
+        virq = irq_find_mapping(data->irq_domain, SUB_INTERRUPT_HOST);
         generic_handle_irq(virq);
     }
 
     if (status & IRQ_MASK_DEVICE) {
-        virq = irq_find_mapping(data->irq_domain, 1);
+        virq = irq_find_mapping(data->irq_domain, SUB_INTERRUPT_DEVICE);
         generic_handle_irq(virq);
     }
 
     if (status & IRQ_MASK_OTG) {
-        virq = irq_find_mapping(data->irq_domain, 2);
+        virq = irq_find_mapping(data->irq_domain, SUB_INTERRUPT_OTG);
         generic_handle_irq(virq);
     }
 
@@ -163,7 +303,7 @@ static irqreturn_t cdns_hailo_irq_handler(int irq, void *dev_id)
 
 void cdns_hailo_init(struct cdns_hailo *data)
 {
-	u32 usb_config, interrupt_mask, usb_mode_strap, phy_config;
+	u32 usb_config, usb_mode_strap, phy_config;
 
     /*  USB config Default mode to be activated after power on reset
 			BIT 0-1 mode strap.
@@ -173,15 +313,6 @@ void cdns_hailo_init(struct cdns_hailo *data)
 			BIT 2 itp_pulse_count_en ,default 0. when set - itp packet counter is enabled (debug feature)
 			since these are the only option no need to read the register*/
 	usb_mode_strap = ~MODE_STRAP_MASK;
-
-	/* interrupt mask control pin the  usb device interrupt mask
-	BIT 0. Info interrupt request used on all modes: 0 -masked ,1-enabled
-    BIT 1. otgirq ,Dual mode control interrupt request: 0 -masked ,1-enabled
-    BIT 2. host_system_error ,A sideband signaling that is active when catastrophic system error occurs: 0 -masked ,1-enabled
-    BIT 3. itp indicates that an ITP packet has been received used for Device and OTG modes. 0 -masked ,1-enabled
-	Note for itp to be enabled itb should be enabled also at USB_ITB_INTR_MASK_REG
-	*/
-	interrupt_mask = cdns_hailo_readl(data, USB_INFO_INTR_MASK);
 
 	usb_config = cdns_hailo_readl(data, USB_CONFIG_REG);
 
@@ -194,15 +325,11 @@ void cdns_hailo_init(struct cdns_hailo *data)
 		phy_config |= (ISO_IP2SOC_MASK | VBUS_SELECT_MASK);
 	}
 
-	//the device mode interrupt mask is includes also the host mode
-	interrupt_mask &= ~IRQ_MASK_DEVICE;
 	//OTG is 0x0
 	if (data->dr_mode == USB_DR_MODE_PERIPHERAL) {
 		usb_mode_strap |= MODE_STRAP_DEVICE;
-		interrupt_mask |= IRQ_MASK_DEVICE;
 	} else if (data->dr_mode == USB_DR_MODE_HOST) {
 		usb_mode_strap |= MODE_STRAP_HOST;
-		interrupt_mask |= IRQ_MASK_HOST;
 	} else {
 		//otg configuration
 		printk(KERN_INFO "OTG mode current not supported\n");
@@ -210,7 +337,8 @@ void cdns_hailo_init(struct cdns_hailo *data)
 	}
 
 	cdns_hailo_writel(data, USB_CONFIG_REG, usb_mode_strap);
-	cdns_hailo_writel(data, USB_INFO_INTR_MASK, interrupt_mask);
+	// disable all interrupts as a part of initialization
+	cdns_hailo_writel(data, USB_INFO_INTR_MASK, 0);
 	if (!data->no_usb2_phy_avdd_core_power) {
 		cdns_hailo_writel(data, USB2_PHY_CONFIG_REG, phy_config);
 	}
@@ -226,24 +354,24 @@ static int cdns_hailo_xhci_init_quirk(struct usb_hcd *hcd)
 	if (!hcd->regs || !cdns->otg_cdnsp_regs)
 		return 0;
 
-    // PRE REG Timers
-    writel(0xb, hcd->regs + XEC_PRE_REG_250NS);
-    writel(0x2f, hcd->regs + XEC_PRE_REG_1US);
-    writel(0x1df, hcd->regs + XEC_PRE_REG_10US);
-    writel(0x12bf, hcd->regs + XEC_PRE_REG_100US);
-    writel(0x176f, hcd->regs + XEC_PRE_REG_125US);
-    writel(0xbb7f, hcd->regs + XEC_PRE_REG_1MS);
-    writel(0x752ff, hcd->regs + XEC_PRE_REG_10MS);
-    writel(0x493dff, hcd->regs + XEC_PRE_REG_100MS);
-    // PRE LMP REG Timers
-    writel(0xb, hcd->regs + XEC_LPM_PRE_REG_250NS);
-    writel(0x2f, hcd->regs + XEC_LPM_PRE_REG_1US);
-    writel(0x1df, hcd->regs + XEC_LPM_PRE_REG_10US);
-    writel(0x12bf, hcd->regs + XEC_LPM_PRE_REG_100US);
-    writel(0x176f, hcd->regs + XEC_LPM_PRE_REG_125US);
-    writel(0xbb7f, hcd->regs + XEC_LPM_PRE_REG_1MS);
-    writel(0x752ff, hcd->regs + XEC_LPM_PRE_REG_10MS);
-    writel(0x493dff, hcd->regs + XEC_LPM_PRE_REG_100MS);
+    // PRE REG Timers (derived from SOF clock 48 MHz)
+    write_u32_reg(hcd->regs, XEC_PRE_REG_250NS, 0xb);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_1US, 0x2f);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_10US, 0x1df);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_100US, 0x12bf);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_125US, 0x176f);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_1MS, 0xbb7f);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_10MS, 0x752ff);
+    write_u32_reg(hcd->regs, XEC_PRE_REG_100MS, 0x493dff);
+    // PRE LPM REG Timers (derived from LPM clock 25 MHz)
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_250NS, 0xb);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_1US, 0x2f);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_10US, 0x1df);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_100US, 0x12bf);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_125US, 0x176f);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_1MS, 0xbb7f);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_10MS, 0x752ff);
+    write_u32_reg(hcd->regs, XEC_LPM_PRE_REG_100MS, 0x493dff);
 
 	/* if overcurrent wire is disconnected, we have to override the overcurrent_n pin */
 	if (data->disconnected_overcurrent) {
@@ -265,6 +393,158 @@ static int cdns_hailo_xhci_init_quirk(struct usb_hcd *hcd)
 	return 0;
 }
 
+#ifdef CDNS_TIMERS_DEBUG
+static int cdns_hailo_validate_timer_registers(struct platform_device *pdev)
+{
+	u32 actual;
+	int i, errors = 0;
+	struct cdns_hailo *data = (struct cdns_hailo *)dev_get_drvdata(&pdev->dev);
+	u32 lpm_clock_rate = data->lpm_timers_base_clock_rate;
+	u32 sof_clock_rate = data->sof_timers_base_clock_rate;
+
+	struct {
+		u32 offset;
+		u32 expected;
+		const char *name;
+	} timers[] = {
+		// SOF clock based timers
+		{XEC_PRE_REG_250NS__OFFSET, sof_clock_rate/4000000-1, "XEC_PRE_REG_250NS"},
+		{XEC_PRE_REG_1US__OFFSET,   sof_clock_rate/1000000-1, "XEC_PRE_REG_1US"},
+		{XEC_PRE_REG_10US__OFFSET,  sof_clock_rate/100000-1, "XEC_PRE_REG_10US"},
+		{XEC_PRE_REG_100US__OFFSET, sof_clock_rate/10000-1, "XEC_PRE_REG_100US"},
+		{XEC_PRE_REG_125US__OFFSET, sof_clock_rate/8000-1, "XEC_PRE_REG_125US"},
+		{XEC_PRE_REG_1MS__OFFSET,   sof_clock_rate/1000-1, "XEC_PRE_REG_1MS"},
+		{XEC_PRE_REG_10MS__OFFSET,  sof_clock_rate/100-1, "XEC_PRE_REG_10MS"},
+		{XEC_PRE_REG_100MS__OFFSET, sof_clock_rate/10-1, "XEC_PRE_REG_100MS"},
+		// LPM clock based timers
+		{XEC_LPM_PRE_REG_250NS__OFFSET, lpm_clock_rate/4000000-1, "XEC_LPM_PRE_REG_250NS"},
+		{XEC_LPM_PRE_REG_1US__OFFSET,   lpm_clock_rate/1000000-1, "XEC_LPM_PRE_REG_1US"},
+		{XEC_LPM_PRE_REG_10US__OFFSET,  lpm_clock_rate/100000-1, "XEC_LPM_PRE_REG_10US"},
+		{XEC_LPM_PRE_REG_100US__OFFSET, lpm_clock_rate/10000-1, "XEC_LPM_PRE_REG_100US"},
+		{XEC_LPM_PRE_REG_125US__OFFSET, lpm_clock_rate/8000-1, "XEC_LPM_PRE_REG_125US"},
+		{XEC_LPM_PRE_REG_1MS__OFFSET,   lpm_clock_rate/1000-1, "XEC_LPM_PRE_REG_1MS"},
+		{XEC_LPM_PRE_REG_10MS__OFFSET,  lpm_clock_rate/100-1, "XEC_LPM_PRE_REG_10MS"},
+		{XEC_LPM_PRE_REG_100MS__OFFSET, lpm_clock_rate/10-1, "XEC_LPM_PRE_REG_100MS"}
+	};
+
+	/* Validate timer registers */
+	for (i = 0; i < ARRAY_SIZE(timers); i++) {
+		actual = readl(data->cdns_dev_regs + timers[i].offset);
+		if (actual != timers[i].expected) {
+			dev_err(&pdev->dev, "Timer validation failed: %s expected 0x%x, got 0x%x\n",
+			       timers[i].name, timers[i].expected, actual);
+			errors++;
+		}
+	}
+
+	if (errors == 0) {
+		dev_dbg(&pdev->dev, "All timer registers validated successfully\n");
+		return 0;
+	} else {
+		dev_err(&pdev->dev, "Timer validation failed with %d errors\n", errors);
+		return -EIO;
+	}
+}
+#endif // CDNS_TIMERS_DEBUG
+
+/**
+ * cdns_hailo_update_timer_registers - Update XEC timer registers based on clock name
+ * @pdev: Platform device pointer
+ * @timers_type: Type of timers to update ("sof" or "lpm")
+ *
+ * This function finds the appropriate clock, gets its rate, validates it, and updates
+ * either XEC_PRE_REG timers (SOF-based) or XEC_LPM_PRE_REG timers (LPM-based)
+ * with values calculated from the clock rate.
+ */
+static int cdns_hailo_update_timer_registers(struct platform_device *pdev, const char *timers_type)
+{
+	struct cdns_hailo *data;
+	struct clk *target_clk = NULL;
+	u32 clock_rate;
+	u32 timers_reset_base_clock_rate;
+	const char *clock_name;
+	int i;
+
+	if (!pdev || !timers_type) {
+		dev_err(&pdev->dev, "Invalid parameters for timer register update\n");
+		return -EINVAL;
+	}
+
+	data = (struct cdns_hailo *)dev_get_drvdata(&pdev->dev);
+	if (!data || !data->cdns_dev_regs) {
+		dev_err(&pdev->dev, "Invalid platform data or device registers\n");
+		return -EINVAL;
+	}
+
+	/* Determine clock name based on timer type */
+	if (strcmp(timers_type, "sof") == 0) {
+		clock_name = "usb_sof_clk";
+		data->sof_timers_reset_base_clock_rate = read_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_100MS) * 10;
+		timers_reset_base_clock_rate = data->sof_timers_reset_base_clock_rate;
+	} else if (strcmp(timers_type, "lpm") == 0) {
+		clock_name = "usb_lpm_clk";
+		data->lpm_timers_reset_base_clock_rate = read_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_100MS) * 10;
+		timers_reset_base_clock_rate = data->lpm_timers_reset_base_clock_rate;
+	} else {
+		dev_err(&pdev->dev, "Unknown timer type: %s. Expected 'sof' or 'lmp'\n", timers_type);
+		return -EINVAL;
+	}
+
+	/* Find the target clock in the clock array */
+	for (i = 0; i < data->num_core_clks; i++) {
+		if (strcmp(data->core_clks[i].id, clock_name) == 0) {
+			target_clk = data->core_clks[i].clk;
+			break;
+		}
+	}
+	if (!target_clk) {
+		dev_err(&pdev->dev, "%s not found in clock array\n", clock_name);
+		return -EINVAL;
+	}
+
+	/* Get and validate clock rate */
+	clock_rate = clk_get_rate(target_clk);
+	if (clock_rate == 0) {
+		dev_err(&pdev->dev, "Gadget %s timers won't be updated since %s clock rate (0 Hz)\n", timers_type, clock_name);
+		dev_err(&pdev->dev, "Note: gadget %s timers reset values are based on %s clock rate of %u Hz\n", timers_type, clock_name, timers_reset_base_clock_rate);
+		dev_err(&pdev->dev, "      Controller may not function correctly\n");
+		return 0;
+	}
+
+	if (strcmp(timers_type, "sof") == 0) {
+		data->sof_timers_base_clock_rate = clock_rate;
+	} else if (strcmp(timers_type, "lpm") == 0) {
+		data->lpm_timers_base_clock_rate = clock_rate;
+	}
+
+	dev_info(&pdev->dev, "Update gadgets XEC_%s_REG timers according to %s clock rate (%u Hz)\n", 
+		 strcmp(timers_type, "sof") == 0 ? "PRE" : "LPM_PRE", clock_name, clock_rate);
+
+	if (strcmp(timers_type, "sof") == 0) {
+		/* Update SOF-based XEC_PRE_REG timers */
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_250NS, clock_rate/4000000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_1US,   clock_rate/1000000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_10US,  clock_rate/100000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_100US, clock_rate/10000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_125US, clock_rate/8000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_1MS,   clock_rate/1000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_10MS,  clock_rate/100-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_PRE_REG_100MS, clock_rate/10-1);
+	} else if (strcmp(timers_type, "lpm") == 0) {
+		/* Update LPM-based XEC_LPM_PRE_REG timers */
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_250NS, clock_rate/4000000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_1US,   clock_rate/1000000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_10US,  clock_rate/100000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_100US, clock_rate/10000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_125US, clock_rate/8000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_1MS,   clock_rate/1000-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_10MS,  clock_rate/100-1);
+		write_u32_reg(data->cdns_dev_regs, XEC_LPM_PRE_REG_100MS, clock_rate/10-1);
+	}
+
+	return 0;
+}
+
 static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
 {
     struct cdnsp_device *pdev;
@@ -274,24 +554,24 @@ static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
 	uint32_t reg_val = 0;
 
 	if (!gadget) {
-		pr_err("%s: gadget pointer is NULL\n", __func__);
+		dev_err(pdev->dev, "%s: gadget pointer is NULL\n", __func__);
 		return -EINVAL;
 	}
 
 	if (!gadget->name || strcmp(gadget->name, "cdnsp-gadget") != 0) {
-		pr_debug("%s: not a cdnsp-gadget (name=%s), skipping\n", 
+		dev_dbg(pdev->dev, "%s: not a cdnsp-gadget (name=%s), skipping\n", 
 			 __func__, gadget->name ? gadget->name : "NULL");
 		return 0;
 	}	
 
 	pdev = gadget_to_cdnsp(gadget);
 	if (!pdev) {
-		pr_err("%s: failed to get cdnsp_device from gadget\n", __func__);
+		dev_err(pdev->dev, "%s: failed to get cdnsp_device from gadget\n", __func__);
 		return -ENODEV;
 	}
 
 	if (!pdev->dev) {
-		pr_err("%s: cdnsp_device has no associated device\n", __func__);
+		dev_err(pdev->dev, "%s: cdnsp_device has no associated device\n", __func__);
 		return -ENODEV;
 	}
 
@@ -308,7 +588,7 @@ static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
 
 	data = dev_get_drvdata(pdev->dev->parent);
 	if (!data) {
-		dev_err(pdev->dev->parent, "%s: no Hailo platform data available\n", __func__);
+		dev_err(pdev->dev, "%s: no Hailo platform data available\n", __func__);
 		return -ENODEV;
 	}
     
@@ -323,53 +603,41 @@ static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
 		reg_val = readl(&regs->override);
 
 		reg_val |= PORT_OVERRIDE_SLEEPM_SFR;
-		reg_val &= ~PORT_OVERRIDE_SUSPEND_SFR;
-		reg_val |= FIELD_PREP(PORT_OVERRIDE_XCVSEL_SFR, 0x1);
-		reg_val &= ~PORT_OVERRIDE_TXBITSTUFF_SFR;
-		reg_val |= FIELD_PREP(PORT_OVERRIDE_OPMODE_SFR, 0x1);
-		reg_val &= ~PORT_OVERRIDE_OVERCURRENT_SFR;
-		reg_val |= PORT_OVERRIDE_SESS_VLD_SFR;
+		reg_val |= PORT_OVERRIDE_SUSPEND_SFR;
+		reg_val &= ~PORT_OVERRIDE_SESS_VLD_SFR;
 		reg_val &= ~PORT_OVERRIDE_IDDIG_SFR;
-		reg_val &= ~PORT_OVERRIDE_DRIVE_VBUS_SFR;
-		reg_val |= PORT_OVERRIDE_FORCE_OPMODE01;
 
 		writel(reg_val, &regs->override);
 
 		reg_val |= PORT_OVERRIDE_SLEEPM_SEL;
 		reg_val |= PORT_OVERRIDE_SUSPEND_SEL;
-		reg_val |= PORT_OVERRIDE_XCVSEL_SEL;
-		reg_val |= PORT_OVERRIDE_TXBITSTUFF_SEL;
-		reg_val |= PORT_OVERRIDE_OPMODE_SEL;
-		reg_val |= PORT_OVERRIDE_OVERCURRENT_SEL;
 		reg_val |= PORT_OVERRIDE_SESS_VLD_SEL;
 		reg_val |= PORT_OVERRIDE_IDDIG_SEL;
-		reg_val |= PORT_OVERRIDE_DRIVE_VBUS_SEL;
 
-		// reg_val |= 0xD6B1D30U;
+		// reg_val |= 0x0F000500;
 		writel(reg_val, &regs->override);
 
-		dev_info(pdev->dev, "%s: USB2 phy AVVD core power is not conncted, set override reg = =0x%08x\n", __func__, reg_val);
+		dev_info(pdev->dev, "%s: USB2 phy AVVD core power is not conncted, set override reg = 0x%08x\n", __func__, reg_val);
 	}
 
-	dev_info(pdev->dev, "updating timers\n");
-    // PRE REG Timers
-    writel(0xb, pdev->regs + XEC_PRE_REG_250NS);
-    writel(0x2f, pdev->regs + XEC_PRE_REG_1US);
-    writel(0x1df, pdev->regs + XEC_PRE_REG_10US);
-    writel(0x12bf, pdev->regs + XEC_PRE_REG_100US);
-    writel(0x176f, pdev->regs + XEC_PRE_REG_125US);
-    writel(0xbb7f, pdev->regs + XEC_PRE_REG_1MS);
-    writel(0x752ff, pdev->regs + XEC_PRE_REG_10MS);
-    writel(0x493dff, pdev->regs + XEC_PRE_REG_100MS);
-    // PRE LMP REG Timers
-    writel(0xb, pdev->regs + XEC_LPM_PRE_REG_250NS);
-    writel(0x2f, pdev->regs + XEC_LPM_PRE_REG_1US);
-    writel(0x1df, pdev->regs + XEC_LPM_PRE_REG_10US);
-    writel(0x12bf, pdev->regs + XEC_LPM_PRE_REG_100US);
-    writel(0x176f, pdev->regs + XEC_LPM_PRE_REG_125US);
-    writel(0xbb7f, pdev->regs + XEC_LPM_PRE_REG_1MS);
-    writel(0x752ff, pdev->regs + XEC_LPM_PRE_REG_10MS);
-    writel(0x493dff, pdev->regs + XEC_LPM_PRE_REG_100MS);
+	return 0;
+}
+
+static int cdns_gadget_config_phase_quirk(struct platform_device *pdev)
+{
+	int ret;
+
+	// Setting PRE REG Timers according to sof clock rate
+	ret = cdns_hailo_update_timer_registers(pdev, "sof");
+	if (ret) {
+		return ret;
+	}
+
+	// Setting PRE LPM REG Timers according to lpm clock rate
+	ret = cdns_hailo_update_timer_registers(pdev, "lpm");
+	if (ret) {
+		return ret;
+	}
 
 	return 0;
 }
@@ -388,16 +656,129 @@ static const struct of_dev_auxdata cdns_hailo_auxdata[] = {
 	{},
 };
 
+static bool is_probing_ready(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *node = dev->of_node;
+	struct device_node *child;
+	struct phy *usb3_phy;
+
+	for_each_child_of_node(node, child) {
+		if (of_device_is_compatible(child, "cdnsp,usb3")) {
+			/* Check if PHY is available for proper probe ordering */
+			usb3_phy = of_phy_get(child, "cdns3,usb3-phy");
+			if (IS_ERR(usb3_phy)) {
+				if (PTR_ERR(usb3_phy) == -EPROBE_DEFER) {
+					dev_info(dev, "PHY not ready, deferring probe for proper ordering\n");
+					of_node_put(child);
+					return false;
+				}
+				/* PHY not found or other error - proceed anyway */
+				dev_info(dev, "PHY not found or error (%ld), proceeding anyway\n", PTR_ERR(usb3_phy));
+			} else {
+				/* PHY found and ready */
+				dev_info(dev, "PHY found and ready, proceeding with probe\n");
+				of_phy_put(usb3_phy);
+			}
+			of_node_put(child);
+			return true;
+		}
+	}
+	
+	/* No compatible child found, proceed with probing */
+	dev_info(dev, "No USB3 child node found, proceeding without PHY check\n");
+	return true;
+}
+
+static void cdns_usb3_dr_mode_get(struct platform_device *pdev, int *dr_mode)
+{
+	const char *dr_mode_str;
+	struct device_node *child;
+	struct device *dev = &pdev->dev;
+	struct device_node *node = dev->of_node;
+
+	for_each_child_of_node(node, child) {
+		if (of_device_is_compatible(child, "cdnsp,usb3")) {
+			if (of_property_read_string(child, "dr_mode", &dr_mode_str)) {
+				break;
+			}
+
+			if (!strcmp(dr_mode_str, DR_MODE_HOST)) {
+				*dr_mode = USB_DR_MODE_HOST;
+			} else if (!strcmp(dr_mode_str, DR_MODE_DEVICE)) {
+				*dr_mode = USB_DR_MODE_PERIPHERAL;
+			} else if(!strcmp(dr_mode_str, DR_MODE_OTG)) {
+				*dr_mode = USB_DR_MODE_OTG;
+			}
+			dev_info(&pdev->dev, "node(%s) dr_mode is set to %s(%d)\n", child->name, dr_mode_str, *dr_mode);
+			break;
+		}
+	}
+}
+
+static struct resource* cdns_usb3_ioresource_mem_get(struct platform_device *pdev, int dr_mode)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *node = dev->of_node;
+	struct device_node *child;
+	char *resource_name;
+	struct resource* dev_res;
+	int index, ret;
+
+	switch (dr_mode) {
+		case USB_DR_MODE_PERIPHERAL:
+			resource_name = "dev";
+			break;
+		case USB_DR_MODE_HOST:
+			resource_name = "xhci";
+			break;
+		case USB_DR_MODE_OTG:
+			resource_name = "otg";
+			break;
+		default:
+			dev_err(&pdev->dev, "Unsupported dr_mode for resource retrieval: %d\n", dr_mode);
+			return ERR_PTR(-EINVAL);
+	}
+
+	for_each_child_of_node(node, child) {
+		if (of_device_is_compatible(child, "cdnsp,usb3")) {
+			/* Find the index of the named resource */
+			index = of_property_match_string(child, "reg-names", resource_name);
+			if (index < 0) {
+				dev_err(&pdev->dev, "node(%s) resource '%s' not found in reg-names\n", child->name, resource_name);
+				return ERR_PTR(-ENOENT);
+			}
+			
+			/* Allocate resource structure */
+			dev_res = kzalloc(sizeof(*dev_res), GFP_KERNEL);
+			if (!dev_res)
+				return ERR_PTR(-ENOMEM);
+			
+			/* Get the resource by index */
+			ret = of_address_to_resource(child, index, dev_res);
+			if (ret) {
+				dev_err(&pdev->dev, "node(%s) Failed to get resource '%s' at index %d: %d\n", child->name, resource_name, index, ret);
+				kfree(dev_res);
+				return ERR_PTR(ret);
+			}
+			
+			dev_info(&pdev->dev, "node(%s) Found %s register resource: start=0x%08x, size=0x%08x\n", child->name, resource_name,
+				(u32)dev_res->start, (u32)resource_size(dev_res));
+			
+			return dev_res;
+		}
+	}
+	return ERR_PTR(-ENOENT);
+}
 
 static int cdns_hailo_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
 	struct cdns_hailo *data;
-	struct device_node *child;
-	const char *dr_mode_str;
-	struct resource *res;
-	int ret, irq, loop_index,virq;
+	struct resource *res, *cdns_dev_res = NULL; //, *cdns_otg_res = NULL;
+	int ret, irq, loop_index, virq;
+
 
 	if (!node)
 		return -ENODEV;
@@ -405,6 +786,13 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+
+	if (!is_probing_ready(pdev)) {
+		return -EPROBE_DEFER;
+	}
+
+	raw_spin_lock_init(&data->irq_lock);
+	data->sw_irq_mask = 0;
 
 	platform_set_drvdata(pdev, data);
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -446,13 +834,6 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 		dev_err(dev, "can't map IOMEM resource\n");
 		return -ENOMEM;
 	}
-
-	data->num_core_clks = ARRAY_SIZE(hailo_cdns3_core_clks);
-	data->core_clks = devm_kmemdup(dev, hailo_cdns3_core_clks,
-				sizeof(hailo_cdns3_core_clks), GFP_KERNEL);
-
-	if (!data->core_clks)
-		return -ENOMEM;
 	
 	/* deassert USB out of reset */
 	data->usb_apb_rst = devm_reset_control_get(&pdev->dev, "usb_apb");
@@ -474,37 +855,38 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 	data->no_usb2_phy_avdd_core_power = of_property_read_bool(node, "no-usb2-phy-avdd-core-power");
 	if (data->no_usb2_phy_avdd_core_power) {
 		dev_info(&pdev->dev, "Overriding VBUS validation since USB2 phy AVDD core power is not connected\n");
-		cdns_hailo_pdata.quirks |= CDNS3_DONT_CLEAR_OVERRIDE_SESS_VLD;
+		cdns_hailo_pdata.quirks |= CDNS3_VBUS_VALIDATION_CONTROLLED_BY_SFR; // Not controlled by OTG PHY
 	}
-	
+
+    if (of_property_read_bool(node, "usbreset-as-system-reboot")) {
+        dev_info(&pdev->dev, "USB reset will trigger system reboot\n");
+		cdns_hailo_pdata.quirks |= CDNS3_USB_RESET_AS_SYSTEM_REBOOT;
+    }
+
 	// Iterate through the child nodes to find the cdns_usb3 node
-	data->dr_mode = USB_DR_MODE_UNKNOWN;
-    for_each_child_of_node(node, child) {
-        if (of_device_is_compatible(child, "cdnsp,usb3")) {
-            // Parse the dr_mode property from the cdns_usb3 node
-            if (of_property_read_string(child, "dr_mode", &dr_mode_str)) {
-                dev_err(&pdev->dev, "Failed to get dr_mode property\n");
-                return -EINVAL;
-            }
-
-            if (!strcmp(dr_mode_str, DR_MODE_HOST)) {
-                data->dr_mode = USB_DR_MODE_HOST;
-            } else if (!strcmp(dr_mode_str, DR_MODE_DEVICE)) {
-                data->dr_mode = USB_DR_MODE_PERIPHERAL;
-            } else if(!strcmp(dr_mode_str, DR_MODE_OTG)) {
-                dev_err(&pdev->dev, "Invalid dr_mode property: %s\n", dr_mode_str);
-                return -EINVAL;
-            }
-
-            // Now you can use usb3->dr_mode in your driver
-            dev_info(&pdev->dev, "dr_mode is set to %s\n", dr_mode_str);
-            break;
-        }
-	}
+	cdns_usb3_dr_mode_get(pdev, &data->dr_mode);
 	if (data->dr_mode == USB_DR_MODE_UNKNOWN) {
 		dev_info(&pdev->dev, "dr_mode property not found setting \"host\" as default mode\n");
 		data->dr_mode = USB_DR_MODE_HOST;
 	}
+
+	/* Configure clocks based on DR mode */
+	data->usb2_is_inactive = of_property_read_bool(node, "usb2-is-inactive");
+	if (data->usb2_is_inactive) {
+		data->num_core_clks = ARRAY_SIZE(hailo_cdns3_core_clks__no_usb2_refclk);
+		data->core_clks = devm_kmemdup(dev, hailo_cdns3_core_clks__no_usb2_refclk,
+					sizeof(hailo_cdns3_core_clks__no_usb2_refclk), GFP_KERNEL);
+		dev_info(&pdev->dev, "Using device mode clocks (no usb2_refclk)\n");
+	} else {
+		data->num_core_clks = ARRAY_SIZE(hailo_cdns3_core_clks);
+		data->core_clks = devm_kmemdup(dev, hailo_cdns3_core_clks,
+					sizeof(hailo_cdns3_core_clks), GFP_KERNEL);
+		dev_info(&pdev->dev, "Using host mode clocks (with usb2_refclk)\n");
+	}
+
+	if (!data->core_clks)
+		return -ENOMEM;
+
 	pm_runtime_get_sync(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
@@ -514,14 +896,34 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(data->pclk);
 	if (ret)
 		return ret;
-	reset_control_deassert(data->usb_rst);
-
-	// note: must be called before the core clocks are enabled
-	cdns_hailo_init(data);
 
 	ret = devm_clk_bulk_get(dev, data->num_core_clks, data->core_clks);
 	if (ret)
 		return ret;
+
+	if (data->dr_mode == USB_DR_MODE_PERIPHERAL) {
+		cdns_dev_res = cdns_usb3_ioresource_mem_get(pdev, USB_DR_MODE_PERIPHERAL);
+		if (IS_ERR(cdns_dev_res)) {
+			return PTR_ERR(cdns_dev_res);
+		}
+		
+		data->cdns_dev_regs = devm_ioremap(&pdev->dev, cdns_dev_res->start, resource_size(cdns_dev_res));
+		if (!data->cdns_dev_regs) {
+			dev_err(&pdev->dev, "can't map IOMEM resource for peripheral mode\n");
+			return -ENOMEM;
+		}
+
+		ret = cdns_gadget_config_phase_quirk(pdev);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to apply gadget quirks: %d\n", ret);
+			return ret;
+		}
+	}
+	
+	// note: must be called before the core clocks are enabled
+	cdns_hailo_init(data);
+
+	reset_control_deassert(data->usb_rst);
 
 	ret = clk_bulk_prepare_enable(data->num_core_clks, data->core_clks);
 	if (ret)
@@ -532,6 +934,11 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to create children: %d\n", ret);
 		goto err;
 	}
+
+#ifdef CDNS_TIMERS_DEBUG	
+	cdns_hailo_validate_timer_registers(pdev);
+#endif
+
 	return ret;
 err:
 	clk_bulk_disable_unprepare(data->num_core_clks, data->core_clks);
@@ -544,17 +951,37 @@ static int cdns_hailo_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct cdns_hailo *data = dev_get_drvdata(dev);
 
-	irq_domain_remove(data->irq_domain);
+	/* Graceful shutdown sequence to prevent controller timeouts */
+	dev_info(dev, "Starting graceful USB controller shutdown\n");
+
+	/* Depopulate child devices first - let them clean up properly with IRQs available */
 	of_platform_depopulate(dev);
+	
+	/* Additional delay for gadget unbind to complete */
+	msleep(10);
+
+	/* Remove IRQ domain AFTER all children are gone */
+	if (data->irq_domain) {
+		irq_domain_remove(data->irq_domain);
+		data->irq_domain = NULL;
+	}
+	
+	/* Disable clocks in reverse order */
 	clk_bulk_disable_unprepare(data->num_core_clks, data->core_clks);
 	clk_disable_unprepare(data->pclk);
+	
+	/* Assert resets in reverse order: usb first, then usb_apb */
 	reset_control_assert(data->usb_rst);
 	reset_control_assert(data->usb_apb_rst);
+	msleep(10); /* Allow resets to take effect */
+	
+	/* Clean up runtime PM */
 	pm_runtime_put_sync(dev);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);
 	platform_set_drvdata(pdev, NULL);
 
+	dev_info(dev, "USB controller shutdown completed\n");
 	return 0;
 }
 

@@ -31,6 +31,7 @@ struct scmi_hailo_ops {
 	int (*get_source_clock)(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
     int (*get_identification_attributes)(struct scmi_hailo_identification_attributes_p2a *params);
     int (*get_sku_id)(struct scmi_hailo_get_sku_id_p2a *params);
+    int (*send_host_current_limit)(struct scmi_hailo_send_host_current_limit_a2p *params);
 };
 
 #if IS_ENABLED(CONFIG_HAILO_SCMI_PROTOCOL)
