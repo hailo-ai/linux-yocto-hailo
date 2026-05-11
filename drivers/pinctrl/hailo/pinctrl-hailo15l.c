@@ -47,6 +47,16 @@ static int hailo15l_get_group_pins(struct pinctrl_dev *pctrl_dev,
 	return 0;
 }
 
+static uint32_t hailo15l_get_group_mode(struct pinctrl_dev *pctrl_dev,
+					unsigned selector)
+{
+	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
+
+	return pinctrl->groups[selector].mode;
+}
+
+
+
 
 static void hailo15l_pin_dbg_show(struct pinctrl_dev *pctrl_dev,
 				  struct seq_file *s, unsigned offset)
@@ -213,18 +223,102 @@ static uint32_t hailo15l_get_pads_pinmux_mode(struct hailo15l_pinctrl *pinctrl,
 	return value;
 }
 
-static void hailo15l_disable_all_pads(struct hailo15l_pinctrl *pinctrl)
-{
-	int i;
 
-	for (i = 0; i < H15L_PINMUX_PIN_COUNT; i++) {
-		struct h15l_pin_data *pin_data = pinctrl->pins[i].drv_data;
-		if (H15L_IS_SDIO_PIN(i) || !pin_data->is_muxable) {
+/* Apply early assigments as defined in device tree.
+ * If a pin was not assigned, move its pinmux to INACTIVE */
+static int hailo15l_early_assignments(struct hailo15l_pinctrl *pinctrl)
+{
+	int pinctrl_pin_index, ret;
+	int early_pin_groups_num, early_pins_group_index;
+	struct device_node *node = dev_of_node(pinctrl->dev);
+	const char *early_pin_group_str;
+	const char **early_pin_group_str_array = NULL;
+
+	// Get early-assignment-pins from device tree - these pins should not be disabled
+	early_pin_groups_num = of_property_count_strings(node, "early-assignment-pin-groups");
+	if (early_pin_groups_num > 0) {
+		early_pin_group_str_array = devm_kcalloc(pinctrl->dev, early_pin_groups_num, sizeof(char *), GFP_KERNEL);
+		if (!early_pin_group_str_array) {
+			dev_err(pinctrl->dev, "Failed to allocate memory for early pins array\n");
+			early_pin_groups_num = 0;
+			return -ENOMEM;
+		} else {
+			for (early_pins_group_index = 0; early_pins_group_index < early_pin_groups_num; early_pins_group_index++) {
+				if (of_property_read_string_index(node, "early-assignment-pin-groups",
+					early_pins_group_index, &early_pin_group_str) == 0) {
+					early_pin_group_str_array[early_pins_group_index] = early_pin_group_str;
+					dev_info(pinctrl->dev, "early_pin_group_str_array[%d]:  %s\n", early_pins_group_index, early_pin_group_str_array[early_pins_group_index]);
+				}
+			}
+		}
+	} else {
+		dev_dbg(pinctrl->dev, "Early assignments: No early assignment pins found\n");
+	}
+
+	/* For each pin in pinctrl, check if exists in early-assignment-pins list. If it is, assign the mode accordingly.
+	 * If not, disable the pin by using H15L_MODE_INACTIVE. */
+	for (pinctrl_pin_index = 0; pinctrl_pin_index < pinctrl->pctl_desc.npins; pinctrl_pin_index++) {
+		struct h15l_pin_data *pin_data = pinctrl->pins[pinctrl_pin_index].drv_data;
+		bool found = false;
+		uint32_t mode = H15L_MODE_INACTIVE;
+
+		for (early_pins_group_index = 0; early_pins_group_index < early_pin_groups_num; early_pins_group_index++) {
+			int current_pin_group_selector;
+			const unsigned *group_pins;
+			unsigned int num_group_pins;
+			int current_pin_in_group;
+
+			if (!early_pin_group_str_array[early_pins_group_index]) {
+				dev_err(pinctrl->dev, "Failed to access early-pins-group #%d", early_pins_group_index);
+				return -EFAULT;
+			}
+
+			current_pin_group_selector = pinctrl_get_group_selector(pinctrl->pctl, early_pin_group_str_array[early_pins_group_index]);
+			if (current_pin_group_selector < 0) {
+				dev_err(pinctrl->dev, "Failed to access early-pins-group %s", early_pin_group_str_array[early_pins_group_index]);
+				return -EINVAL;
+			}
+
+			// Get the pins which belong to the current group
+			ret = hailo15l_get_group_pins(pinctrl->pctl, current_pin_group_selector, &group_pins, &num_group_pins);
+			if (ret < 0 || num_group_pins < 0) {
+				dev_err(pinctrl->dev, "Failed to get early-pins-group %s pins", early_pin_group_str_array[early_pins_group_index]);
+				return -EFAULT;
+			}
+
+			for (current_pin_in_group = 0; current_pin_in_group < num_group_pins; current_pin_in_group++) {
+				const char *pname;
+
+				// Check if current pin is in the early_pins_array
+				if (group_pins[current_pin_in_group] != pinctrl_pin_index) {
+					continue;
+				}
+
+				pname = pin_get_name(pinctrl->pctl, group_pins[current_pin_in_group]);
+				if (WARN_ON(!pname)) {
+					dev_err(pinctrl->dev, "Early assignments: Failed to get pin name for pin #%d", current_pin_in_group);
+				} else {
+					dev_dbg(pinctrl->dev, "Early assignments: group_pins[%d]: %s\n", current_pin_in_group, pname);
+				}
+				if (found) {
+					dev_err(pinctrl->dev, "Conflicting early assignment! Pin #%d is assigned with more than one group", pinctrl_pin_index);
+					if (pname) {
+						dev_err(pinctrl->dev, "Conflicting pin name: %s", pname);
+					}
+				}
+				mode = hailo15l_get_group_mode(pinctrl->pctl, current_pin_group_selector);
+				found = true;
+			}
+		}
+
+
+		if (H15L_IS_SDIO_PIN(pinctrl_pin_index) || !pin_data->is_muxable) {
 			continue;
 		}
 
-		hailo15l_set_pads_pinmux_mode(pinctrl, i, H15L_MODE_INACTIVE);
+		hailo15l_set_pads_pinmux_mode(pinctrl, pinctrl_pin_index, mode);
 	}
+	return 0;
 }
 
 static int hailo15l_set_mux(struct pinctrl_dev *pctrl_dev,
@@ -315,7 +409,7 @@ static int hailo15l_gpio_get_strength(struct pinctrl_dev *pctldev,
 
 	/* Read values */
 	for (i = 0; i < GPIO_PADS_CONFIG__DS__SIZE; i++) {
-		values[i] = readl(pinctrl->gpio_pads_config_base 
+		values[i] = readl(pinctrl->gpio_pads_config_base
 				  + GPIO_PADS_CONFIG__PADS_GPIO_DS_0
 				  + i * sizeof(uint32_t));
 	}
@@ -345,7 +439,7 @@ static int hailo15l_gpio_set_strength(struct pinctrl_dev *pctldev,
 
 	/* Read values */
 	for (i = 0; i < GPIO_PADS_CONFIG__DS__SIZE; i++) {
-		values[i] = readl(pinctrl->gpio_pads_config_base 
+		values[i] = readl(pinctrl->gpio_pads_config_base
 				  + GPIO_PADS_CONFIG__PADS_GPIO_DS_0
 				  + i * sizeof(uint32_t));
 	}
@@ -358,8 +452,8 @@ static int hailo15l_gpio_set_strength(struct pinctrl_dev *pctldev,
 
 	/* Store values */
 	for (i = 0; i < GPIO_PADS_CONFIG__DS__SIZE; i++) {
-		writel(values[i], 
-		       pinctrl->gpio_pads_config_base 
+		writel(values[i],
+		       pinctrl->gpio_pads_config_base
 			 + GPIO_PADS_CONFIG__PADS_GPIO_DS_0
 			 + i * sizeof(uint32_t));
 	}
@@ -484,7 +578,7 @@ static enum pin_config_param hailo15l_gpio_get_pull_selector(
 	data_reg = readl(pinctrl->gpio_pads_config_base +
 			 GPIO_PADS_CONFIG__GPIO_PS);
 
-	return (data_reg & (1 << gpio_pad_index)) ? 
+	return (data_reg & (1 << gpio_pad_index)) ?
 		PIN_CONFIG_BIAS_PULL_UP : PIN_CONFIG_BIAS_PULL_DOWN;
 }
 
@@ -733,7 +827,7 @@ static int hailo15l_pin_config_group_set(struct pinctrl_dev *pctldev,
 
 	grp = &pinctrl->groups[selector];
 	pin = grp->pin;
-	
+
 	return hailo15l_pin_config_set(pctldev, pin, configs, num_configs);
 }
 
@@ -763,7 +857,7 @@ static void hailo15l_pin_config_dbg_show(struct pinctrl_dev *pctldev,
 		seq_printf(s, "pull-up ");
 	} else {
 		seq_printf(s, "pull-down ");
-	
+
 	}
 
 	seq_printf(s, "drive-strength %d", hailo15l_pin_get_strength(pctldev, offset));
@@ -930,11 +1024,7 @@ static int hailo15l_pinctrl_probe(struct platform_device *pdev)
 	pinctrl->pctl_desc.pins = pinctrl->pins;
 	pinctrl->pctl_desc.npins = ARRAY_SIZE(hailo15l_pins);
 
-	/* TODO: call hailo15l_initialize_current_state and delete
-		 hailo15l_disable_all_pads when U-boot pinmux is
-		 implemented. */
 	(void)hailo15l_initialize_current_state;
-	hailo15l_disable_all_pads(pinctrl);
 
 	platform_set_drvdata(pdev, pinctrl);
 
@@ -946,6 +1036,13 @@ static int hailo15l_pinctrl_probe(struct platform_device *pdev)
 
 	if (ret) {
 		dev_err(dev, "hailo15 pin controller registration failed\n");
+		return ret;
+	}
+
+	// Note - this function is called affter register & init, as inctrl->pctl is used
+	ret = hailo15l_early_assignments(pinctrl);
+	if (ret) {
+		dev_err(dev, "Failed to apply early assignments\n");
 		return ret;
 	}
 

@@ -64,6 +64,7 @@
 #include "cdnsp-trace.h"
 #include "cdnsp-gadget.h"
 
+
 /*
  * Returns zero if the TRB isn't in this segment, otherwise it returns the DMA
  * address of the TRB.
@@ -853,13 +854,24 @@ new_event:
 
 	if (portsc & PORT_CSC) {
 		/* Detach device. */
-		if (pdev->gadget.connected && !(portsc & PORT_CONNECT))
-			cdnsp_disconnect_gadget(pdev);
+        if (pdev->gadget.connected && !(portsc & PORT_CONNECT)) {
+            cdnsp_disconnect_gadget(pdev);
+		}
 
 		/* Attach device. */
 		if (portsc & PORT_CONNECT) {
-			if (!port2)
+			if (!port2){
+				dev_dbg(pdev->dev, "Attach - PORTSC=0x%08x: CCS=%d PED=%d PR=%d CSC=%d PRC=%d WRC=%d WR=%d\n",
+					portsc,
+					!!(portsc & PORT_CONNECT),
+					!!(portsc & PORT_PED),
+					!!(portsc & PORT_RESET),
+					!!(portsc & PORT_CSC),
+					!!(portsc & PORT_RC),
+					!!(portsc & PORT_WRC),
+					!!(portsc & PORT_WR));
 				cdnsp_irq_reset(pdev);
+			}
 
 			usb_gadget_set_state(&pdev->gadget, USB_STATE_ATTACHED);
 		}
@@ -867,6 +879,17 @@ new_event:
 
 	/* Port reset. */
 	if ((portsc & (PORT_RC | PORT_WRC)) && (portsc & PORT_CONNECT)) {
+        dev_dbg(pdev->dev, "Port Reset - PORTSC=0x%08x: CCS=%d PED=%d PR=%d CSC=%d PRC=%d WRC=%d WR=%d\n",
+             portsc,
+             !!(portsc & PORT_CONNECT),
+             !!(portsc & PORT_PED),
+             !!(portsc & PORT_RESET),
+             !!(portsc & PORT_CSC),
+             !!(portsc & PORT_RC),
+             !!(portsc & PORT_WRC),
+             !!(portsc & PORT_WR));
+		if (pdev->gadget.state == USB_STATE_CONFIGURED)
+			pdev->port_sys_reset_requested = true;
 		cdnsp_irq_reset(pdev);
 		pdev->u1_allowed = 0;
 		pdev->u2_allowed = 0;
@@ -2094,6 +2117,15 @@ int cdnsp_cmd_flush_ep(struct cdnsp_device *pdev, struct cdnsp_ep *pep)
 {
 	int ret;
 
+	pr_debug("%s: EP info - idx=%d, dir=%s, number=%d, name='%s'\n", 
+		__func__, pep->idx, 
+		pep->direction ? "IN" : "OUT",
+		pep->number, pep->name);
+	pr_debug("%s: EP state - enabled=%d, stopped=%d, skip=%d\n",
+		__func__, pep->ep_state & EP_ENABLED ? 1 : 0,
+		pep->ep_state & EP_STOPPED ? 1 : 0, 
+		pep->skip ? 1 : 0);
+	
 	cdnsp_queue_flush_endpoint(pdev, pep->idx);
 	cdnsp_ring_cmd_db(pdev);
 	ret = cdnsp_wait_for_cmd_compl(pdev);

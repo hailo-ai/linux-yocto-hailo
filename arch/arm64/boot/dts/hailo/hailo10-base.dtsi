@@ -6,7 +6,7 @@
 #include "hailo15-base.dtsi"
 
 / {
-    soc {
+    soc:soc {
         compatible = "hailo,hailo10h";
     };
 };

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo15l-sbc.dts"
+
+/ {
+    model = "Hailo - Hailo15l SBC NAND VPU Development Board";
+};
+
+&spi0_flash2 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_flash_cs2_n>;
+};
+
+&pinctrl {
+    early-assignment-pin-groups =
+        "uart0_rxd_in_0_grp",
+        "uart0_txd_out_0_grp",
+        "uart1_rxd_in_0_grp",
+        "uart1_txd_out_0_grp",
+        "flash_spi_cs2n_clkc_rebar_out_grp",
+        "flash_spi_dq_0_grp",
+        "flash_spi_dq_1_grp",
+        "flash_spi_dq_2_grp",
+        "flash_spi_dq_3_grp",
+        "flash_spi_sclk_out_grp";
+};
