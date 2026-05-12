@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DTS overlay: IMX662 sensor on H15L SBC (CSI0, i2c bus 0, addr 0x10)
+ *
+ * Overrides sensor_0 (camera-sensor@1a) to expose an IMX662 at I2C address
+ * 0x10 with a 37.125 MHz clock.  The CSI2RX0 wiring, reset GPIO (gpio0[4]),
+ * data lanes, and csi-id are unchanged from the base DTS (hailo15l-sbc.dts).
+ *
+ * The 37.125 MHz fixed-clock is placed at root level — matching the placement
+ * of the base sensor_clk (24 MHz) in hailo15-vision.dtsi — so it is NOT
+ * enumerated as an I2C device by the DesignWare I2C bus driver.
+ *
+ * Note: the DT node name remains camera-sensor@1a; reg = <0x10> sets the
+ * actual I2C address used by the driver.
+ */
+/dts-v1/;
+/plugin/;
+
+/* 37.125 MHz input clock for IMX662 (at root level, not inside i2c_0) */
+&{/} {
+	imx_662_sensor_clk: imx_662_sensor_clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <37125000>;
+	};
+};
+
+/* Override sensor_0 (camera-sensor@1a) for IMX662 at I2C address 0x10 */
+&sensor_0 {
+	compatible = "sony,imx662";
+	reg = <0x10>;
+	clocks = <&imx_662_sensor_clk>;
+	clock-names = "inclk";
+	clock-frequency = <37125000>;
+};
+
+/* Update link frequencies for IMX662 in the sensor output endpoint */
+&sensor_out_csi2rx {
+	link-frequencies = /bits/ 64 <297000000 445500000 594000000>;
+};
