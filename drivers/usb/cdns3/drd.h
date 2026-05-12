@@ -195,6 +195,7 @@ struct cdns_otg_irq_regs {
 #define OVERRIDE_IDPULLUP_V0		BIT(24)
 /* Vbusvalid/Sesvalid override select. */
 #define OVERRIDE_SESS_VLD_SEL		BIT(10)
+#define OVERRIDE_SESS_VLD_SFR		BIT(11)
 
 #define OVERRIDE_OVERCURRENT_SEL BIT(12)
 #define OVERRIDE_OVERCURRENT_SFR BIT(13)
