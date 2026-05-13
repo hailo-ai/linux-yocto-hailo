@@ -85,7 +85,7 @@ deploy_image() {
 }
 
 make_all(){
-    echo "Building kernel..."
+    echo "Building kernel for machine $MACHINE..."
 	if [ ! -f .config ]; then
 		if [ -f "${DEPLOY_DIR}/kernel.config" ]; then
 			cp "${DEPLOY_DIR}/kernel.config" ${SCRIPT_PATH}/.config

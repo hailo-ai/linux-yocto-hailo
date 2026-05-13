@@ -27,6 +27,7 @@
 
 /* Streaming Mode */
 #define IMX678_REG_MODE_SELECT 0x3000
+#define IMX678_REG_XMSTA 0x3002
 #define IMX678_MODE_STANDBY 0x01
 #define IMX678_MODE_STREAMING 0x00
 
@@ -92,6 +93,9 @@
 #define IMX678_REG_RHS1 0x3060
 #define IMX678_CUSTOM_RHS1_MIN 0
 #define IMX678_CUSTOM_RHS1_MAX 65535
+#define IMX678_CUSTOM_RHS1_PRIMING_MAX IMX678_CUSTOM_RHS1_MAX
+#define IMX678_CUSTOM_RHS1_PRIMING_MIN -1
+#define IMX678_CUSTOM_RHS1_PRIMING_DEF -1
 /* Default 0 value means no custom value (value will be taken from the preset) */
 #define IMX678_CUSTOM_RHS1_DEFAULT 0
 
@@ -291,6 +295,9 @@ struct exp_gain_ctrl_cluster {
  * @vblank_ctrl: Pointer to vertical blanking control
  * @test_pattern_ctrl: pointer to test pattern control
  * @mode_sel_ctrl: pointer to mode select control
+ * @hcg_ctrl: pointer to HCG control
+ * @custom_rhs1_ctrl: pointer to custom RHS1 control for HDR mode
+ * @custom_rhs1_priming_ctrl: pointer to custom RHS1 priming control - custom RHS1 value to apply on fast toggle
  * @wdr_priming_ctrl: pointer to WDR priming control - wdr (true/false) to apply on fast toggle
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
@@ -323,6 +330,7 @@ struct imx678 {
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
@@ -338,6 +346,7 @@ struct imx678 {
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
 	int wdr_priming_val;
+	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
 };
 
@@ -349,6 +358,7 @@ static const s64 link_freq[] = {
 static const struct imx678_reg mode_3840x2160_regs[] = {
 	{0x3000, 0x01}, // STANDBY					*imx678
 	{0x3002, 0x01}, // XMSTA					*imx678
+	{0x3014, IMX678_INCLK_CODE}, // INCK_SEL				*imx678
 	{0x3018, 0x04}, // WINMODE					*imx678
 	//{0x37b0, 0x36}, // ?
 	//{0x304c, 0x00}, // OPB_SIZE_V				*no in imx678
@@ -356,7 +366,6 @@ static const struct imx678_reg mode_3840x2160_regs[] = {
 	//{0x300d, 0x2a}, // CPWAIT_TIME			*no in imx678
 	{0x302c, 0x26}, // HMAX						*imx678
 	{0x302d, 0x02}, // HMAX						*imx678
-	{0x3014, IMX678_INCLK_CODE}, // INCK_SEL					*imx678
 	{0x3040, 0x03}, // LANEMODE - 4 lanes		*imx678
 	//{0x301a, 0x00}, // WDMODE=Normal			*imx678
 	//{0x3022, 0x01}, // ADBIT=12Bit			*imx678
@@ -730,7 +739,7 @@ static const struct imx678_reg mode_3840x2160_regs[] = {
 
 static const struct imx678_reg mode_1920x1080_sdr_binning_regs[] = {
     { 0x3000, 0x01 }, // STANDBY                    *imx678
-    { 0x3002, 0x00 }, // XMSTA                  *imx678
+    { 0x3002, 0x01 }, // XMSTA (started later by start_streaming)
     { 0x3014, IMX678_INCLK_CODE }, // INCK_SEL          *imx678
     { 0x3018, 0x04 }, // WINMODE - crop                 *imx678
     { 0x301A, 0x00 }, //WDMODE[7:0] - sdr
@@ -2835,6 +2844,17 @@ struct v4l2_ctrl_config imx678_custom_ctrls[] = {
 	},
 	{
 		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_CUSTOM_RHS1_PRIMING,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "custom_rhs1_priming",
+		.step = IMX678_INTEGER_STEP,
+		.min = IMX678_CUSTOM_RHS1_PRIMING_MIN,
+		.max = IMX678_CUSTOM_RHS1_PRIMING_MAX,
+		.def = IMX678_CUSTOM_RHS1_PRIMING_DEF,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
 		.id = IMX678_CID_WDR_PRIMING,
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
 		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
@@ -3196,27 +3216,27 @@ static int imx678_update_exp_vblank_controls(struct imx678* imx678)
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx678, &limits);
 
-	ret = imx678_set_ctrl_range_and_value(imx678, imx678->lef.exp_ctrl, limits.exp_lef_min,
+	ret = __v4l2_ctrl_modify_range(imx678->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX678_EXPOSURE_STEP, limits.exp_lef_default);
 	if (ret) {
-		dev_err(imx678->dev, "Failed to update LEF exposure range and value\n");
+		dev_err(imx678->dev, "Failed to modify LEF exposure range\n");
 		return ret;
 	}
 
 	if (imx678->cur_mode->dol >= 2) {
-		ret = imx678_set_ctrl_range_and_value(imx678, imx678->sef1.exp_ctrl, limits.exp_sef1_min,
+		ret = __v4l2_ctrl_modify_range(imx678->sef1.exp_ctrl, limits.exp_sef1_min,
 			limits.exp_sef1_max, IMX678_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
 		if (ret) {
-			dev_err(imx678->dev, "Failed to update SEF1 exposure range and value\n");
+			dev_err(imx678->dev, "Failed to modify SEF1 exposure range\n");
 			return ret;
 		}
 	}
 
 	if (imx678->cur_mode->dol >= 3) {
-		ret = imx678_set_ctrl_range_and_value(imx678, imx678->sef2.exp_ctrl, limits.exp_sef2_min,
+		ret = __v4l2_ctrl_modify_range(imx678->sef2.exp_ctrl, limits.exp_sef2_min,
 			limits.exp_sef2_max, IMX678_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
 		if (ret) {
-			dev_err(imx678->dev, "Failed to update SEF2 exposure range and value\n");
+			dev_err(imx678->dev, "Failed to modify SEF2 exposure range\n");
 			return ret;
 		}
 	}
@@ -3234,18 +3254,23 @@ static int imx678_update_exp_vblank_controls(struct imx678* imx678)
 static int imx678_set_hcg_mode(struct imx678 *imx678, u32 hcg)
 {
 	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+
 	ret = imx678_write_reg(imx678, IMX678_REG_HCG, 1, hcg);
 	if (ret) {
-        dev_err(imx678->dev, "Failed to write HCG register: %d\n", ret);
-        return ret;
-    }
+		dev_err(imx678->dev, "Failed to write HCG register: %d\n", ret);
+		goto release_hold;
+	}
 
 	if (imx678->cur_mode->dol >= 2) {
 		ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, hcg);
 		if (ret) {
 			imx678_write_reg(imx678, IMX678_REG_HCG, 1, !hcg);
 			dev_err(imx678->dev, "Failed to write HCG SEF1 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
@@ -3255,13 +3280,16 @@ static int imx678_set_hcg_mode(struct imx678 *imx678, u32 hcg)
 			imx678_write_reg(imx678, IMX678_REG_HCG, 1, !hcg);
 			imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, !hcg);
 			dev_err(imx678->dev, "Failed to write HCG SEF2 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
-    dev_dbg(imx678->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx678->cur_mode->dol);
-    
-	return 0;
+	dev_dbg(imx678->dev, "HCG mode set to %s, in mode with dol=%d\n",
+		hcg ? "enabled" : "disabled", imx678->cur_mode->dol);
+
+release_hold:
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
 }
 /**
  * imx678_update_exp_gain() - Set updated exposure and gain
@@ -3510,7 +3538,11 @@ static int imx678_set_hdr_mode(struct imx678 *imx678, bool enable)
 
 static int imx678_is_rhs1_value_supported(struct imx678 *imx678, u32 rhs1)
 {
-    /* For 2/2 binning, the RHS1 requirements are more strict,
+	// Value of 0 is used to indicate that the default RHS1 value for the mode should be used, so it should be accepted regardless of the even/odd requirement
+	if (rhs1 == 0)
+		return true;
+
+	/* For 2/2 binning, the RHS1 requirements are more strict,
      * but we can't know which mode is used at this point, so we use all pixel mode requirements */
     return (rhs1 - 1) % 2 == 0;
 }
@@ -3573,6 +3605,32 @@ static int imx678_get_ctrl(struct v4l2_ctrl *ctrl)
 	}
 
 	return ret;
+}
+
+static int imx678_set_custom_rhs1(struct imx678 *imx678, u32 rhs1)
+{
+	int ret;
+
+	if (!imx678_is_rhs1_value_supported(imx678, rhs1)) {
+		dev_err(imx678->dev, "Invalid RHS1 value %u\n", rhs1);
+		return -EINVAL;
+	}
+
+	imx678->custom_rhs1_value = rhs1;
+
+	if (rhs1 == 0) {
+		// Set the mode back to the builtin mode
+		imx678_set_mode(imx678, imx678->hdr_enabled ?
+								&supported_hdr_modes[imx678->mode_idx] : 
+								&supported_sdr_modes[imx678->mode_idx]);
+		ret = imx678_update_exp_vblank_controls(imx678);
+		if (ret) {
+			dev_err(imx678->dev, "Failed to update exp/vblank controls after resetting custom RHS1 to 0\n");
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 /**
@@ -3674,7 +3732,7 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 		/* Set controls only if sensor is in power on state */
 		if (!pm_runtime_get_if_in_use(imx678->dev))
 			return 0;
-		
+
 		dev_dbg(imx678->dev, "Setting HCG to %u\n", ctrl->val);
 
 		ret = imx678_set_hcg_mode(imx678, ctrl->val);
@@ -3685,6 +3743,14 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
     	break;
 	case IMX678_CID_WDR_PRIMING:
 		imx678->wdr_priming_val = ctrl->val;
+		ret = 0;
+		break;
+	case IMX678_CID_CUSTOM_RHS1_PRIMING:
+		if (!imx678_is_rhs1_value_supported(imx678, ctrl->val)) {
+			dev_err(imx678->dev, "Invalid rhs1 value %u\n", ctrl->val);
+			return -EINVAL;
+		}
+		imx678->custom_rhs1_priming_val = ctrl->val;
 		ret = 0;
 		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
@@ -3705,7 +3771,13 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = 0;
         break;
 	case IMX678_CID_CUSTOM_RHS1:
-		if (ctrl->val != 0 && !imx678_is_rhs1_value_supported(imx678, ctrl->val)) {
+		// TODO - my next PR will allow us to remove this weird condition
+		if (imx678->fast_toggle_state > FAST_TOGGLE_NONE && imx678->fast_toggle_state < FAST_TOGGLE_STATE_MAX) {
+			// if currently toggling, ignore this v4l control
+			return 0;
+		}
+
+		if (!imx678_is_rhs1_value_supported(imx678, ctrl->val)) {
 			dev_err(imx678->dev, "Invalid rhs1 value %u\n", ctrl->val);
 			return -EINVAL;
 		}
@@ -3715,16 +3787,7 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 			return -EBUSY;
 		}
 
-        imx678->custom_rhs1_value = ctrl->val;
-		ret = 0;
-
-		if (ctrl->val == 0) {
-			// Set the mode back to the builtin mode
-			imx678_set_mode(imx678, imx678->hdr_enabled ?
-									&supported_hdr_modes[imx678->mode_idx] : 
-									&supported_sdr_modes[imx678->mode_idx]);
-			ret = imx678_update_exp_vblank_controls(imx678);
-		}
+		ret = imx678_set_custom_rhs1(imx678, ctrl->val);
 		break;
 	default:
 		dev_err(imx678->dev, "Invalid control %d", ctrl->id);
@@ -3926,7 +3989,8 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 	if (imx678->streaming) {
 		dev_err(imx678->dev,
 			"Cannot set pad format while streaming\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 	
 	ret = imx678_get_fmt_mode(imx678, fmt, &mode);
@@ -3936,16 +4000,17 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 		goto out;
 	}
 
-	imx678_fill_pad_format(imx678, mode, &imx678->curr_fmt);
-	// even if which is V4L2_SUBDEV_FORMAT_TRY, update current format for tuning case
-	memcpy(&imx678->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
-	if (compare_imx678_mode(mode, imx678->cur_mode)) {
-		imx678_set_mode(imx678, mode);
-		ret = imx678_update_exp_vblank_controls(imx678);
+	imx678_fill_pad_format(imx678, mode, fmt);
+
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+	} else {
+		memcpy(&imx678->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
+		if (compare_imx678_mode(mode, imx678->cur_mode)) {
+			imx678_set_mode(imx678, mode);
+			ret = imx678_update_exp_vblank_controls(imx678);
+		}
 	}
-#ifdef IMX678_UPDATE_CONTROLS_TRY_FMT
-		ret = imx678_update_controls(imx687, mode);
-#endif
 
 out:
 	mutex_unlock(&imx678->mutex);
@@ -4027,6 +4092,11 @@ static int imx678_start_streaming(struct imx678 *imx678)
 	const struct imx678_reg_list *reg_list;
 	int ret;
 
+	/* Save all writable control values before handler setup may overwrite them */
+	struct hailo_ctrl_snapshot snap;
+
+	hailo_ctrl_snapshot_save(imx678->sd.ctrl_handler, &snap);
+
 	/* Write sensor mode registers */
 	dev_dbg(imx678->dev, "%s - hdr_enabled: %d\n", __func__, imx678->hdr_enabled);
 	reg_list = &imx678->cur_mode->reg_list;
@@ -4036,12 +4106,16 @@ static int imx678_start_streaming(struct imx678 *imx678)
 		return ret;
 	}
 
-	/* Setup handler will write actual exposure and gain */
+	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
 	ret = __v4l2_ctrl_handler_setup(imx678->sd.ctrl_handler);
 	if (ret) {
 		dev_err(imx678->dev, "fail to setup handler (%d)", ret);
 		return ret;
 	}
+
+	/* Restore any control values corrupted by handler_setup side effects
+	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
+	hailo_ctrl_snapshot_restore(&snap);
 
 	/* Setup custom controls */
     ret = imx678_setup_custom_values(imx678);
@@ -4050,23 +4124,28 @@ static int imx678_start_streaming(struct imx678 *imx678)
         return ret;
     }
 
-	/* Start streaming */
+	/* Standby cancel */
 	ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
 			       IMX678_MODE_STREAMING);
 	if (ret) {
-		dev_err(imx678->dev, "fail to start streaming");
+		dev_err(imx678->dev, "Failed to cancel standby on stream start: %d\n", ret);
 		return ret;
 	}
-	/* Start streaming */
-	ret = imx678_write_reg(imx678, 0x3002, 1, 0);
+
+	/* Wait 24ms for internal regulator stabilization */
+	usleep_range(24000, 25000);
+
+	/* Master mode start */
+	ret = imx678_write_reg(imx678, IMX678_REG_XMSTA, 1, 0);
 	if (ret) {
-		dev_err(imx678->dev, "fail to start streaming");
+		dev_err(imx678->dev, "Failed to start master mode on stream start: %d\n", ret);
 		return ret;
 	}
 
 	imx678->wdr_priming_val = -1;
+	imx678->custom_rhs1_priming_val = -1;
 
-	dev_info(imx678->dev, "imx678: start_streaming successful (%s)", imx678->mode_string);
+	dev_info(imx678->dev, "imx678: stream started (%s)", imx678->mode_string);
 	return 0;
 }
 
@@ -4078,10 +4157,19 @@ static int imx678_start_streaming(struct imx678 *imx678)
  */
 static int imx678_stop_streaming(struct imx678 *imx678)
 {
-	int ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
+	int ret;
+
+	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+	ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
 				IMX678_MODE_STANDBY);
 	if (ret) {
-		dev_err(imx678->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		dev_err(imx678->dev, "Failed to set standby on stream stop: %d\n", ret);
+		return ret;
+	}
+
+	ret = imx678_write_reg(imx678, IMX678_REG_XMSTA, 1, 1);
+	if (ret) {
+		dev_err(imx678->dev, "Failed to stop master mode on stream stop: %d\n", ret);
 		return ret;
 	}
 
@@ -4183,7 +4271,23 @@ imx678_find_nearest_frame_interval_mode(struct imx678 *imx678,
 		}
 	}
 
-	if(!found){
+	if (!found) {
+		/*
+		 * No mode matches curr_fmt (width/height/code). This can happen when
+		 * the pipeline sets a format that doesn't exactly match our mode list,
+		 * or when s_frame_interval is called before format is fully applied.
+		 * Fall back to current mode so the caller gets success and the
+		 * actual interval; no mode change is performed.
+		 */
+		if (imx678->cur_mode) {
+			*mode = imx678->cur_mode;
+			dev_info(imx678->dev,
+				 "s_frame_interval: no mode matched curr_fmt, using cur_mode %ux%u %u/%u fps\n",
+				 imx678->cur_mode->width, imx678->cur_mode->height,
+				 imx678->cur_mode->frame_interval.denominator,
+				 imx678->cur_mode->frame_interval.numerator);
+			return 0;
+		}
 		return -ENOTSUPP;
 	}
 
@@ -4376,10 +4480,20 @@ static int imx678_priming_apply(struct imx678 *imx678, int toggle_type)
 {
 	int ret;
 	
+	// WDR apply
 	ret = imx678_set_hdr_mode(imx678, imx678->wdr_priming_val);
 	if (ret) {
-		dev_err(imx678->dev, "Failed to set HDR mode (%d) for priming: %d", imx678->wdr_priming_val, ret);
+		dev_err(imx678->dev, "Failed to set HDR mode (%d) on priming apply: %d", imx678->wdr_priming_val, ret);
 		return ret;
+	}
+
+	// Custom RHS1 apply (if it's -1, it means no custom value was set, so skip applying)
+	if (imx678->custom_rhs1_priming_val >= 0) {
+		ret = imx678_set_custom_rhs1(imx678, imx678->custom_rhs1_priming_val);
+		if (ret) {
+			dev_err(imx678->dev, "Failed to set custom RHS1 (%d) on priming apply: %d", imx678->custom_rhs1_priming_val, ret);
+			return ret;
+		}
 	}
 
 	return 0;
@@ -4466,6 +4580,9 @@ static int imx678_power_on(struct device *dev)
 	int ret;
 
 	gpiod_set_value_cansleep(imx678->reset_gpio, 1);
+
+	/* XCLR high to INCK start must be >= 1us */
+	udelay(2);
 
 	ret = clk_prepare_enable(imx678->inclk);
 	if (ret) {
@@ -4582,6 +4699,7 @@ static int imx678_init_controls(struct imx678 *imx678)
 
 	/* Initialize priming ctrls */
 	imx678_setup_custom_ctrl(imx678, &imx678->wdr_priming_ctrl, IMX678_CID_WDR_PRIMING);
+	imx678_setup_custom_ctrl(imx678, &imx678->custom_rhs1_priming_ctrl, IMX678_CID_CUSTOM_RHS1_PRIMING);
 
 	 /* Custom value controls */
 	imx678_setup_custom_ctrl_limits(imx678, &imx678->custom_rhs1_ctrl, IMX678_CID_CUSTOM_RHS1,
@@ -4727,6 +4845,7 @@ static int imx678_probe(struct i2c_client *client)
 	imx678->custom_rhs1_value = IMX678_CUSTOM_RHS1_DEFAULT;
 	
 	imx678->wdr_priming_val = -1;
+	imx678->custom_rhs1_priming_val = -1;
 	imx678->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	ret = imx678_init_controls(imx678);

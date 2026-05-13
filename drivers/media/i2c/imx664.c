@@ -26,6 +26,7 @@
 
 /* Streaming Mode */
 #define IMX664_REG_MODE_SELECT 0x3000
+#define IMX664_REG_XMSTA 0x3002
 #define IMX664_MODE_STANDBY 0x01
 #define IMX664_MODE_STREAMING 0x00
 
@@ -90,6 +91,13 @@
 /* Group hold register */
 #define IMX664_REG_HOLD 0X3001
 
+/* HDR custom rhs1 */
+#define IMX664_CUSTOM_RHS1_PRIMING_MIN -1
+#define IMX664_CUSTOM_RHS1_PRIMING_DEF -1
+#define IMX664_CUSTOM_RHS1_MIN 0
+#define IMX664_CUSTOM_RHS1_MAX 65535
+#define IMX664_CUSTOM_RHS1_PRIMING_MAX IMX664_CUSTOM_RHS1_MAX
+
 /* Input clock rate */
 #define IMX664_INCLK_RATE 24000000
 
@@ -98,7 +106,7 @@
 #define IMX664_NUM_DATA_LANES 4
 
 #define IMX664_REG_MIN 0X00
-#define IMX664_REG_MAX 0XFFfff
+#define IMX664_REG_MAX 0XFFFFF
 
 #define IMX664_TPG_EN_DUOUT 0x30e0 /* TEST PATTERN ENABLE */
 #define IMX664_TPG_PATSEL_DUOUT 0x30e2 /*Patsel mode */
@@ -304,6 +312,7 @@ struct imx664 {
 	struct v4l2_ctrl *mode_sel_ctrl;
 	struct v4l2_ctrl *hcg_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
+	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
 	struct exp_gain_ctrl_cluster lef;
 	struct exp_gain_ctrl_cluster sef1;
@@ -315,6 +324,7 @@ struct imx664 {
 	bool hdr_enabled;
 	struct v4l2_subdev_format curr_fmt;
 	int wdr_priming_val;
+	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
 };
 
@@ -534,7 +544,7 @@ static const struct imx664_reg mode_2688x1520_regs[] = {
 
 static const struct imx664_reg mode_1920x1080_sdr_binning_regs[] = {
     { 0x3000, 0x01 }, // STANDBY                    *imx664
-    { 0x3002, 0x00 }, // XMSTA                  *imx664
+    { 0x3002, 0x01 }, // XMSTA (started later by start_streaming)
     { 0x3014, 0x04 }, // INCK_SEL                   *imx664
     { 0x3018, 0x04 }, // WINMODE - crop                 *imx664
     { 0x301A, 0x00 }, //WDMODE[7:0] - sdr
@@ -968,9 +978,20 @@ struct v4l2_ctrl_config imx664_custom_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_UPDATE,
 		.name = "custom_rhs1",
 		.step = IMX664_INTEGER_STEP,
-		.min = 0,
-		.max = 65535,
+		.min = IMX664_CUSTOM_RHS1_MIN,
+		.max = IMX664_CUSTOM_RHS1_MAX,
 		.def = 0,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_CUSTOM_RHS1_PRIMING,
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "custom_rhs1_priming",
+		.step = IMX664_INTEGER_STEP,
+		.min = IMX664_CUSTOM_RHS1_PRIMING_MIN,
+		.max = IMX664_CUSTOM_RHS1_PRIMING_MAX,
+		.def = IMX664_CUSTOM_RHS1_PRIMING_DEF,
 	},
 	{
 		.ops = &imx664_ctrl_ops,
@@ -1095,7 +1116,7 @@ static void imx664_setup_custom_ctrl_limits(
 }
 
 /**
- * to_imx664() - imv678 V4L2 sub-device to imx664 device.
+ * to_imx664() - imx664 V4L2 sub-device to imx664 device.
  * @subdev: pointer to imx664 V4L2 sub-device
  *
  * Return: pointer to imx664 device
@@ -1343,10 +1364,15 @@ static int imx664_update_exp_vblank_controls(struct imx664* imx664)
 static int imx664_set_hcg_mode(struct imx664 *imx664, u32 hcg)
 {
 	int ret;
+
+	ret = imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+
 	ret = imx664_write_reg(imx664, IMX664_REG_HCG, 1, hcg);
 	if (ret) {
 		dev_err(imx664->dev, "Failed to write HCG register: %d\n", ret);
-		return ret;
+		goto release_hold;
 	}
 
 	if (imx664->cur_mode->dol >= 2) {
@@ -1354,7 +1380,7 @@ static int imx664_set_hcg_mode(struct imx664 *imx664, u32 hcg)
 		if (ret) {
 			imx664_write_reg(imx664, IMX664_REG_HCG, 1, !hcg);
 			dev_err(imx664->dev, "Failed to write HCG SEF1 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
@@ -1364,13 +1390,16 @@ static int imx664_set_hcg_mode(struct imx664 *imx664, u32 hcg)
 			imx664_write_reg(imx664, IMX664_REG_HCG, 1, !hcg);
 			imx664_write_reg(imx664, IMX664_REG_HCG_SEF1, 1, !hcg);
 			dev_err(imx664->dev, "Failed to write HCG SEF2 register: %d\n", ret);
-			return ret;
+			goto release_hold;
 		}
 	}
 
-	dev_dbg(imx664->dev, "HCG mode set to %s, in mode with dol=%d\n", hcg ? "enabled" : "disabled", imx664->cur_mode->dol);
+	dev_dbg(imx664->dev, "HCG mode set to %s, in mode with dol=%d\n",
+		hcg ? "enabled" : "disabled", imx664->cur_mode->dol);
 
-	return 0;
+release_hold:
+	imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 0);
+	return ret;
 }
 /**
  * imx664_update_exp_gain() - Set updated exposure and gain
@@ -1745,6 +1774,11 @@ static int imx664_set_ctrl(struct v4l2_ctrl *ctrl)
 		imx664->wdr_priming_val = ctrl->val;
 		ret = 0;
 		break;
+	case IMX664_CID_CUSTOM_RHS1_PRIMING:
+		/* custom rhs1 not implemented yet, so is priming */
+		imx664->custom_rhs1_priming_val = ctrl->val;
+		ret = 0;
+		break;
 	case IMX664_CID_CUSTOM_RHS1:
 		/* Stub: control accepted but not implemented for this sensor */
 		ret = 0;
@@ -1966,7 +2000,8 @@ static int imx664_set_pad_format(struct v4l2_subdev *sd,
 	if (imx664->streaming) {
 		dev_err(imx664->dev,
 			"Cannot set pad format while streaming\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 	
 	ret = imx664_get_fmt_mode(imx664, fmt, &mode);
@@ -1976,16 +2011,17 @@ static int imx664_set_pad_format(struct v4l2_subdev *sd,
 		goto out;
 	}
 
-	imx664_fill_pad_format(imx664, mode, &imx664->curr_fmt);
-	// even if which is V4L2_SUBDEV_FORMAT_TRY, update current format for tuning case
-	memcpy(&imx664->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
-	if (compare_imx664_mode(mode, imx664->cur_mode)) {
-		imx664_set_mode(imx664, mode);
-		ret = imx664_update_exp_vblank_controls(imx664);
+	imx664_fill_pad_format(imx664, mode, fmt);
+
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+	} else {
+		memcpy(&imx664->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
+		if (compare_imx664_mode(mode, imx664->cur_mode)) {
+			imx664_set_mode(imx664, mode);
+			ret = imx664_update_exp_vblank_controls(imx664);
+		}
 	}
-#ifdef imx664_UPDATE_CONTROLS_TRY_FMT
-		ret = imx664_update_controls(imx687, mode);
-#endif
 
 out:
 	mutex_unlock(&imx664->mutex);
@@ -2074,6 +2110,11 @@ static int imx664_start_streaming(struct imx664 *imx664)
 	const struct imx664_reg_list *reg_list;
 	int ret;
 
+	/* Save all writable control values before handler setup may overwrite them */
+	struct hailo_ctrl_snapshot snap;
+
+	hailo_ctrl_snapshot_save(imx664->sd.ctrl_handler, &snap);
+
 	/* Write sensor mode registers */
 	pr_debug("%s - hdr_enabled: %d\n", __func__, imx664->hdr_enabled);
 	reg_list = &imx664->cur_mode->reg_list;
@@ -2083,28 +2124,37 @@ static int imx664_start_streaming(struct imx664 *imx664)
 		return ret;
 	}
 
-	/* Setup handler will write actual exposure and gain */
+	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
 	ret = __v4l2_ctrl_handler_setup(imx664->sd.ctrl_handler);
 	if (ret) {
 		dev_err(imx664->dev, "fail to setup handler (%d)", ret);
 		return ret;
 	}
 
-	/* Start streaming */
+	/* Restore any control values corrupted by handler_setup side effects
+	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
+	hailo_ctrl_snapshot_restore(&snap);
+
+	/* Standby cancel */
 	ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
 			       IMX664_MODE_STREAMING);
 	if (ret) {
-		dev_err(imx664->dev, "fail to start streaming");
+		dev_err(imx664->dev, "Failed to cancel standby on stream start: %d\n", ret);
 		return ret;
 	}
-	/* Start streaming */
-	ret = imx664_write_reg(imx664, 0x3002, 1, 0);
+
+	/* Wait 24ms for internal regulator stabilization */
+	usleep_range(24000, 25000);
+
+	/* Master mode start */
+	ret = imx664_write_reg(imx664, IMX664_REG_XMSTA, 1, 0);
 	if (ret) {
-		dev_err(imx664->dev, "fail to start streaming");
+		dev_err(imx664->dev, "Failed to start master mode on stream start: %d\n", ret);
 		return ret;
 	}
 
 	imx664->wdr_priming_val = -1;
+	imx664->custom_rhs1_priming_val = -1;
 
 	dev_info(imx664->dev, "imx664: stream started (%s)", imx664_get_mode_name(imx664));
 	return 0;
@@ -2118,13 +2168,22 @@ static int imx664_start_streaming(struct imx664 *imx664)
  */
 static int imx664_stop_streaming(struct imx664 *imx664)
 {
-	int ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
+	int ret;
+
+	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+	ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
 				IMX664_MODE_STANDBY);
 	if (ret) {
-		dev_err(imx664->dev, "Failed to stop stream (set STANDBY to 1): %d\n", ret);
+		dev_err(imx664->dev, "Failed to set standby on stream stop: %d\n", ret);
 		return ret;
 	}
-	
+
+	ret = imx664_write_reg(imx664, IMX664_REG_XMSTA, 1, 1);
+	if (ret) {
+		dev_err(imx664->dev, "Failed to stop master mode on stream stop: %d\n", ret);
+		return ret;
+	}
+
 	dev_info(imx664->dev, "imx664: stream stopped");
 	return 0;
 }
@@ -2223,7 +2282,23 @@ imx664_find_nearest_frame_interval_mode(struct imx664 *imx664,
 		}
 	}
 
-	if(!found){
+	if (!found) {
+		/*
+		 * No mode matches curr_fmt (width/height/code). This can happen when
+		 * the pipeline sets a format that doesn't exactly match our mode list,
+		 * or when s_frame_interval is called before format is fully applied.
+		 * Fall back to current mode so the caller gets success and the
+		 * actual interval; no mode change is performed.
+		 */
+		if (imx664->cur_mode) {
+			*mode = imx664->cur_mode;
+			dev_info(imx664->dev,
+				 "s_frame_interval: no mode matched curr_fmt, using cur_mode %ux%u %u/%u fps\n",
+				 imx664->cur_mode->width, imx664->cur_mode->height,
+				 imx664->cur_mode->frame_interval.denominator,
+				 imx664->cur_mode->frame_interval.numerator);
+			return 0;
+		}
 		return -ENOTSUPP;
 	}
 
@@ -2419,6 +2494,9 @@ static int imx664_priming_apply(struct imx664 *imx664, int toggle_type)
 		return ret;
 	}
 
+	/* Custom RHS1 priming apply (if it's -1, it means no custom value was set, so skip) */
+	/* Note: custom RHS1 write not yet implemented for this sensor */
+
 	return 0;
 }
 
@@ -2505,6 +2583,9 @@ static int imx664_power_on(struct device *dev)
 
 	gpiod_set_value_cansleep(imx664->reset_gpio, 1);
 
+	/* XCLR high to INCK start must be >= 1us */
+	udelay(2);
+
 	ret = clk_prepare_enable(imx664->inclk);
 	if (ret) {
 		dev_err(imx664->dev, "fail to enable inclk");
@@ -2552,7 +2633,7 @@ static int imx664_init_controls(struct imx664 *imx664)
 	struct ExposureLimits_t limits;
 	int ret;
 
-	const int num_ctrls = 13;
+	const int num_ctrls = 14;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, num_ctrls);
 	if (ret)
 		return ret;
@@ -2609,6 +2690,7 @@ static int imx664_init_controls(struct imx664 *imx664)
 
 	/* Initialize priming ctrls */
 	imx664_setup_custom_ctrl(imx664, &imx664->wdr_priming_ctrl, IMX664_CID_WDR_PRIMING);
+	imx664_setup_custom_ctrl(imx664, &imx664->custom_rhs1_priming_ctrl, IMX664_CID_CUSTOM_RHS1_PRIMING);
 
 	imx664->vblank_ctrl =
 		v4l2_ctrl_new_std(ctrl_hdlr, &imx664_ctrl_ops, V4L2_CID_VBLANK,
@@ -2724,6 +2806,7 @@ static int imx664_probe(struct i2c_client *client)
 	imx664->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
 	imx664->wdr_priming_val = -1;
+	imx664->custom_rhs1_priming_val = -1;
 	imx664->fast_toggle_state = FAST_TOGGLE_NONE;
 
 	/* Initialize source pad */

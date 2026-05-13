@@ -20,6 +20,7 @@
 #include <linux/pinctrl/pinconf-generic.h>
 #include "../core.h"
 #include "../pinctrl-utils.h"
+#include <linux/soc/hailo/hailo15-evb-cpld.h>
 
 #define H15_PINMUX_PIN_COUNT (32)
 #define H15_GENERAL_PIN_COUNT (44)
@@ -145,21 +146,11 @@ struct hailo15_pinctrl {
 	struct pinctrl_pin_desc pins[H15_PINCTRL_PIN_COUNT];
 
 	/*
-	 * i2c client of the EVB CPLD
+	 * Handle to the EVB CPLD driver (NULL if no CPLD present).
 	*/
-	struct i2c_client *pinctrl_cpld_i2c_client;
-
-	/*
-	 * The value of the board config that need to be set to the CPLD.
-	*/
-	volatile uint8_t board_config;
+	struct hailo15_evb_cpld *cpld;
 
 	struct pinctrl_desc pctl_desc;
-};
-
-struct hailo15_pinctrl_data {
-	const struct pinctrl_desc *pctl_desc;
-	int (*init)(struct hailo15_pinctrl *pinctrl, struct device_node *node);
 };
 
 struct h15_pin_set_modes {
