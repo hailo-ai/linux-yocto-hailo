@@ -27,6 +27,7 @@
 #define VIDEO_PIPELINE_STATE_GET         _IOR('D', BASE_VIDIOC_PRIVATE + 7, int)
 #define VIDEO_FAST_TOGGLE                _IOR('D', BASE_VIDIOC_PRIVATE + 8, int)
 #define VIDEO_FAST_TOGGLE_PRIMING        _IOR('D', BASE_VIDIOC_PRIVATE + 9, int)
+#define VIDEO_EVENT_COMPLETE             _IO('D', BASE_VIDIOC_PRIVATE + 10)
 
 // ISP (type = 'I') ioctls
 #define ISPIOC_V4L2_READ_REG            _IOWR('I', BASE_VIDIOC_PRIVATE + 0, struct isp_reg_data)
@@ -44,7 +45,8 @@
 #define ISPIOC_V4L2_GET_NULL_ADDR       _IOR('I', BASE_VIDIOC_PRIVATE + 11, uint32_t)
 #define ISPIOC_V4L2_SET_ENABLE_SP2_ERR  _IOWR('I', BASE_VIDIOC_PRIVATE + 12, bool)
 #define ISPIOC_V4L2_SET_MCM_MODE_PRIMING _IOWR('I', BASE_VIDIOC_PRIVATE + 13, uint32_t)
-#define ISPIOC_V4L2_SET_HDR_COMPRESSION  _IOWR('I', BASE_VIDIOC_PRIVATE + 14, uint32_t)
+#define ISPIOC_V4L2_SET_HDR_COMPRESSION  _IOWR('I', BASE_VIDIOC_PRIVATE + 14, struct hdr_comp_ctrl)
+#define ISPIOC_V4L2_EVENT_COMPLETE       _IO('I', BASE_VIDIOC_PRIVATE + 15)
 
 // V4L2 (type = 'V') ioctls
 #define HAILO15_PAD_REQBUFS             _IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_reqbufs)
@@ -568,6 +570,8 @@ struct hailo15_event_resource {
 	uint64_t phy_addr;
 	void *virt_addr;
 	uint32_t size;
+	wait_queue_head_t wait_q;
+	uint8_t kernel_seq;
 };
 
 struct hailo15_subdev_list {

@@ -135,6 +135,7 @@ static unsigned int fe_register_index;
 
 
 // forward declaration
+static void isp_fe_clear_post_fe_writes(struct vvcam_fe_dev *dev);
 static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev);
 static int isp_fe_clean_wo_bits(struct vvcam_fe_dev *dev);
 static int isp_fe_read_vdid_reg_from_full_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t *val);
@@ -471,18 +472,17 @@ bool isp_fe_is_non_fe_control_register(uint32_t offset)
 }
 EXPORT_SYMBOL(isp_fe_is_non_fe_control_register);
 
-bool isp_fe_is_fe_control_register(uint32_t offset)
+static bool isp_fe_is_fe_control_register(uint32_t offset)
 {
 	// @hailo - reading fe_ctrl is only for debugging purposes
-	return FE_MIS == offset || FE_ICR == offset || FE_CTRL == offset;
+	return FE_MIS == offset || FE_ICR == offset || FE_CTRL == offset ||
+	       FE_ADDR_INTERVENE == offset;
 }
-EXPORT_SYMBOL(isp_fe_is_fe_control_register);
 
-bool isp_fe_is_control_register(uint32_t offset)
+static bool isp_fe_is_control_register(uint32_t offset)
 {
 	return isp_fe_is_non_fe_control_register(offset) || isp_fe_is_fe_control_register(offset);
 }
-EXPORT_SYMBOL(isp_fe_is_control_register);
 
 bool isp_fe_is_vdid_register(uint32_t offset)
 {
@@ -725,54 +725,6 @@ static void isp_fe_mcm_busid_filter(struct isp_fe_context *fe, u32 offset, u32 *
 }
 
 
-static int isp_fe_handle_pre_transaction(struct vvcam_fe_dev *dev, uint8_t vdid)
-{
-	int ret;
-	struct isp_fe_context *fe = &dev->fe;
-
-	reinit_completion(&fe->fe_completion);
-
-	// @hailo - we have logic that prevents register writes while an FE transaction is in progress
-	// disable mi_imsc so we don't handle interrupts while in fe transaction
-	// also disable mi_imsc in the cmd buffer because the FE transaction will write the mask back
-	/* make sure mask writes from cmd buffer that were not written to HW are also saved */
-	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, 0);
-	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, &fe->saved_mi_imsc);
-	if (ret) {
-		pr_err("%s: failed to read MI_IMSC, ret=%d\n", __func__, ret);
-		return ret;
-	}
-	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, 0);
-	if (ret) {
-		pr_err("%s: failed to write MI_IMSC, ret=%d\n", __func__, ret);
-		return ret;
-	}
-
-	// disable isp_imsc so we don't handle interrupts while in fe transaction
-	// also disable isp_imsc in the cmd buffer because the FE transaction will write the mask back
-	/* make sure mask writes from cmd buffer that were not written to HW are also saved */
-	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, 0);
-	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, &fe->saved_isp_imsc);
-	if (ret) {
-		pr_err("%s: failed to read ISP_IMSC, ret=%d\n", __func__, ret);
-		return ret;
-	}
-	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, 0);
-	if (ret) {
-		pr_err("%s: failed to write ISP_IMSC, ret=%d\n", __func__, ret);
-		return ret;
-	}
-
-	// set FE transaction is active while isp_irq is diabled
-	disable_irq(fe->isp_irq);
-	atomic_set(&dev->fe_transaction_active, 1);
-	enable_irq(fe->isp_irq);
-
-	fe->state = ISP_FE_STATE_RUNNING;
-
-	return 0;
-}
-
 static void isp_fe_log_dma_info(struct vvcam_fe_dev *dev, uint8_t vdid)
 {
 	struct isp_fe_context *fe = &dev->fe;
@@ -808,9 +760,25 @@ static void isp_fe_log_dma_info(struct vvcam_fe_dev *dev, uint8_t vdid)
 #endif
 }
 
-static int isp_fe_wait_transaction_handle_post(struct vvcam_fe_dev *dev, uint8_t vdid)
+static void isp_fe_select_ahb_bus(struct vvcam_fe_dev *dev)
+{
+	isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_ctrl, 0);
+	atomic_set(&dev->fe_cmd_buf_bus_active, 0);
+}
+
+static void isp_fe_select_command_buffer_bus(struct vvcam_fe_dev *dev)
+{
+	atomic_set(&dev->fe_cmd_buf_bus_active, 1);
+	isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_ctrl, 1);
+}
+
+static int isp_fe_perform_transaction(struct vvcam_fe_dev *dev, uint8_t vdid,
+				      struct isp_fe_cmd_buffer_t *cmd_buf)
 {
 	struct isp_fe_context *fe = &dev->fe;
+	u32 cmdbuf_mi_imsc, hw_mi_imsc, restore_mi_imsc;
+	u32 cmdbuf_isp_imsc, hw_isp_imsc, restore_isp_imsc;
+	u32 fe_mis, fe_ris, fe_imsc;
 	int ret;
 
 	if (vdid >= fe->vdid_num) {
@@ -818,47 +786,126 @@ static int isp_fe_wait_transaction_handle_post(struct vvcam_fe_dev *dev, uint8_t
 		return -EINVAL;
 	}
 
-	// Wait for completion before returning...
-	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-		WARN(1, "fe transaction timeout! FE is stuck\n");
-		return -ETIMEDOUT;
+	reinit_completion(&fe->fe_completion);
+
+	/* Save interrupt masks from both cmd buffer and HW before touching anything. */
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, &cmdbuf_mi_imsc);
+	if (ret) {
+		pr_err("%s: failed to read MI_IMSC, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, &cmdbuf_isp_imsc);
+	if (ret) {
+		pr_err("%s: failed to read ISP_IMSC, ret=%d\n", __func__, ret);
+		return ret;
 	}
 
+	hw_mi_imsc = isp_fe_raw_read_reg(dev, VI_MI_IMSC_OFFSET);
+	hw_isp_imsc = isp_fe_raw_read_reg(dev, VI_ISP_IMSC_OFFSET);
+
+	/* Until DMA succeeds, restore original HW masks on error */
+	restore_mi_imsc = hw_mi_imsc;
+	restore_isp_imsc = hw_isp_imsc;
+
+	/*
+	 * Disable non-FE ISP interrupt masks (mi_imsc/isp_imsc) in HW and cmd buffer.
+	 * FE needs bus selector to select command buffer when we start a transaction,
+	 * however this prevents non-FE register writes, so handling non-FE interrupts
+	 * cannot work until bus is restored to AHB.
+	 * We need to also disable the masks in the command buffer, otherwise
+	 * the FE will unmask them.
+	 * The masks will be restored (both to HW and cmd buffer) after the bus is restored to AHB.
+	 */
+	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, 0);
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, 0);
+	if (ret) {
+		pr_err("%s: failed to write MI_IMSC, ret=%d\n", __func__, ret);
+		goto err_restore;
+	}
+
+	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, 0);
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, 0);
+	if (ret) {
+		pr_err("%s: failed to write ISP_IMSC, ret=%d\n", __func__, ret);
+		goto err_restore;
+	}
+
+	/* disable isp_irq across bus switch.
+	   this ensures no non-FE ISP IRQ is being handled with cmd buffer bus */
+	disable_irq(fe->isp_irq);
+	isp_fe_select_command_buffer_bus(dev);
+	enable_irq(fe->isp_irq);
+
+	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, cmd_buf->cmd_dma_addr);
+#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
+	fe->last_t_ns = ktime_get_ns();
+#endif
+
+	/* Mark running just before triggering FE DMA start */
+	fe->state = ISP_FE_STATE_RUNNING;
+
+	/* Trigger FE DMA */
+	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start,
+				     FE_DMA_START_BIT | cmd_buf->curr_cmd_num);
+
+	/* Wait for FE DMA completion */
+	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
+		isp_fe_select_ahb_bus(dev);
+		fe_mis = isp_fe_raw_read_reg(dev, fe->general_ctrl.fe_mis);
+		fe_ris = isp_fe_raw_read_reg(dev, FE_RIS);
+		fe_imsc = isp_fe_raw_read_reg(dev, fe->general_ctrl.fe_imsc);
+		WARN(1, "fe transaction timeout! FE is stuck! FE_MIS=%x, FE_RIS=%x, FE_IMSC=%x\n", fe_mis, fe_ris, fe_imsc);
+		ret = -ETIMEDOUT;
+		goto err_restore;
+	}
+
+	/* DMA succeeded, restore cmdbuf masks on error */
+	restore_mi_imsc = cmdbuf_mi_imsc;
+	restore_isp_imsc = cmdbuf_isp_imsc;
+
+	isp_fe_select_ahb_bus(dev);
 	isp_fe_log_dma_info(dev, vdid);
 	ret = isp_fe_clean_wo_bits(dev);
 	if (ret) {
 		isp_err("%s: failed to clean wo bits, ret=%d\n", __func__, ret);
-		return ret;
+		goto err_restore;
 	}
 	fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
 
-	atomic_set(&dev->fe_transaction_active, 0);
-
 	isp_fe_perform_post_fe_writes(dev);
 
-	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, fe->saved_mi_imsc);
-	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, fe->saved_isp_imsc);
+	/* Restore interrupt masks in HW */
+	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, cmdbuf_mi_imsc);
+	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, cmdbuf_isp_imsc);
 
-	// restore mi_imsc from command buffer
-	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, fe->saved_mi_imsc);
+	/* Restore interrupt masks in command buffer */
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, cmdbuf_mi_imsc);
 	if (ret) {
 		pr_err("%s: failed to write MI_IMSC, ret=%d\n", __func__, ret);
-		return ret;
+		goto err_restore;
 	}
-	fe->saved_mi_imsc = 0;
 
-	// restore isp_imsc from command buffer
-	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, fe->saved_isp_imsc);
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, cmdbuf_isp_imsc);
 	if (ret) {
 		pr_err("%s: failed to write ISP_IMSC, ret=%d\n", __func__, ret);
-		return ret;
+		goto err_restore;
 	}
-	fe->saved_isp_imsc = 0;
 
 	fe->prev_vdid = vdid;
 	fe->state = ISP_FE_STATE_WAITING;
 
 	return 0;
+
+err_restore:
+	isp_fe_select_ahb_bus(dev);
+	isp_fe_clear_post_fe_writes(dev);
+	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, restore_mi_imsc);
+	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, restore_isp_imsc);
+	/* Best-effort cmd buf restore — don't propagate errors */
+	isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, cmdbuf_mi_imsc);
+	isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, cmdbuf_isp_imsc);
+	fe->state = ISP_FE_STATE_ERROR;
+	return ret;
 }
 
 static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_cmd_buffer_t *refresh_regs)
@@ -871,7 +918,7 @@ static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_
 
 	isp_info("enter %s\n", __func__);
 
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0);
+	isp_fe_select_ahb_bus(dev);
 
 #if defined(ISP_MIV2)
 	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_mcm_bus_id, &miv2_mcm_bus_id);
@@ -888,27 +935,14 @@ static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.mi_mcm_bus_id, miv2_mcm_bus_id);	//0x0DCABD1E
 #endif
 
-	ret = isp_fe_handle_pre_transaction(dev, vdid);
-	if (ret) {
-		pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
-		return ret;
-	}
-
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_imsc, 0x00000001);
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, refresh_regs->cmd_dma_addr);
+	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_imsc, FE_INT_ALL);
 	isp_info("refresh_regs->cmd_dma_addr=%08llx\n", refresh_regs->cmd_dma_addr);
 	isp_info("refresh_regs->curr_cmd_num=%08x\n", refresh_regs->curr_cmd_num);
 	fe->curr_vdid = vdid;
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-	fe->last_t_ns = ktime_get_ns();
-#endif
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | refresh_regs->curr_cmd_num);
 
-	return isp_fe_wait_transaction_handle_post(dev, vdid);
+	return isp_fe_perform_transaction(dev, vdid, refresh_regs);
 }
 
-/*call when irq*/
 static int isp_fe_writeback_status(struct vvcam_fe_dev *dev)
 {//3A statics HIST64
 	uint32_t i, reg_index, offset, reg_val;
@@ -1053,6 +1087,15 @@ static int isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint32_t offs
 	return 0;
 }
 
+static void isp_fe_clear_post_fe_writes(struct vvcam_fe_dev *dev)
+{
+	struct isp_fe_context *fe = &dev->fe;
+	int i;
+
+	for (i = 0; i < ISP_FE_POST_OFFSET_MAX; i++)
+		fe->post_fe_modify_reg_offset[i] = fe->post_fe_modify_reg_value[i] = -1;
+}
+
 static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev)
 {
 	struct isp_fe_context *fe = &dev->fe;
@@ -1064,10 +1107,9 @@ static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev)
 			reg = isp_fe_raw_read_reg(dev, fe->post_fe_modify_reg_offset[i]);
 			reg |= fe->post_fe_modify_reg_value[i];
 			isp_fe_raw_write_reg(dev, fe->post_fe_modify_reg_offset[i], reg);
-
-			fe->post_fe_modify_reg_offset[i] = fe->post_fe_modify_reg_value[i] = -1;
 		}
 	}
+	isp_fe_clear_post_fe_writes(dev);
 }
 
 static int __isp_fe_write_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
@@ -1354,12 +1396,6 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 			return 0;
 		}
 
-		ret = isp_fe_handle_pre_transaction(dev, vdid);
-		if (ret) {
-			pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
-			return ret;
-		}
-
 		part_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
 #if 0
 		if (part_cmd_num < ISP_FE_REG_PART_REFRESH_NUM - 1) {
@@ -1380,25 +1416,15 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 			isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_part_regs);
 #endif
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr);
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-			fe->last_t_ns = ktime_get_ns();
-#endif
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
+			return isp_fe_perform_transaction(dev, vdid,
+							  &fe->fe_buff[vdid].refresh_part_regs);
 		} else {	//refresh the whole registers
 			//config dma
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 			isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
 #endif
-
-			//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-			fe->last_t_ns = ktime_get_ns();
-#endif
-			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
+			return isp_fe_perform_transaction(dev, vdid,
+							  &fe->fe_buff[vdid].refresh_full_regs);
 		}
 	} else {
 		/* VDID is changing - writeback current status regs before switching */
@@ -1411,29 +1437,12 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 		fe->curr_vdid = fe_switch->next_vdid[0];
 		vdid = fe_switch->next_vdid[0];
 
-		ret = isp_fe_handle_pre_transaction(dev, vdid);
-		if (ret) {
-			pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
-			return ret;
-		}
-
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 		isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
 #endif
-
-		//refresh the whole registers
-		//config dma
-		//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->refresh_full_regs.curr_cmd_num);
-
-		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
-		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-		fe->last_t_ns = ktime_get_ns();
-#endif
-		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
+		return isp_fe_perform_transaction(dev, vdid,
+						  &fe->fe_buff[vdid].refresh_full_regs);
 	}
-
-	return isp_fe_wait_transaction_handle_post(dev, vdid);
 }
 
 static int __isp_fe_set_params(struct vvcam_fe_dev *dev, struct isp_fe_params_t *params)
@@ -1605,7 +1614,6 @@ static int __isp_fe_reset(struct vvcam_fe_dev *dev)
 {
 	struct isp_fe_context *fe = &dev->fe;
 	int vdid = 0;
-	int i = 0;
 	uint32_t isp_ctrl;
 
 	isp_info("enter %s\n", __func__);
@@ -1624,15 +1632,12 @@ static int __isp_fe_reset(struct vvcam_fe_dev *dev)
 		fe->running_num = 0;
 	}
 
-	atomic_set(&dev->fe_transaction_active, 0);
+	atomic_set(&dev->fe_cmd_buf_bus_active, 0);
 
 	//the default id value is set to invaild.
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->curr_vdid = VIV_INVALID_VDID;
-	for (i = 0; i < ISP_FE_POST_OFFSET_MAX; i++) {
-		fe->post_fe_modify_reg_offset[i] = -1;
-		fe->post_fe_modify_reg_value[i] = -1;
-	}
+	isp_fe_clear_post_fe_writes(dev);
 	memset(&(fe->general_ctrl), 0, sizeof(struct isp_fe_reg_t));
 
 	if (fe->fe_buff) {
@@ -1670,7 +1675,6 @@ static int __isp_fe_reset(struct vvcam_fe_dev *dev)
 
 int isp_fe_init(struct vvcam_fe_dev *dev)
 {
-	int i = 0;
 	struct isp_fe_context *fe = &dev->fe;
 	isp_info("enter %s\n", __func__);
 
@@ -1698,10 +1702,7 @@ int isp_fe_init(struct vvcam_fe_dev *dev)
 
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->state = ISP_FE_STATE_INIT;
-	for (i = 0; i < ISP_FE_POST_OFFSET_MAX; i++) {
-		fe->post_fe_modify_reg_offset[i] = -1;
-		fe->post_fe_modify_reg_value[i] = -1;
-	}
+	isp_fe_clear_post_fe_writes(dev);
 
 	return 0;
 
@@ -1760,23 +1761,12 @@ int isp_fe_destory(struct vvcam_fe_dev *dev)
 
 /* === IRQ context ops: no mutex, no state checks === */
 
-static int isp_fe_ops_irq_read_fe_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
-{
-	if (WARN(!in_interrupt(), "%s called in non-interrupt context", __func__))
-		return -EINVAL;
-	if (WARN(!isp_fe_is_fe_control_register(offset), "%s called with invalid FE control register offset: 0x%08x", __func__, offset))
-		return -EINVAL;
-	*val = isp_fe_raw_read_reg(dev, offset);
-	return 0;
-}
 
 static int isp_fe_ops_irq_read_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
 {
 	if (WARN(!in_interrupt(), "%s called in non-interrupt context", __func__))
 		return -EINVAL;
-	if (WARN(!isp_fe_is_control_register(offset), "%s called with invalid control register offset: 0x%08x", __func__, offset))
-		return -EINVAL;
-	if (WARN(atomic_read(&dev->fe_transaction_active), "%s called with active FE transaction", __func__))
+	if (WARN(!isp_fe_is_non_fe_control_register(offset), "%s called with invalid non-FE control register offset: 0x%08x", __func__, offset))
 		return -EINVAL;
 	*val = isp_fe_raw_read_reg(dev, offset);
 	return 0;
@@ -1788,7 +1778,7 @@ static int isp_fe_ops_irq_write_control_reg(struct vvcam_fe_dev *dev, uint32_t o
 		return -EINVAL;
 	if (WARN(!isp_fe_is_non_fe_control_register(offset), "%s called with invalid non-FE control register offset: 0x%08x", __func__, offset))
 		return -EINVAL;
-	if (WARN(atomic_read(&dev->fe_transaction_active), "%s called with active FE transaction", __func__))
+	if (WARN(atomic_read(&dev->fe_cmd_buf_bus_active), "%s called while FE command buffer bus is active", __func__))
 		return -EINVAL;
 	isp_fe_raw_write_reg(dev, offset, val);
 	return 0;
@@ -1962,8 +1952,7 @@ static int isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_sw
 	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
 
 	mutex_lock(&pdriver_dev->vvmutex);
-	if (dev->fe.state != ISP_FE_STATE_READY &&
-	    dev->fe.state != ISP_FE_STATE_WAITING) {
+	if (dev->fe.state != ISP_FE_STATE_WAITING) {
 		isp_err("%s: called in invalid state (%s)\n", __func__, isp_fe_state_to_str(dev->fe.state));
 		ret = -EINVAL;
 		goto unlock;
@@ -2049,28 +2038,54 @@ unlock:
 	return ret;
 }
 
-static int vvcam_fe_dma_irq(struct vvcam_fe_dev *dev)
+static int vvcam_fe_dma_irq(struct vvcam_fe_dev *dev, u32 *isp_fe_mis, bool *skip_other_irqs)
 {
-	u32 isp_fe_mis;
+	u32 addr, mask;
 
-	if (WARN_ONCE((dev->fe.state == ISP_FE_STATE_INIT || dev->fe.state == ISP_FE_STATE_EXIT),
-				  "fe dma irq handler called in unexpected state (%s)\n", isp_fe_state_to_str(dev->fe.state))) {
-		return -EINVAL;
-	}
+	*isp_fe_mis = isp_fe_raw_read_reg(dev, FE_MIS);
+	*skip_other_irqs = false;
 
-	isp_fe_mis = isp_fe_raw_read_reg(dev, dev->fe.general_ctrl.fe_mis);
-	if (isp_fe_mis) {
-		isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_icr, isp_fe_mis);
-		if (WARN_ONCE(dev->fe.state != ISP_FE_STATE_RUNNING, "fe dma irq fired in unexpected state (%s)\n", isp_fe_state_to_str(dev->fe.state))) {
-			return -EINVAL;
+	if (*isp_fe_mis) {
+		if (*isp_fe_mis & FE_INT_ADDR_INTERVENE) {
+			mask = isp_fe_raw_read_reg(dev, FE_IMSC);
+			mask &= ~FE_INT_ADDR_INTERVENE;
+			isp_fe_raw_write_reg(dev, FE_IMSC, mask);
+			// FE_ICR write will cause this register to be cleared, so we must read it before the FE_ICR write.
+			addr = isp_fe_raw_read_reg(dev, FE_ADDR_INTERVENE) & 0xFFFF;
+			pr_err_ratelimited("FE address intervene detected! Unexpected AHB register access at offset 0x%04x during FE transaction\n",
+				addr);
 		}
-		if (isp_fe_mis & 0x01) {
+		if (*isp_fe_mis & FE_INT_ISP_VAL_INTERVENE) {
+			mask = isp_fe_raw_read_reg(dev, FE_IMSC);
+			mask &= ~FE_INT_ISP_VAL_INTERVENE;
+			isp_fe_raw_write_reg(dev, FE_IMSC, mask);
+			pr_err_ratelimited("FE ISP valid data intervene detected! Unexpected data at ISP input during FE transaction\n");
+		}
+		isp_fe_raw_write_reg(dev, FE_ICR, *isp_fe_mis);
+		*skip_other_irqs = true;
+		if (*isp_fe_mis & FE_INT_CFG_END) {
+			if (WARN_ONCE(dev->fe.state != ISP_FE_STATE_RUNNING,
+			      "fe dma irq fired in unexpected state (%s)\n",
+			      isp_fe_state_to_str(dev->fe.state)))
+				return -EINVAL;
 #if VIV_ISP_FE_DMA_TIME_DEBUG == 1
 			dev->fe.last_t_end_ns = ktime_get_ns();
 #endif
-			isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_ctrl, 0);
 			complete_all(&dev->fe.fe_completion);
 		}
+	} else if (atomic_read(&dev->fe_cmd_buf_bus_active)) {
+		WARN_ONCE(1, "ISP IRQ while FE command buffer bus is active and no FE interrupt — disabling ISP IRQ\n");
+		/*
+		 * The FE driver is disabling all non-FE interrupts before
+		 * setting the command bus active. Thus this scenario cannot
+		 * happen, but if despite that we somehow did reach a non-FE
+		 * interrupt while the command bus is active, then we are
+		 * guaranteed an interrupt storm. We prefer to disable the
+		 * ISP interrupt completely over an interrupt storm.
+		 */
+		disable_irq_nosync(dev->fe.isp_irq);
+		*skip_other_irqs = true;
+		return -EIO;
 	}
 
 	return 0;
@@ -2318,7 +2333,6 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 
 	pfe_dev->fe_get_vdid = isp_fe_get_vdid;
 	pfe_dev->fe_dma_irq = vvcam_fe_dma_irq;
-	pfe_dev->irq_read_fe_control_reg = isp_fe_ops_irq_read_fe_control_reg;
 	pfe_dev->irq_read_control_reg = isp_fe_ops_irq_read_control_reg;
 	pfe_dev->irq_write_control_reg = isp_fe_ops_irq_write_control_reg;
 	pfe_dev->read_control_reg = isp_fe_read_control_reg;

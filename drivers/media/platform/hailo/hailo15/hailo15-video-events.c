@@ -22,9 +22,7 @@
 #include <trace/events/hailo15-video-events-traces.h>
 
 
-#define MAX_WAIT_ITERATIONS 200000
-#define WAIT_MICRO_SEC_BOTTOM_RANGE 5
-#define WAIT_MICRO_SEC_TOP_RANGE 10
+#define EVENT_WAIT_TIMEOUT_MS 2000
 
 
 static void trace_hailo_video_event_fmt(struct video_device *vdev, char* fmt, ...)
@@ -81,18 +79,26 @@ static int hailo15_video_event_wait_complete(
 	uint8_t complete_idx)
 {
 	struct hailo15_video_event_pkg *event_shm;
-	int i = 0;
+	int ret;
 
 	event_shm = event_resource->virt_addr;
-	for (i = 0; i < MAX_WAIT_ITERATIONS; i++) {
-		usleep_range(WAIT_MICRO_SEC_BOTTOM_RANGE,
-				 WAIT_MICRO_SEC_TOP_RANGE);
-		if (event_shm->complete == complete_idx)
-			return 0;
-	}
 
-	event_shm->complete++;
-	pr_warn("%s - return EAGAIN\n", __func__);
+	/* Fast path: daemon may have already completed before we check */
+	if ((int8_t)(event_shm->complete - complete_idx) >= 0)
+		return 0;
+
+	/* Sleep until daemon wakes us via VIDEO_EVENT_COMPLETE ioctl,
+	 * or until timeout. The condition re-checks shared memory.
+	 * Use >= (via signed modular arithmetic) so that belated acks
+	 * for previously timed-out events don't cause false matches. */
+	ret = wait_event_timeout(event_resource->wait_q,
+		(int8_t)(event_shm->complete - complete_idx) >= 0,
+		msecs_to_jiffies(EVENT_WAIT_TIMEOUT_MS));
+
+	if (ret > 0)
+		return 0;	/* woken by daemon, condition met */
+	pr_warn("%s - return EAGAIN (timeout after %d ms)\n",
+		__func__, EVENT_WAIT_TIMEOUT_MS);
 	return -EAGAIN;
 }
 
@@ -104,7 +110,6 @@ int hailo15_video_post_event(struct video_device *vdev,
 	struct v4l2_event event;
 	struct hailo15_video_event_pkg_head *event_data;
 	struct hailo15_video_event_pkg *event_shm;
-	uint8_t cur_complete;
 	struct hailo15_video_node *vid_node = \
 		container_of(event_resource, struct hailo15_video_node, event_resource);
 	int ret = 0;
@@ -136,12 +141,12 @@ int hailo15_video_post_event(struct video_device *vdev,
 
 		mutex_lock(&event_resource->event_lock);
 		event_shm->result = 0;
-		cur_complete = event_shm->complete;
 
 		if (data) {
 			if (data_size > 0 && data_size <= HAILO15_EVENT_RESOURCE_DATA_SIZE) {
+				uint8_t saved_complete = event_shm->complete;
 				memset(event_shm, 0, event_resource->size);
-				event_shm->complete = cur_complete;
+				event_shm->complete = saved_complete;
 				event_data->data_size = data_size;
 				memcpy(event_shm->data, data, data_size);
 			} else {
@@ -154,9 +159,10 @@ int hailo15_video_post_event(struct video_device *vdev,
 			}
 		}
 
+		event_resource->kernel_seq++;
 		v4l2_event_queue(vdev, &event);
 		ret = hailo15_video_event_wait_complete(event_resource,
-							(uint8_t)(cur_complete + 1));
+							event_resource->kernel_seq);
 		if (ret) {
 			pr_err("%s: post event id: %d timeout\n", __func__,
 				   event_meta.event_id);

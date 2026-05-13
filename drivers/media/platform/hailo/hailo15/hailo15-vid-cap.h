@@ -44,13 +44,13 @@ struct hailo15_video_node {
 	struct hailo15_event_resource event_resource;
 
 	struct mutex qlock;
-	struct list_head buf_queue;
+	struct list_head buf_queue; /* protected by qlock*/
 	bool skip_first_list_entry;
 
 	struct vb2_queue queue;
 	struct mutex buffer_mutex;
 
-	struct hailo15_buffer *prev_buf;
+	struct hailo15_buffer *prev_buf; /* protected by qlock*/
 
 	struct hailo15_buf_ctx buf_ctx;
 	struct mutex ioctl_mutex;
@@ -67,6 +67,7 @@ struct hailo15_video_node {
 
 	enum fast_toggle_state fast_toggle_state;
 	struct hailo15_buffer *fast_toggle_priming_buf; // on fast toggle, one buffer must be available immediately - this is it
+	bool drop_prev_buf; // fast toggle: drop stale prev_buf instead of returning to userspace
 };
 
 struct hailo15_vid_cap_device {

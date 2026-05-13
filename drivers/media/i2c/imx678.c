@@ -328,7 +328,11 @@ struct imx678 {
 	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
+	struct v4l2_ctrl *hcg_sef2_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
 	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
@@ -2824,8 +2828,41 @@ struct v4l2_ctrl_config imx678_custom_ctrls[] = {
 		.ops = &imx678_ctrl_ops,
 		.id = IMX678_CID_HCG,
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "hcg",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_LEF,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_lef",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_SEF1,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef1",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_SEF2,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef2",
 		.step = IMX678_HCG_STEP,
 		.min = IMX678_HCG_MIN,
 		.max = IMX678_HCG_MAX,
@@ -3291,6 +3328,43 @@ release_hold:
 	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
 	return ret;
 }
+
+static int imx678_set_hcg_lef(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx678_set_hcg_sef1(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx678_set_hcg_sef2(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF2, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
 /**
  * imx678_update_exp_gain() - Set updated exposure and gain
  * @imx678: pointer to imx678 device
@@ -3500,6 +3574,9 @@ static void imx678_set_exp_activity(struct imx678 *imx678)
 	v4l2_ctrl_activate(imx678->sef2.exp_ctrl, sef2);
 	v4l2_ctrl_activate(imx678->rhs2_ctrl, sef2);
 	v4l2_ctrl_activate(imx678->shr2_ctrl, sef2);
+
+	v4l2_ctrl_activate(imx678->hcg_sef1_ctrl, sef1);
+	v4l2_ctrl_activate(imx678->hcg_sef2_ctrl, sef2);
 }
 
 static int imx678_set_hdr_mode(struct imx678 *imx678, bool enable)
@@ -3729,18 +3806,54 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		break;
 	case IMX678_CID_HCG:
-		/* Set controls only if sensor is in power on state */
+		/* Global HCG: write all registers, sync per-exposure cached values.
+		 * Controls are independent (no cluster) so direct cur.val update is safe. */
+		imx678->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx678->cur_mode->dol >= 2)
+			imx678->hcg_sef1_ctrl->cur.val = ctrl->val;
+		if (imx678->cur_mode->dol >= 3)
+			imx678->hcg_sef2_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(imx678->dev))
 			return 0;
 
-		dev_dbg(imx678->dev, "Setting HCG to %u\n", ctrl->val);
-
+		dev_dbg(imx678->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx678_set_hcg_mode(imx678, ctrl->val);
-		if (ret) {
+		if (ret)
 			dev_err(imx678->dev, "Failed to set HCG mode: %d\n", ret);
-		}
 		pm_runtime_put(imx678->dev);
-    	break;
+		break;
+	case IMX678_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx678_set_hcg_lef(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG LEF: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
+	case IMX678_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx678_set_hcg_sef1(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG SEF1: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
+	case IMX678_CID_HCG_SEF2:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG SEF2 to %u\n", ctrl->val);
+		ret = imx678_set_hcg_sef2(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG SEF2: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
 	case IMX678_CID_WDR_PRIMING:
 		imx678->wdr_priming_val = ctrl->val;
 		ret = 0;
@@ -4577,7 +4690,12 @@ static int imx678_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx678 *imx678 = to_imx678(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx678->reset_gpio, 1);
 
@@ -4592,10 +4710,12 @@ static int imx678_power_on(struct device *dev)
 
 	usleep_range(18000, 20000);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 
 error_reset:
 	gpiod_set_value_cansleep(imx678->reset_gpio, 0);
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return ret;
 }
@@ -4610,10 +4730,17 @@ static int imx678_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx678 *imx678 = to_imx678(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx678->reset_gpio, 0);
 
 	clk_disable_unprepare(imx678->inclk);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -4694,8 +4821,11 @@ static int imx678_init_controls(struct imx678 *imx678)
 	imx678_setup_custom_ctrl(imx678, &imx678->vmax_ctrl, IMX678_CID_VMAX);
 	imx678_setup_custom_ctrl(imx678, &imx678->hmax_ctrl, IMX678_CID_HMAX);
 
-	/* Initialize HCG control */
+	/* Initialize HCG control cluster */
 	imx678_setup_custom_ctrl(imx678, &imx678->hcg_ctrl, IMX678_CID_HCG);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_lef_ctrl, IMX678_CID_HCG_LEF);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_sef1_ctrl, IMX678_CID_HCG_SEF1);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_sef2_ctrl, IMX678_CID_HCG_SEF2);
 
 	/* Initialize priming ctrls */
 	imx678_setup_custom_ctrl(imx678, &imx678->wdr_priming_ctrl, IMX678_CID_WDR_PRIMING);
@@ -4790,7 +4920,10 @@ static int imx678_init_controls(struct imx678 *imx678)
 	}
 
 	imx678->sd.ctrl_handler = ctrl_hdlr;
-	
+
+	/* Set initial activity state for per-exposure controls */
+	imx678_set_exp_activity(imx678);
+
 	return 0;
 }
 

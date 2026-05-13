@@ -37,6 +37,11 @@ struct isp_mcm_buf {
 	uint32_t size[3];
 };
 
+struct hdr_comp_ctrl {
+	uint32_t compression_enabled;
+	uint32_t decompression_enabled;
+};
+
 enum hailo15_sink_pads {
 	HAILO15_ISP_SINK_PAD_S0,
 	HAILO15_ISP_SINK_PAD_S1,
@@ -59,6 +64,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_SINK_PAD(int grp_id)
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
 	case HAILO15_VID_GRP_MCM_RAW_WR:
+	case HAILO15_VID_GRP_MCM_IN: // currently MCM-IN path is only in use for vdid 0 and sink pad S0.
 		return HAILO15_ISP_SINK_PAD_S0;
 	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
@@ -316,6 +322,7 @@ struct hailo15_isp_device {
 	enum isp_mcm_mode mcm_mode_priming;
 	enum fast_toggle_state fast_toggle_state;
 	bool hdr_compression_enabled;
+	bool hdr_decompression_enabled;
 };
 
 
@@ -325,7 +332,8 @@ int isp_hal_set_pad_stream(struct hailo15_isp_device *isp_dev,
 			   uint32_t pad_index, int status);
 void hailo15_isp_buffer_done(struct hailo15_isp_device *, int grp_id);
 bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format);
-void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev);
+void hailo15_config_isp_wrapper_interrupts(struct hailo15_isp_device *isp_dev);
+void hailo15_config_isp_wrapper_datapath(struct hailo15_isp_device *isp_dev);
 int hailo15_isp_is_path_enabled(struct hailo15_isp_device *, int);
 void hailo15_isp_reset_hw(struct hailo15_isp_device*);
 int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,

@@ -84,7 +84,7 @@ int hailo15_isp_read_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
 		return -EINVAL;
 
 	/* no fe case */
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		if (WARN(vdid != 0,
 			 "%s - invalid vdid %d for disabled FE\n", __func__, vdid))
 			return -EINVAL;
@@ -114,7 +114,7 @@ int hailo15_isp_read_control_reg(struct hailo15_isp_device *isp_dev,
 	might_sleep();
 
 	/* Validate register classification even without FE */
-	if (WARN(!isp_fe_is_control_register(reg),
+	if (WARN(!isp_fe_is_non_fe_control_register(reg),
 		 "hailo15_isp_read_control_reg called with non-control reg 0x%x\n", reg))
 		return -EINVAL;
 
@@ -122,7 +122,7 @@ int hailo15_isp_read_control_reg(struct hailo15_isp_device *isp_dev,
 		return -EINVAL;
 
 	/* no fe case */
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
 		return 0;
 	}
@@ -156,7 +156,7 @@ void hailo15_isp_irq_read_control_reg(struct hailo15_isp_device *isp_dev,
 		 "hailo15_isp_irq_read_control_reg called with NULL isp_dev or val\n"))
 		return;
 
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		/* no fe case */
 		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
 	} else {
@@ -168,34 +168,6 @@ void hailo15_isp_irq_read_control_reg(struct hailo15_isp_device *isp_dev,
 }
 EXPORT_SYMBOL(hailo15_isp_irq_read_control_reg);
 
-void hailo15_isp_irq_read_fe_control_reg(struct hailo15_isp_device *isp_dev,
-					uint32_t reg, uint32_t *val)
-{
-	int ret;
-
-	if (WARN(!in_interrupt(),
-		 "hailo15_isp_irq_read_fe_control_reg called outside IRQ context for reg 0x%x\n", reg))
-		return;
-	/* Validate register classification even without FE */
-	if (WARN(!isp_fe_is_fe_control_register(reg),
-		 "hailo15_isp_irq_read_fe_control_reg called with non-FE-control reg 0x%x\n", reg))
-		return;
-	if (WARN(!isp_dev || !val,
-		 "hailo15_isp_irq_read_fe_control_reg called with NULL isp_dev or val\n"))
-		return;
-
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
-		/* no fe case */
-		*val = hailo15_isp_raw_read_reg(isp_dev, reg);
-	} else {
-		/* fe case */
-		ret = isp_dev->fe_dev->irq_read_fe_control_reg(isp_dev->fe_dev, reg, val);
-		if (WARN(ret, "hailo15_isp_irq_read_fe_control_reg failed for reg 0x%x, ret = %d\n",
-			 reg, ret))
-			*val = 0;
-	}
-}
-EXPORT_SYMBOL(hailo15_isp_irq_read_fe_control_reg);
 
 int hailo15_isp_write_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
 			       uint32_t reg, uint32_t val)
@@ -217,7 +189,7 @@ int hailo15_isp_write_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
 		return -EINVAL;
 
 	/* no fe case */
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		if (WARN(vdid != 0,
 			 "%s - invalid vdid %d for disabled FE\n", __func__, vdid))
 			return -EINVAL;
@@ -247,7 +219,7 @@ int hailo15_isp_write_control_reg(struct hailo15_isp_device *isp_dev,
 	might_sleep();
 
 	/* Validate register classification even without FE */
-	if (WARN(!isp_fe_is_control_register(reg),
+	if (WARN(!isp_fe_is_non_fe_control_register(reg),
 		 "hailo15_isp_write_control_reg called with non-control reg 0x%x\n", reg))
 		return -EINVAL;
 
@@ -255,7 +227,7 @@ int hailo15_isp_write_control_reg(struct hailo15_isp_device *isp_dev,
 		return -EINVAL;
 
 	/* no fe case */
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		hailo15_isp_raw_write_reg(isp_dev, reg, val);
 		return 0;
 	}
@@ -289,7 +261,7 @@ void hailo15_isp_irq_write_control_reg(struct hailo15_isp_device *isp_dev,
 		 "hailo15_isp_irq_write_control_reg called with NULL isp_dev\n"))
 		return;
 
-	if (!isp_dev->fe_enable || !isp_dev->fe_dev) {
+	if (!isp_dev->fe_enable) {
 		/* no fe case */
 		hailo15_isp_raw_write_reg(isp_dev, reg, val);
 	} else {
@@ -310,16 +282,11 @@ static inline void hailo15_isp_wrapper_write_reg(struct hailo15_isp_device *isp_
 	writel(val, isp_dev->wrapper_base + reg);
 }
 
-void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
+void hailo15_config_isp_wrapper_interrupts(struct hailo15_isp_device *isp_dev)
 {
 	const struct isp_wrapper_config *wrapper_cfg = isp_dev->wrapper_cfg;
-	const struct hailo15_hw_shifter_config *shifter_cfg = &wrapper_cfg->shifter_cfg;
-	const struct hailo15_isp_line_buf_config *line_buf_cfg = &wrapper_cfg->line_buf_cfg;
-	uint32_t pixel_width;
-	uint32_t reg_val = 0;
-	size_t i = 0;
 
-	pr_debug("%s - writting to isp wrapper interrupt masks\n", __func__);
+	pr_debug("%s - writing to isp wrapper interrupt masks\n", __func__);
 	hailo15_isp_wrapper_write_reg(isp_dev,
 		wrapper_cfg->fatal_asf_int_mask_offset,
 		wrapper_cfg->fatal_asf_int_mask_value);
@@ -333,6 +300,16 @@ void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev)
 	hailo15_isp_wrapper_write_reg(isp_dev,
 		wrapper_cfg->err_int_mask_offset,
 		wrapper_cfg->err_int_mask_value);
+}
+
+void hailo15_config_isp_wrapper_datapath(struct hailo15_isp_device *isp_dev)
+{
+	const struct isp_wrapper_config *wrapper_cfg = isp_dev->wrapper_cfg;
+	const struct hailo15_hw_shifter_config *shifter_cfg = &wrapper_cfg->shifter_cfg;
+	const struct hailo15_isp_line_buf_config *line_buf_cfg = &wrapper_cfg->line_buf_cfg;
+	uint32_t pixel_width;
+	uint32_t reg_val = 0;
+	size_t i = 0;
 
 	// The shifter should only be configured for HDR
 	reg_val = isp_dev->hdr_enabled ? shifter_cfg->shift_value : 0;
@@ -434,10 +411,13 @@ static void hailo15_isp_set_mcm_write_compression(
  * Get the MCM read path format based on compression flag.
  * Returns the appropriate mcm_rd_fmt enum value for the MCM_RD_CFG register.
  * Kept as a separate function for symmetry with hailo15_isp_set_mcm_write_compression().
+ * TODO - decompression == false assumes that HDR + GTM + HDM is running so it uses 12bit.
+ *        this is not generally true but for now it's the only use case. Need to allow setting
+ *        it from outside with API.
  */
 static enum mcm_rd_fmt hailo15_isp_get_mcm_read_fmt(bool compress)
 {
-	return compress ? MCM_RD_FMT_20BIT : MCM_RD_FMT_16BIT;
+	return compress ? MCM_RD_FMT_20BIT : MCM_RD_FMT_12BIT;
 }
 
 static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device *isp_dev, int grp_id)
@@ -450,15 +430,20 @@ static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device *isp_dev, i
 	uint32_t rd_cfg_for_mcm_mode = hailo15_isp_mcm_rd_cfg(isp_dev->mcm_mode);
 
 	if (hailo15_isp_is_format_hdr(&isp_dev->input_fmt[HAILO15_VID_GRP_TO_ISP_SINK_PAD(grp_id)])) {
-		bool compress = isp_dev->hdr_compression_enabled;
+		hailo15_isp_set_mcm_write_compression(isp_dev, vdid, isp_dev->hdr_compression_enabled);
+		rd_cfg_for_mcm_mode = hailo15_isp_get_mcm_read_fmt(isp_dev->hdr_decompression_enabled);
 
-		hailo15_isp_set_mcm_write_compression(isp_dev, vdid, compress);
-		rd_cfg_for_mcm_mode = hailo15_isp_get_mcm_read_fmt(compress);
-
-		/* Set HDR input bayer format bits[22:20] to all-ones for HDR mode */
-		hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, &isp_acq_prop);
-		isp_acq_prop |= ACQ_PROP_HDR_INPUT_BAYER_FORMAT_MASK;
-		hailo15_isp_write_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, isp_acq_prop);
+		/* When decompression is disabled in hdr mode, assume this is HDR + HDM + GTM flow.
+		   In this flow, HMD outputs raw12 padded to 16bit uncompressed (like SDR + HDM),
+		   so configuration should be like in SDR */
+		if (!isp_dev->hdr_decompression_enabled) {
+			hailo15_isp_read_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, &isp_acq_prop);
+			/* First clear the current pin_map mode, then set to SDR mode */
+			isp_acq_prop &= ~ISP_ACQ_PROP_PINMAP_MASK;
+			isp_acq_prop |= ISP_ACQ_PROP_SDR_PINMAP_MASK;
+			isp_acq_prop &= ~ISP_ACQ_PROP_HDR_EN_MASK;
+			hailo15_isp_write_vdid_reg(isp_dev, vdid, ISP_ACQ_PROP, isp_acq_prop);
+		}
 	}
 
 	if (rd_cfg_for_mcm_mode == MCM_RD_FMT_INVALID) {
@@ -865,8 +850,8 @@ static void hailo15_isp_handle_multi_sensor_frame_rx(struct hailo15_isp_device *
 	bool stop_toggle = false;
 	int ret = 0;
 
-	if(!isp_dev->fe_enable || !isp_dev->fe_dev) {
-		pr_warn("%s - fe_enable or fe_dev is not enabled\n", __func__);
+	if(!isp_dev->fe_enable) {
+		pr_warn("%s - fe_enable is not enabled\n", __func__);
 		return;
 	}
 
@@ -1274,12 +1259,26 @@ void hailo15_isp_handle_frame_rx(struct work_struct *work)
 			work, struct hailo15_irq_deffered_work, irq_deffered_w);
 	struct hailo15_isp_device *isp_dev = irq_deffered_work->isp_dev;
 	uint32_t irq_status = irq_deffered_work->irq_status;
+	int sink_pad;
+	unsigned long flags;
+
+	sink_pad = HAILO15_VID_GRP_TO_ISP_SINK_PAD(isp_dev->cur_buf_path);
+
+	spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
+	if (!isp_dev->stream_enabled[sink_pad]) {
+		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
+		pr_debug_ratelimited("%s: stream stopped for pad %d, skipping buffer_done\n",
+				     __func__, sink_pad);
+		goto out;
+	}
+	spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 
 	hailo15_isp_handle_frame_rx_sp2_raw(isp_dev, irq_status);
 	hailo15_isp_handle_frame_rx_mp(isp_dev, irq_status);
 	hailo15_isp_handle_frame_rx_sp2(isp_dev, irq_status);
 	hailo15_isp_handle_frame_rx_rdma(isp_dev, irq_status);
 
+out:
 	atomic_set(&isp_dev->buf_done_ready, 1);
 	wake_up_interruptible_all(&isp_dev->buf_done_wait_q);
 	kfree(irq_deffered_work);
@@ -1381,6 +1380,8 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 {
 	int event_size = 0;
 	int raised_irq_count = 0;
+	int ret;
+	bool fe_requests_skip_other_irqs;
 	unsigned long flags;
 	struct hailo15_irq_deffered_work *irq_deffered_work;
 	uint32_t masked_mis;
@@ -1395,26 +1396,23 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 
 	memset(&isp_dev->irq_status, 0, sizeof(isp_dev->irq_status));
 
-	if(isp_dev->fe_enable){
-		/* mis is raw cpu read */
-		hailo15_isp_irq_read_fe_control_reg(isp_dev, FE_MIS, &isp_dev->irq_status.isp_fe);
-
-		if(isp_dev->irq_status.isp_fe != 0){
-			raised_irq_count++;
-		}
-
-		if(isp_dev->fe_dev){
-			isp_dev->fe_dev->fe_dma_irq(isp_dev->fe_dev);
-		}
-
-		if(isp_dev->irq_status.isp_fe & 1){
-			isp_dev->fe_ready = 1;
-		}
-		if (isp_dev->irq_status.isp_fe){
-			// skip processing of all other interrupts until fe transaction complete
-			goto post_irq_events;
+	ret = isp_dev->fe_dev->fe_dma_irq(isp_dev->fe_dev,
+					   &isp_dev->irq_status.isp_fe,
+					   &fe_requests_skip_other_irqs);
+	if (ret)
+		pr_err_ratelimited("fe_dma_irq failed, ret = %d\n", ret);
+	if (isp_dev->irq_status.isp_fe) {
+		raised_irq_count++;
+		if (!isp_dev->fe_enable)
+			pr_warn_ratelimited("Received FE interrupt while FE not enabled\n");
+		// set status only if fe_dma_irq succeeded
+		if (!ret) {
+			if (isp_dev->irq_status.isp_fe & FE_INT_CFG_END)
+				isp_dev->fe_ready = 1;
 		}
 	}
+	if (fe_requests_skip_other_irqs)
+		goto post_irq_events;
 
 	/* clear the hw interrupt - mis is raw cpu read, icr is raw cpu write */
 	hailo15_isp_irq_read_control_reg(isp_dev, ISP_MIS, &isp_dev->irq_status.isp_mis);
