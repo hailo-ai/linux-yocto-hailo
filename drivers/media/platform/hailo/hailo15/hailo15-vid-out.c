@@ -532,10 +532,10 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	hailo15_video_device_process_vb2_buffer(vb);
 
 	elapsed_ms = ktime_ms_delta(ktime_get(), qbuf_start);
-	/* MSW-15089: slow QBUF log removed — can trigger under
-	 * heavy workloads without indicating an actual problem.
-	 */
-	(void)elapsed_ms;
+	if (elapsed_ms >= HAILO15_QBUF_SLOW_THRESHOLD_MS) {
+		pr_info_ratelimited("%s: QBUF processing slow for path=%d index=%d - elapsed=%lld ms\n",
+				__func__, vid_node->path, vb->index, elapsed_ms);
+	}
 }
 
 static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
@@ -566,10 +566,18 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 
 		if (buf->timing.fe_switch_start) {
 			elapsed_ms = ktime_ms_delta(now, buf->timing.fe_switch_start);
-			/* MSW-15089: log removed — triggers frequently under
-			 * HDR + Detection without indicating an actual problem.
-			 */
-			(void)elapsed_ms;
+			if (elapsed_ms >= HAILO15_FRAME_SLOW_THRESHOLD_MS) {
+				pr_info_ratelimited("%s: slow frame for grp_id=%d index=%d - elapsed=%lld ms."
+							"  timestamps: qbuf_start=%lld, fe_switch_start=%lld, fe_switch_end=%lld, "
+							"rdma_ready=%lld, frame_end=%lld, now=%lld\n",
+							__func__, grp_id, buf->vb.vb2_buf.index, elapsed_ms,
+							ktime_to_ns(buf->timing.qbuf_start),
+							ktime_to_ns(buf->timing.fe_switch_start),
+							ktime_to_ns(buf->timing.fe_switch_end),
+							ktime_to_ns(buf->timing.rdma_ready),
+							ktime_to_ns(buf->timing.frame_end),
+							ktime_to_ns(now));
+			}
 		}
 
 		buf->queue_sequence = vid_node->sequence;
@@ -641,11 +649,25 @@ out:
 static void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
 {
 	struct hailo15_video_out_node *vid_node = queue_to_node(q);
+	unsigned int i;
 
 	if (WARN_ON(!vid_node))
 		return;
 
 	hailo15_video_out_node_stream_cancel(vid_node);
+
+	/* Return any buffers still owned by the driver.
+	 * The ISP's s_stream(OFF) drops cur_buf[grp_id] without calling
+	 * vb2_buffer_done(), so we must return all remaining ACTIVE buffers
+	 * here to satisfy the vb2 stop_streaming contract.
+	 * This is safe because q->lock is held by vb2_core_streamoff,
+	 * preventing concurrent buf_queue calls, and the ISP is fully
+	 * quiesced after stream_cancel (mi_stopped, workqueues drained). */
+	for (i = 0; i < q->num_buffers; ++i) {
+		if (q->bufs[i]->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(q->bufs[i], VB2_BUF_STATE_ERROR);
+	}
+
 	trace_hailo15_vidout_stop_streaming(vid_node);
 }
 

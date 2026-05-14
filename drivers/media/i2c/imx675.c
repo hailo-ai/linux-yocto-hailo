@@ -353,7 +353,11 @@ struct imx675 {
 	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
+	struct v4l2_ctrl *hcg_sef2_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
 	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
@@ -1128,8 +1132,41 @@ struct v4l2_ctrl_config imx675_custom_ctrls[] = {
 		.ops = &imx675_ctrl_ops,
 		.id = IMX675_CID_HCG,
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "hcg",
+		.step = IMX675_HCG_STEP,
+		.min = IMX675_HCG_MIN,
+		.max = IMX675_HCG_MAX,
+		.def = IMX675_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_HCG_LEF,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_lef",
+		.step = IMX675_HCG_STEP,
+		.min = IMX675_HCG_MIN,
+		.max = IMX675_HCG_MAX,
+		.def = IMX675_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_HCG_SEF1,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef1",
+		.step = IMX675_HCG_STEP,
+		.min = IMX675_HCG_MIN,
+		.max = IMX675_HCG_MAX,
+		.def = IMX675_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx675_ctrl_ops,
+		.id = IMX675_CID_HCG_SEF2,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef2",
 		.step = IMX675_HCG_STEP,
 		.min = IMX675_HCG_MIN,
 		.max = IMX675_HCG_MAX,
@@ -1558,6 +1595,42 @@ release_hold:
 	return ret;
 }
 
+static int imx675_set_hcg_lef(struct imx675 *imx675, u32 hcg)
+{
+	int ret;
+
+	ret = imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx675_write_reg(imx675, IMX675_REG_HCG, 1, hcg);
+	imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx675_set_hcg_sef1(struct imx675 *imx675, u32 hcg)
+{
+	int ret;
+
+	ret = imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx675_write_reg(imx675, IMX675_REG_HCG_SEF1, 1, hcg);
+	imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx675_set_hcg_sef2(struct imx675 *imx675, u32 hcg)
+{
+	int ret;
+
+	ret = imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx675_write_reg(imx675, IMX675_REG_HCG_SEF2, 1, hcg);
+	imx675_write_reg(imx675, IMX675_REG_HOLD, 1, 0);
+	return ret;
+}
+
 static int search_mode(const struct imx675_mode *mode, bool *o_hdr)
 {
 	// First search in HDR modes, then SDR modes
@@ -1738,6 +1811,9 @@ static void imx675_set_exp_activity(struct imx675 *imx675)
 
 	v4l2_ctrl_activate(imx675->sef2.again_ctrl, sef2);
 	v4l2_ctrl_activate(imx675->sef2.exp_ctrl, sef2);
+
+	v4l2_ctrl_activate(imx675->hcg_sef1_ctrl, sef1);
+	v4l2_ctrl_activate(imx675->hcg_sef2_ctrl, sef2);
 }
 
 static int imx675_set_hdr_mode(struct imx675 *imx675, bool enable)
@@ -1942,16 +2018,53 @@ static int imx675_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		break;
 	case IMX675_CID_HCG:
-		/* Set controls only if sensor is in power on state */
+		/* Global HCG: sync per-exposure cached values unconditionally,
+		 * write registers only if sensor is powered on */
+		/* Controls are independent (no cluster) so direct cur.val update is safe */
+		imx675->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx675->cur_mode->dol >= 2)
+			imx675->hcg_sef1_ctrl->cur.val = ctrl->val;
+		if (imx675->cur_mode->dol >= 3)
+			imx675->hcg_sef2_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(imx675->dev))
 			return 0;
 
-		dev_dbg(imx675->dev, "Setting HCG to %u\n", ctrl->val);
-
+		dev_dbg(imx675->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx675_set_hcg_mode(imx675, ctrl->val);
-		if (ret) {
+		if (ret)
 			dev_err(imx675->dev, "Failed to set HCG mode: %d\n", ret);
-		}
+		pm_runtime_put(imx675->dev);
+		break;
+	case IMX675_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(imx675->dev))
+			return 0;
+		dev_dbg(imx675->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx675_set_hcg_lef(imx675, ctrl->val);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set HCG LEF: %d\n", ret);
+		pm_runtime_put(imx675->dev);
+		break;
+	case IMX675_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx675->dev))
+			return 0;
+		dev_dbg(imx675->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx675_set_hcg_sef1(imx675, ctrl->val);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set HCG SEF1: %d\n", ret);
+		pm_runtime_put(imx675->dev);
+		break;
+	case IMX675_CID_HCG_SEF2:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx675->dev))
+			return 0;
+		dev_dbg(imx675->dev, "Setting HCG SEF2 to %u\n", ctrl->val);
+		ret = imx675_set_hcg_sef2(imx675, ctrl->val);
+		if (ret)
+			dev_err(imx675->dev, "Failed to set HCG SEF2: %d\n", ret);
 		pm_runtime_put(imx675->dev);
 		break;
 
@@ -2729,7 +2842,12 @@ static int imx675_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx675 *imx675 = to_imx675(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx675->reset_gpio, 1);
 
@@ -2744,10 +2862,12 @@ static int imx675_power_on(struct device *dev)
 
 	usleep_range(18000, 20000);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 
 error_reset:
 	gpiod_set_value_cansleep(imx675->reset_gpio, 0);
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return ret;
 }
@@ -2762,10 +2882,17 @@ static int imx675_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx675 *imx675 = to_imx675(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx675->reset_gpio, 0);
 
 	clk_disable_unprepare(imx675->inclk);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -2841,8 +2968,12 @@ static int imx675_init_controls(struct imx675 *imx675)
 	/* Other read only custom controls */
 	imx675_setup_custom_ctrl(imx675, &imx675->vmax_ctrl, IMX675_CID_VMAX);
 	imx675_setup_custom_ctrl(imx675, &imx675->hmax_ctrl, IMX675_CID_HMAX);
-	/* Initialize HCG control */
+	/* Initialize HCG control cluster */
 	imx675_setup_custom_ctrl(imx675, &imx675->hcg_ctrl, IMX675_CID_HCG);
+	imx675_setup_custom_ctrl(imx675, &imx675->hcg_lef_ctrl, IMX675_CID_HCG_LEF);
+	imx675_setup_custom_ctrl(imx675, &imx675->hcg_sef1_ctrl, IMX675_CID_HCG_SEF1);
+	imx675_setup_custom_ctrl(imx675, &imx675->hcg_sef2_ctrl, IMX675_CID_HCG_SEF2);
+
 
 	/* Custom RHS1 stub (not implemented for this sensor) */
 	imx675_setup_custom_ctrl_limits(imx675, &imx675->custom_rhs1_ctrl, IMX675_CID_CUSTOM_RHS1,
@@ -2893,6 +3024,10 @@ static int imx675_init_controls(struct imx675 *imx675)
 	}
 
 	imx675->sd.ctrl_handler = ctrl_hdlr;
+
+	/* Set initial activity state for per-exposure controls */
+	imx675_set_exp_activity(imx675);
+
 	return 0;
 }
 
