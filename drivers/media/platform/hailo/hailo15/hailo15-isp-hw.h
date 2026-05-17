@@ -13,8 +13,6 @@ int hailo15_isp_read_control_reg(struct hailo15_isp_device *isp_dev,
 				 uint32_t reg, uint32_t *val);
 void hailo15_isp_irq_read_control_reg(struct hailo15_isp_device *isp_dev,
 				      uint32_t reg, uint32_t *val);
-void hailo15_isp_irq_read_fe_control_reg(struct hailo15_isp_device *isp_dev,
-					 uint32_t reg, uint32_t *val);
 
 int hailo15_isp_write_vdid_reg(struct hailo15_isp_device *isp_dev, uint8_t vdid,
 			       uint32_t reg, uint32_t val);

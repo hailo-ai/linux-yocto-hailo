@@ -6,9 +6,7 @@
  *
  * Protocol:
  *   1. Send HAILO_REQ__RFS_LOAD control request with file size (or 0 for large files)
- *   2. Stream RFS data via bulk OUT endpoint in 8KB chunks
- *   3. Send HAILO_REQ__RFS_FINISH control request to signal completion
- *   4. Verify status via HAILO_REQ__RFS_GET_STATUS
+ *   2. Stream RFS data via bulk OUT endpoint in 64KB chunks
  *
  * The kernel driver streams the data directly to /initrd.image for 
  * subsequent loading via initrd mechanism.
@@ -58,7 +56,6 @@
 #define HAILO_REQ__RFS_GET_BUILD_INFO       0x11 /* Get hailo build information */
 #define HAILO_REQ__RFS_LOAD                 0x12 /* Load RFS image command */
 #define HAILO_REQ__RFS_GET_BOARD_SKU_ID     0x14 /* Get board SKU ID */
-#define HAILO_REQ__RFS_FINISH               0x13 /* Finish RFS loading */
 #define HAILO_REQ__RFS_CTRL                 0x15 /* RFS control operations */
 #define HAILO_REQ__RFS_GET_PROTOCOL_VERSION 0x16 /* Get protocol version */
 
@@ -263,9 +260,6 @@ static int vendor_request(hailo_device_t *dev,
 	    break;
     case HAILO_REQ__RFS_LOAD:
 	    req_name = "LOAD_RFS";
-	    break;
-    case HAILO_REQ__RFS_FINISH:
-	    req_name = "FINISH_RFS";
 	    break;
     case HAILO_REQ__RFS_CTRL:
 	    req_name = "RFS_CTRL";
@@ -652,51 +646,6 @@ static int bulk_transfer_with_retry(hailo_device_t *dev,
     return -1; // Should never reach here
 }
 
-static int gadget_rfs__finish_image_upload(hailo_device_t *dev)
-{
-    int verify_ret = -1;
-    int attempts = 0;
-    int ret;
-    unsigned char status[64] = {0};
-    const int max_attempts = 15; // Up to 30 seconds total
-
-    printf("Finishing RFS image upload command\n");
-    ret = vendor_request(dev, HAILO_REQ__RFS_FINISH, 0, 0, NULL, 0, USB_DIR_OUT);
-    if (ret < 0) {
-        fprintf(stderr, "✗ FINISH_RFS request failed: unable to signal upload completion\n");
-        return ret;
-    }
-    
-    printf("✓ FINISH_RFS request completed successfully\n");
-    printf("Waiting for device to write uploaded RFS image to file...\n");
-        
-    // Wait longer for device to process large files - writing to flash can be slow
-    // Retry status check with increasing delays for up to 30 seconds total
-    
-    for (attempts = 0; attempts < max_attempts; attempts++) {
-        // Progressive delay: 10msec, 1s, 2s, 2s, 2s, ... (capped at 2s per attempt)
-        int delay_usec = (attempts == 0) ? 10000 : (attempts == 1) ? 1000000 : 2000000;
-        usleep(delay_usec);
-        
-        verify_ret = vendor_request(dev, HAILO_REQ__RFS_GET_STATUS, 0, 0, status, sizeof(status), USB_DIR_IN);
-        if (verify_ret >= 0) {  // Success means any non-negative return (bytes transferred)
-            printf("✓ Device status after upload: %s\n", (char *)status);
-            break;
-        } else if (verbose) {
-            printf("Status check attempt %d/%d failed (device may be busy writing file)...\n", attempts + 1, max_attempts);
-        }
-    }
-    
-    if (verify_ret < 0) {
-        printf("⚠ Could not retrieve final device status (device may still be processing)\n");
-        printf("  This is normal for large files - the upload likely succeeded\n");
-        // Don't treat this as a failure - the FINISH_RFS request succeeded
-    }
-    
-    // Return success (0) since FINISH_RFS completed successfully
-    return 0;
-}
-
 static int upload_image_file(hailo_device_t *dev, const char *filename)
 {
     FILE *file;
@@ -878,15 +827,6 @@ static int upload_rfs_image(hailo_device_t *dev, const char *filename)
 
     // Upload data
     if (upload_image_file(dev, filename) < 0) {
-        return -1;
-    }
-
-    // Critical delay: Ensure all bulk transfers are fully processed before calling FINISH_RFS
-    printf("Ensuring all transfers are processed...\n");
-    usleep(250000);  // 250ms delay to let USB pipeline clear
-
-    // Finish upload
-    if (gadget_rfs__finish_image_upload(dev) < 0) {
         return -1;
     }
 

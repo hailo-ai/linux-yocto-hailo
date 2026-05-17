@@ -128,7 +128,7 @@ static const struct isp_wrapper_config hailo15l_isp_wrapper_config = {
 			{ .mask = BIT(26), .message = "isp_mcm_axi_rresp, Received error response on MCM Read AXI interface" },
 			{ .mask = BIT(27), .message = "bubble_s0, ISP received bubble on sensor_0 interface" },
 			{ .mask = BIT(28), .message = "bubble_s1, ISP received bubble on sensor_1 interface" },
-		}		
+		}
 	}
 };
 
@@ -210,7 +210,15 @@ hailo15_isp_configure_buffer(struct hailo15_isp_device *isp_dev,
 
 		isp_dev->cur_buf[buf->grp_id] = buf;
 		mutex_unlock(&isp_dev->mcm_lock);
-		hailo15_isp_configure_frame_base(isp_dev, buf->dma, buf->grp_id);
+
+		/* If the output stream hasn't started yet, defer HW configuration.
+		 * The daemon configures FE during start_stream on MP, so FE
+		 * commands will fail if issued before that. s_stream on MP will
+		 * configure cur_buf after the start_stream event completes. */
+		sink_pad_index = HAILO15_VID_GRP_TO_ISP_SINK_PAD(buf->grp_id);
+		if (isp_dev->stream_enabled[sink_pad_index])
+			hailo15_isp_configure_frame_base(isp_dev, buf->dma, buf->grp_id);
+
 		trace_isp_mcm_in_buffer_queue(buf->grp_id, buf->vb.vb2_buf.index,
 					     buf->dma[0], ktime_get_ns());
 	} else if(isp_path == ISP_MCM_RAW_OUT){
@@ -381,7 +389,7 @@ static int hailo15_isp_get_rxw_subdev(struct v4l2_subdev *sd, struct v4l2_subdev
 		pr_err("%s - could not get v4l2 subdev from media entity\n", __func__);
 		return -ENODEV;
 	}
-	
+
 	(*rxw_subdev)->grp_id = sd->grp_id;
 	return 0;
 }
@@ -476,7 +484,7 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 				return ret;
 			}
 		}
-		
+
 	}
 
 	// pass state change to rest of the subdevs
@@ -489,8 +497,8 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 	return 0;
 }
 
-/* 
-* this function returns the empty queue for the given sensor - 
+/*
+* this function returns the empty queue for the given sensor -
 * the queue of buffers that are avaialble to write raw frames in to
 */
 struct list_head *hailo15_isp_get_empty_queue(struct hailo15_isp_device *isp_dev, int sink_pad_index)
@@ -508,8 +516,8 @@ struct list_head *hailo15_isp_get_empty_queue(struct hailo15_isp_device *isp_dev
 }
 EXPORT_SYMBOL(hailo15_isp_get_empty_queue);
 
-/* 
-* this function returns the full queue for the given sensor - 
+/*
+* this function returns the full queue for the given sensor -
 * the queue of buffers containing raw frames from the sensor to be processed
 */
 struct list_head *hailo15_isp_get_full_queue(struct hailo15_isp_device *isp_dev, int sink_pad_index)
@@ -525,8 +533,8 @@ struct list_head *hailo15_isp_get_full_queue(struct hailo15_isp_device *isp_dev,
 }
 EXPORT_SYMBOL(hailo15_isp_get_full_queue);
 
-/* 
-* this function returns the empty lock for the given sensor - 
+/*
+* this function returns the empty lock for the given sensor -
 * must use lock before accessing the empty queue
 */
 struct mutex *hailo15_isp_get_empty_lock(struct hailo15_isp_device *isp_dev, int sink_pad_index)
@@ -542,8 +550,8 @@ struct mutex *hailo15_isp_get_empty_lock(struct hailo15_isp_device *isp_dev, int
 }
 EXPORT_SYMBOL(hailo15_isp_get_empty_lock);
 
-/* 
-* this function returns the full lock for the given sensor - 
+/*
+* this function returns the full lock for the given sensor -
 * must use lock before accessing the full queue
 */
 struct mutex *hailo15_isp_get_full_lock(struct hailo15_isp_device *isp_dev, int sink_pad_index)
@@ -745,7 +753,7 @@ static int hailo15l_isp_set_enable_sp2_err(struct v4l2_subdev *sd, void *arg)
 	bool enable;
 	uint32_t mask;
 	bool write_mask = false;
-	
+
 	const struct isp_wrapper_config *wrapper_cfg;
 
 	if (!isp_dev) {
@@ -769,11 +777,11 @@ static int hailo15l_isp_set_enable_sp2_err(struct v4l2_subdev *sd, void *arg)
 	if (isp_dev->wrapper_cfg != &hailo15l_isp_wrapper_config) {
 		return 0;
 	}
-	
+
 	mask = readl(isp_dev->wrapper_base + wrapper_cfg->err_int_mask_offset);
 	if (enable && !(mask & HAILO15L_ISP_SP2_ERR_MASK)) {
-		/* Handle cases of enabling/disabling 3dnr in the middle of streaming - 
-		make sure we wait for the 3dnr to actually be enabled before clearing the error, 
+		/* Handle cases of enabling/disabling 3dnr in the middle of streaming -
+		make sure we wait for the 3dnr to actually be enabled before clearing the error,
 		since that error constantly jumps when 3dnr disabled. That can be ensured after buffer done
 		this is only for pluto so currently assume only single sensor0 */
 		if (atomic_read(&isp_dev->streaming_started[HAILO15_ISP_SINK_PAD_S0])) {
@@ -795,7 +803,7 @@ static int hailo15l_isp_set_enable_sp2_err(struct v4l2_subdev *sd, void *arg)
 		writel(HAILO15L_ISP_SP2_ERR_MASK, isp_dev->wrapper_base + wrapper_cfg->err_int_w1c_offset);
 		writel(mask, isp_dev->wrapper_base + wrapper_cfg->err_int_mask_offset);
 	}
-	
+
 	return 0;
 }
 
@@ -839,10 +847,20 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 			ret = -EINVAL;
 			break;
 		}
-		isp_dev->rmem[port].size = HAILO15_ISP_RMEM_SIZE;
+		{
+		size_t new_size = HAILO15_ISP_RMEM_SIZE;
 		if(isp_dev->mcm_mode){
-			isp_dev->rmem[port].size += HAILO15_ISP_MCM_MODE_RMEM_EXT_SIZE;
+			new_size += HAILO15_ISP_MCM_MODE_RMEM_EXT_SIZE;
 		}
+		/* Free existing rmem if size changed (e.g. SDR<->HDR switch).
+		 * Safe to free here because this ioctl runs before streaming starts,
+		 * so no VB2 buffers reference this CMA region yet. */
+		if (isp_dev->rmem_vaddr[port] && isp_dev->rmem[port].size != new_size) {
+			dma_free_coherent(isp_dev->dev, isp_dev->rmem[port].size,
+				isp_dev->rmem_vaddr[port], isp_dev->rmem[port].addr);
+			isp_dev->rmem_vaddr[port] = NULL;
+		}
+		isp_dev->rmem[port].size = new_size;
 		if(!isp_dev->rmem_vaddr[port]){
 			isp_dev->rmem_vaddr[port] = dma_alloc_coherent(
 			isp_dev->dev, isp_dev->rmem[port].size, &isp_dev->rmem[port].addr, GFP_KERNEL);
@@ -851,6 +869,7 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 				ret = -ENOMEM;
 				break;
 			}
+		}
 		}
 
 		memcpy(arg, &isp_dev->rmem[port], sizeof(isp_dev->rmem[port]));
@@ -890,20 +909,22 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 	case ISPIOC_V4L2_MCM_MODE:
         ret = hailo15_isp_mcm_extract_mode(sd, arg);
 		break;
-	case ISPIOC_V4L2_SET_HDR_COMPRESSION:
-		uint32_t val = 0;
+	case ISPIOC_V4L2_SET_HDR_COMPRESSION: {
+		struct hdr_comp_ctrl *ctrl = (struct hdr_comp_ctrl *)arg;
 		mutex_lock(&isp_dev->mlock);
-		val = *((uint32_t *)arg);
-
-		if (val > 1) {
-			dev_err(isp_dev->dev, "invalid hdr compression value %u\n", val);
+		if (ctrl->compression_enabled > 1 || ctrl->decompression_enabled > 1) {
+			dev_err(isp_dev->dev, "invalid hdr comp/decomp values %u/%u\n",
+				ctrl->compression_enabled, ctrl->decompression_enabled);
 			ret = -EINVAL;
+			mutex_unlock(&isp_dev->mlock);
 			break;
 		}
-		isp_dev->hdr_compression_enabled = !!val;
+		isp_dev->hdr_compression_enabled = !!ctrl->compression_enabled;
+		isp_dev->hdr_decompression_enabled = !!ctrl->decompression_enabled;
 		mutex_unlock(&isp_dev->mlock);
 		ret = 0;
 		break;
+	}
 	case ISPIOC_V4L2_REQBUFS:
 		ret = hailo15_isp_requbufs(sd, arg);
 		break;
@@ -970,6 +991,12 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 	case HAILO15_INTERNAL_ISP_FAST_TOGGLE_SET_STATUS:
 		ret = hailo15_isp_fast_toggle_set_state(sd, (struct fast_toggle_data *)arg);
 		break;
+	case ISPIOC_V4L2_EVENT_COMPLETE:
+		/* Daemon calls this after writing ack to shared memory.
+		 * Wake the kernel thread waiting in event_wait_complete. */
+		wake_up(&isp_dev->event_resource.wait_q);
+		ret = 0;
+		break;
 	default:
 		ret = -EINVAL;
 		pr_debug("unsupported isp command %x.\n", cmd);
@@ -985,6 +1012,7 @@ static int hailo15_vsi_isp_init_events(struct hailo15_isp_device *isp_dev)
 	size_t size_page_align = PAGE_ALIGN(size);
 
 	mutex_init(&isp_dev->event_resource.event_lock);
+	init_waitqueue_head(&isp_dev->event_resource.wait_q);
 	isp_dev->event_resource.virt_addr = kmalloc(size_page_align, GFP_KERNEL);
 	if (!isp_dev->event_resource.virt_addr)
 		return -ENOMEM;
@@ -1042,17 +1070,11 @@ static int hailo15_isp_enable_clocks(struct hailo15_isp_device *isp_dev)
 		return ret;
 	}
 	isp_dev->is_ip_clk_enabled = 1;
-
-	enable_irq(isp_dev->irq[0]);
-	enable_irq(isp_dev->irq[1]);
 	return ret;
 }
 
 static void hailo15_isp_disable_clocks(struct hailo15_isp_device *isp_dev)
 {
-	disable_irq(isp_dev->irq[0]);
-	disable_irq(isp_dev->irq[1]);
-
 	if (isp_dev->is_ip_clk_enabled) {
 		clk_disable_unprepare(isp_dev->ip_clk);
 		isp_dev->is_ip_clk_enabled = 0;
@@ -1079,6 +1101,9 @@ static int hailo15_isp_refcnt_inc_enable(struct hailo15_isp_device *isp_dev)
 	if (isp_dev->refcnt == 1) {
 		pm_runtime_get_sync(isp_dev->dev);
 		hailo15_isp_enable_clocks(isp_dev);
+		hailo15_config_isp_wrapper_interrupts(isp_dev);
+		enable_irq(isp_dev->irq[0]);
+		enable_irq(isp_dev->irq[1]);
 	}
 
 	mutex_unlock(&isp_dev->mlock);
@@ -1099,6 +1124,8 @@ static int hailo15_isp_refcnt_dec_disable(struct hailo15_isp_device *isp_dev)
 	isp_dev->refcnt--;
 
 	if (isp_dev->refcnt == 0) {
+		disable_irq(isp_dev->irq[0]);
+		disable_irq(isp_dev->irq[1]);
 		hailo15_isp_disable_clocks(isp_dev);
 		pm_runtime_put_sync(isp_dev->dev);
 		goto out;
@@ -1271,6 +1298,10 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (enable) {
+		ret = hailo15_isp_refcnt_inc_enable(isp_dev);
+		if (ret)
+			return ret;
+
 		/* For (MCM_RAW_WR), defer streaming until MP starts */
 		if (path == ISP_MCM_RAW_OUT) {
 			isp_dev->queue_empty[sd->grp_id] = 0;
@@ -1288,7 +1319,8 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 			if (isp_dev->input_fmt[sink_pad_index].format.width == 0 ||
 				isp_dev->input_fmt[sink_pad_index].format.height == 0) {
 				pr_err("invalid input format for raw%d\n", sink_pad_index);
-				return -EINVAL;
+				ret = -EINVAL;
+				goto err_dec_refcnt;
 			}
 
 			/* 2 bytes per pixel */
@@ -1296,21 +1328,24 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 				isp_dev->input_fmt[sink_pad_index].format.height * 2;
 			if (hailo15_isp_init_raw_bufs(isp_dev, sink_pad_index, raw_buf_size)) {
 				pr_err("cannot initialize raw%d buffers\n", sink_pad_index);
-				return -ENOMEM;
+				ret = -ENOMEM;
+				goto err_dec_refcnt;
 			}
 
 			/* get the first empty buffer */
 			empty_queue = hailo15_isp_get_empty_queue(isp_dev, sink_pad_index);
 			if (!empty_queue) {
 				pr_err("cannot get empty queue for raw%d\n", sink_pad_index);
-				return -EINVAL;
+				ret = -EINVAL;
+				goto err_dec_refcnt;
 			}
 
 			isp_dev->cur_raw_buf[sink_pad_index] =
 				list_first_entry_or_null(empty_queue, struct hailo15_isp_raw_buf, list);
 			if (!isp_dev->cur_raw_buf[sink_pad_index]) {
 				pr_err("cannot get cur raw%d buf\n", sink_pad_index);
-				return -EINVAL;
+				ret = -EINVAL;
+				goto err_dec_refcnt;
 			}
 
 			/* remove the buffer from the empty queue */
@@ -1339,13 +1374,9 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 			isp_dev->cur_buf_path = sd->grp_id;
 		}
 
-		ret = hailo15_isp_refcnt_inc_enable(isp_dev);
-		if (ret)
-			return ret;
-
-		/* configure the wrapper only on the first stream */
+		/* configure the wrapper datapath only on the first stream */
 		if (stream_cnt == 0) {
-			hailo15_config_isp_wrapper(isp_dev);
+			hailo15_config_isp_wrapper_datapath(isp_dev);
 		}
 
 		isp_dev->queue_empty[sd->grp_id] = 0;
@@ -1390,6 +1421,15 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 		if (isp_dev->mcm_mode) {
 			hailo15_isp_configure_frame_size(isp_dev, sd->grp_id);
 			hailo15_isp_configure_buffer(isp_dev, isp_dev->cur_buf[sd->grp_id]);
+
+			/* Configure deferred MCM_IN buffer if one was queued before
+			 * the MP stream started. Now that the daemon has configured
+			 * the FE (MP start_stream event completed), it is safe to issue. */
+			if (isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN]) {
+				hailo15_isp_configure_frame_base(isp_dev,
+					isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN]->dma,
+					HAILO15_VID_GRP_MCM_IN);
+			}
 		}
 	}
 
@@ -1431,8 +1471,6 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 			isp_dev->toggle_sensors = true;
 		}
 
-		timer_setup(&isp_dev->frame_timer[sink_pad_index],
-		    sink_pad_index == HAILO15_ISP_SINK_PAD_S0 ? frame_timeout_handler_0 : frame_timeout_handler_1, 0);
 		if (mod_timer(&isp_dev->frame_timer[sink_pad_index], jiffies + msecs_to_jiffies(FRAME_TIMEOUT_MS))) {
 			pr_warn("frame timer was pending after setup\n");
 		}
@@ -1470,6 +1508,13 @@ disable:
 		isp_dev->stream_enabled[sink_pad_index] = 0;
 		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 
+		/* Drain miv2_mis workqueue immediately after disabling stream.
+		 * In-flight work items will either complete normally (if already
+		 * past the stream_enabled check) or skip buffer processing (if
+		 * they haven't started yet). After drain returns, no work items
+		 * are running, so it's safe to clean up buffers below. */
+		drain_workqueue(isp_dev->miv2_mis_wq);
+
 		/* if we disable a stream in multi sensor mode, and we are in toggle state,
 		   we need to wait for the toggle to be disabled at the right time before actually stopping the stream */
 		if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR && stream_cnt > 1) {
@@ -1482,6 +1527,15 @@ disable:
 		ret = hailo15_isp_post_event_stop_stream(isp_dev, source_pad_index, isp_dev->fast_toggle_state != FAST_TOGGLE_NONE);
 		if (ret) {
 			pr_warn("%s - stop stream event failed with %d\n", __func__, ret);
+		}
+
+		/* Sensor is now off. Wait for the last in-flight frame to
+		 * complete ISP processing before tearing down the engine. */
+		{
+			unsigned int fc = isp_dev->frame_count[sd->grp_id];
+			wait_event_timeout(isp_dev->buf_done_wait_q,
+				isp_dev->frame_count[sd->grp_id] != fc,
+				msecs_to_jiffies(35));
 		}
 
 		/* these resets are only neccessary for mcm mode
@@ -1516,6 +1570,12 @@ disable_rdma:
 			}
 			hailo15_dma_buffer_done(ctx, sd->grp_id, cur_tmp);
 			mutex_unlock(&isp_dev->mcm_lock);
+
+			/* Drain deferred ISP work to prevent in-flight work items
+			 * from calling buffer_done after vb2_queue is released */
+			drain_workqueue(isp_dev->miv2_mis_wq);
+
+			hailo15_isp_refcnt_dec_disable(isp_dev);
 			return ret;
 		}
 
@@ -1542,6 +1602,7 @@ disable_rdma:
 								    cur_tmp->dma[0], ktime_get_ns());
 				hailo15_dma_buffer_done(ctx, sd->grp_id, cur_tmp);
 			}
+			hailo15_isp_refcnt_dec_disable(isp_dev);
 			return ret;
 		}
 
@@ -1556,12 +1617,6 @@ disable_rdma:
 		isp_dev->cur_buf[sd->grp_id] = NULL;
 		memset(&isp_dev->input_fmt[sink_pad_index], 0, sizeof(isp_dev->input_fmt[sink_pad_index]));
 
-		if(isp_dev->rmem_vaddr[sink_pad_index]){
-			dma_free_coherent(isp_dev->dev, isp_dev->rmem[sink_pad_index].size,
-				isp_dev->rmem_vaddr[sink_pad_index], isp_dev->rmem[sink_pad_index].addr);
-			isp_dev->rmem_vaddr[sink_pad_index] = NULL;
-		}
-
 		if (stream_cnt <= 1) {
 			drain_workqueue(isp_dev->isp_mis_wq);
 			if(isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
@@ -1572,6 +1627,19 @@ disable_rdma:
 			/* in multi sensor, miv2_mis work can wait on raw_frame_available_wait_q
 			so flush only after raw_frame_available_wait_q is woken up */
 			drain_workqueue(isp_dev->miv2_mis_wq);
+		}
+
+		/* Free rmem only when the last stream stops (stream_cnt <= 1).
+		 * At this point vid-out has already stopped and VB2 has cleaned up
+		 * its buffers, so the CMA region is no longer referenced.
+		 * Do NOT free when stream_cnt > 1 — vid-out VB2 buffers may still
+		 * reference this CMA region. */
+		if (stream_cnt <= 1 &&
+		    isp_dev->rmem_vaddr[sink_pad_index] &&
+		    isp_dev->fast_toggle_state == FAST_TOGGLE_NONE) {
+			dma_free_coherent(isp_dev->dev, isp_dev->rmem[sink_pad_index].size,
+				isp_dev->rmem_vaddr[sink_pad_index], isp_dev->rmem[sink_pad_index].addr);
+			isp_dev->rmem_vaddr[sink_pad_index] = NULL;
 		}
 
 		if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
@@ -1596,6 +1664,10 @@ disable_rdma:
 	}
 
 	return ret;
+
+err_dec_refcnt:
+	hailo15_isp_refcnt_dec_disable(isp_dev);
+	return ret;
 }
 
 bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format)
@@ -1610,7 +1682,7 @@ bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format)
         return false;
     }
 
-    if (format->format.code == MEDIA_BUS_FMT_SRGGB12_2X12 || format->format.code == MEDIA_BUS_FMT_SRGGB12_3X12 || 
+    if (format->format.code == MEDIA_BUS_FMT_SRGGB12_2X12 || format->format.code == MEDIA_BUS_FMT_SRGGB12_3X12 ||
 		format->format.code == MEDIA_BUS_FMT_SGBRG12_2X12 || format->format.code == MEDIA_BUS_FMT_SGBRG12_3X12) {
         return true;
     }
@@ -1672,7 +1744,7 @@ static int fast_toggle_set_format(struct v4l2_subdev *sd,
 		} else {
 			pad = NULL;
 		}
-	
+
 		if (pad && pad->entity && is_media_entity_v4l2_subdev(pad->entity)) {
 			subdev = media_entity_to_v4l2_subdev(pad->entity);
 			if (subdev) {
@@ -1685,20 +1757,20 @@ static int fast_toggle_set_format(struct v4l2_subdev *sd,
 				}
 			}
 		}
-	
+
 		/* if input_format was not set - no need to update the sensor */
 		if (isp_dev->input_fmt[sink_pad_idx].format.width == 0 ||
 			isp_dev->input_fmt[sink_pad_idx].format.height == 0) {
 			pr_debug("%s - input format was not set - no need to update the sensor\n", __func__);
 			return 0;
 		}
-	
+
 		sensor_sd = hailo15_get_sensor_subdev(isp_dev->sd.v4l2_dev->mdev, sd->grp_id);
 		if (!sensor_sd) {
 			pr_err("%s - failed to get sensor subdev\n", __func__);
 			return -EINVAL;
 		}
-	
+
 		/* the sensor only has a single pad, set to 0 */
 		isp_dev->input_fmt[sink_pad_idx].pad = 0;
 		trace_isp_fast_toggle_subdev_set_fmt(sd->grp_id, toggle_type, sensor_sd->name);
@@ -1728,7 +1800,7 @@ int hailo15_isp_fast_toggle_stream(struct hailo15_dma_ctx *dma_ctx, int grp_id, 
 		pr_err("%s - invalid fast toggle type %d\n", __func__, toggle_type);
 		return -EINVAL;
 	}
-	
+
 	isp_path = HAILO15_VID_GRP_TO_ISP_PATH(grp_id);
 
 	trace_isp_fast_toggle_stream_start(grp_id, toggle_type);
@@ -2535,6 +2607,7 @@ static int hailo15_init_isp_device(struct hailo15_isp_device *isp_dev)
 	isp_dev->toggle_sensors = false;
 
 	isp_dev->hdr_compression_enabled = false;
+	isp_dev->hdr_decompression_enabled = false;
 	spin_lock_init(&isp_dev->stream_state_lock);
 
 	init_waitqueue_head(&isp_dev->buf_done_wait_q);
@@ -2737,9 +2810,16 @@ static int hailo15_isp_probe(struct platform_device *pdev)
 	for (sink_pad = 0; sink_pad < HAILO15_ISP_SINK_PAD_MAX; sink_pad++) {
 		atomic_set(&isp_dev->streaming_started[sink_pad], 0);
 		atomic_set(&isp_dev->frame_received[sink_pad], 0);
+		timer_setup(&isp_dev->frame_timer[sink_pad],
+			    sink_pad == HAILO15_ISP_SINK_PAD_S0 ? frame_timeout_handler_0 : frame_timeout_handler_1,
+			    0);
 	}
 
 	hailo15_fe_get_dev(&isp_dev->fe_dev);
+	if (WARN(!isp_dev->fe_dev, "FE device not available\n")) {
+		ret = -ENODEV;
+		goto err_create_wq;
+	}
 	hailo15_fe_set_address_space_base(isp_dev->fe_dev, isp_dev->base);
 	isp_dev->fe_dev->fe.isp_irq = isp_dev->irq[0];
 

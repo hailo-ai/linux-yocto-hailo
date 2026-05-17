@@ -929,8 +929,10 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	hailo15_buf_list_add(buf, &vid_node->buf_queue);
 	vid_node->fast_toggle_priming_buf = NULL;
 	if (vid_node->prev_buf != NULL) {
-		hailo15_buf_list_add_tail(vid_node->prev_buf, &vid_node->buf_queue);
-		vid_node->prev_buf = NULL;
+		/* The old prev_buf contains the last frame from the previous mode.
+		 * Mark it for silent discard — buffer_done will drop it instead
+		 * of returning it to userspace as a stale frame. */
+		vid_node->drop_prev_buf = true;
 	}
 	vid_node->is_first_buffer_processed = true;
 	mutex_unlock(&vid_node->qlock);
@@ -1215,6 +1217,11 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 		vid_node->fast_toggle_state = FAST_TOGGLE_PRIMING;
 		trace_vid_cap_fast_toggle_priming_complete(vid_node->path, 0);
 		break;
+	case VIDEO_EVENT_COMPLETE:
+		/* Daemon calls this after writing ack to shared memory.
+		 * Wake the kernel thread waiting in event_wait_complete. */
+		wake_up(&vid_node->event_resource.wait_q);
+		break;
 	default:
 		/* video ioctls locks are handled by v4l2 framework */
 		ret = video_ioctl2(file, cmd, arg);
@@ -1252,8 +1259,8 @@ static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
 			pr_err("%s - post event release pipeline failed\n",
 				   __func__);
 		}
-		vid_node->pipeline_init = 0;
 	}
+	vid_node->pipeline_init = 0;
 	vid_node->sequence = 0;
 	vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
 	return ret;
@@ -1634,6 +1641,7 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 {
 	struct hailo15_video_node *vid_node;
 	struct hailo15_buffer *next_buffer;
+	struct hailo15_buffer *prev_buf;
 	int ret;
 
 	vid_node = NULL;
@@ -1655,31 +1663,43 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 		return -EINVAL;
 	}
 
+	/* Delete buffer from irqlist.
+	   This must happen before the buffer is passed to
+	   vb2_buffer_done() and thus can be dequeued by the user and potentially
+	   re-inserted into the irqlist while it is still in the irqlist.
+	   vb2_buffer_done() itself is invoked after dropping the lock. */
+	mutex_lock(&vid_node->qlock);
 	if (hailo15_is_p2a_grp_id(vid_node->path)) {
-		/* not isp flow (P2A) or MCM raw write flow - we can release buffer immediately */
+		/* not isp flow nor MCM raw write flow, this is P2A flow - we can release buffer immediately */
 		vid_node->prev_buf = buf;
 	}
-	/* Delete buffer from irqlist.
-	   This must happen before the buffer is passed to vb2_buffer_done() and thus can be dequeued by the user
-	   and potentially re-inserted into the irqlist while it is still in the irqlist. */
 	if (buf) {
-		mutex_lock(&vid_node->qlock);
 		hailo15_buf_list_del(buf);
-		mutex_unlock(&vid_node->qlock);
 	}
-	if (vid_node->prev_buf) {
-		vid_node->prev_buf->vb.sequence = vid_node->sequence++;
+	prev_buf = vid_node->prev_buf;
+	vid_node->prev_buf = NULL;
+	mutex_unlock(&vid_node->qlock);
 
-		if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF ||
-		    hailo15_is_p2a_grp_id(vid_node->path) ||
-		    hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
-			vid_node->prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+	if (prev_buf) {
+		if (vid_node->drop_prev_buf) {
+			/* Fast toggle: prev_buf contains a stale frame from the old mode.
+			 * Re-queue it silently instead of returning to userspace. */
+			vb2_buffer_done(&prev_buf->vb.vb2_buf,
+					VB2_BUF_STATE_QUEUED);
+			vid_node->drop_prev_buf = false;
+		} else {
+			prev_buf->vb.sequence = vid_node->sequence++;
+
+			if (vid_node->hdr_timestamp_mode == HDR_TIMESTAMP_MODE_OFF ||
+				hailo15_is_p2a_grp_id(vid_node->path) ||
+				hailo15_is_mcm_raw_wr_grp_id(vid_node->path)) {
+				prev_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+			}
+
+			trace_vid_cap_buffer_dequeue(vid_node->path, prev_buf->vb.vb2_buf.index,
+							prev_buf->dma[0], prev_buf->vb.vb2_buf.timestamp);
+			vb2_buffer_done(&prev_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 		}
-
-		trace_vid_cap_buffer_dequeue(vid_node->path, vid_node->prev_buf->vb.vb2_buf.index,
-					     vid_node->prev_buf->dma[0], vid_node->prev_buf->vb.vb2_buf.timestamp);
-		vb2_buffer_done(&vid_node->prev_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
-		vid_node->prev_buf = NULL;
 	}
 
 	/* In P2A flow, the first time this function is called, `buf` will be null, and the next value (stored in the shadow register)
@@ -1722,7 +1742,9 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 
 	if (hailo15_is_isp_grp_id(vid_node->path)) {
 		/* isp flow - we can't release the buffer yet. only in next frame */
+		mutex_lock(&vid_node->qlock);
 		vid_node->prev_buf = buf;
+		mutex_unlock(&vid_node->qlock);
 	}
 
 	return 0;
@@ -2052,6 +2074,7 @@ static int hailo15_video_node_init_events(struct hailo15_video_node *vid_node)
 	size_t size_page_align = PAGE_ALIGN(size);
 
 	mutex_init(&vid_node->event_resource.event_lock);
+	init_waitqueue_head(&vid_node->event_resource.wait_q);
 	vid_node->event_resource.virt_addr =
 		kmalloc( size_page_align , GFP_KERNEL);
 	if (!vid_node->event_resource.virt_addr)

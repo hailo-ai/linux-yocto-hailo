@@ -87,7 +87,7 @@ struct hailo_soc {
 	bool host_current_limit_sent_flag;
 };
 
-#define H15__SCU_BOOT_BIT_MASK (3)
+#define H15__SCU_BOOT_BIT_MASK (7)
 
 static const char *hailo15_boot_options[] = {
     [BOOT_SOURCE_BOOTSTRAP] = "BOOTSTRAP",

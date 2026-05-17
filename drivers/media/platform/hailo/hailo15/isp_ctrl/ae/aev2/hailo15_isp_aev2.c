@@ -89,6 +89,9 @@ static int hailo15_isp_aev2_s_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_HIST64_MODE:
 	case HAILO15_ISP_CID_AE_EXP_WINDOW:
 	case HAILO15_ISP_CID_AE_HCG:
+	case HAILO15_ISP_CID_AE_HCG_LEF:
+	case HAILO15_ISP_CID_AE_HCG_SEF1:
+	case HAILO15_ISP_CID_AE_HCG_SEF2:
 	case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
 	case HAILO15_ISP_CID_AE_SP_RATIO:
 	case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
@@ -144,6 +147,9 @@ static int hailo15_isp_aev2_g_ctrl(struct v4l2_ctrl *ctrl)
 	case HAILO15_ISP_CID_AE_EXP_INPUT:
 	case HAILO15_ISP_CID_AE_EXP_WINDOW:
 	case HAILO15_ISP_CID_AE_HCG:
+	case HAILO15_ISP_CID_AE_HCG_LEF:
+	case HAILO15_ISP_CID_AE_HCG_SEF1:
+	case HAILO15_ISP_CID_AE_HCG_SEF2:
 	case HAILO15_ISP_CID_AE_STEP_FACTOR_LIMIT:
 	case HAILO15_ISP_CID_AE_SP_RATIO:
 	case HAILO15_ISP_CID_AE_LEF_THRESHOLD:
@@ -586,6 +592,39 @@ static const struct v4l2_ctrl_config hailo15_isp_aev2_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "isp_ae_hcg",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_HCG_LEF,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_hcg_lef",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_HCG_SEF1,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_hcg_sef1",
+		.step = 1,
+		.min = 0,
+		.max = 1,
+	},
+	{
+		.ops = &hailo15_isp_aev2_ctrl_ops,
+		.id = HAILO15_ISP_CID_AE_HCG_SEF2,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+		.name = "isp_ae_hcg_sef2",
 		.step = 1,
 		.min = 0,
 		.max = 1,

@@ -310,7 +310,11 @@ struct imx664 {
 	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
+	struct v4l2_ctrl *hcg_sef2_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
 	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
@@ -964,8 +968,41 @@ struct v4l2_ctrl_config imx664_custom_ctrls[] = {
 		.ops = &imx664_ctrl_ops,
 		.id = IMX664_CID_HCG,
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "hcg",
+		.step = IMX664_HCG_STEP,
+		.min = IMX664_HCG_MIN,
+		.max = IMX664_HCG_MAX,
+		.def = IMX664_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_HCG_LEF,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_lef",
+		.step = IMX664_HCG_STEP,
+		.min = IMX664_HCG_MIN,
+		.max = IMX664_HCG_MAX,
+		.def = IMX664_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_HCG_SEF1,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef1",
+		.step = IMX664_HCG_STEP,
+		.min = IMX664_HCG_MIN,
+		.max = IMX664_HCG_MAX,
+		.def = IMX664_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx664_ctrl_ops,
+		.id = IMX664_CID_HCG_SEF2,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef2",
 		.step = IMX664_HCG_STEP,
 		.min = IMX664_HCG_MIN,
 		.max = IMX664_HCG_MAX,
@@ -1401,6 +1438,43 @@ release_hold:
 	imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 0);
 	return ret;
 }
+
+static int imx664_set_hcg_lef(struct imx664 *imx664, u32 hcg)
+{
+	int ret;
+
+	ret = imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx664_write_reg(imx664, IMX664_REG_HCG, 1, hcg);
+	imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx664_set_hcg_sef1(struct imx664 *imx664, u32 hcg)
+{
+	int ret;
+
+	ret = imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx664_write_reg(imx664, IMX664_REG_HCG_SEF1, 1, hcg);
+	imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx664_set_hcg_sef2(struct imx664 *imx664, u32 hcg)
+{
+	int ret;
+
+	ret = imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx664_write_reg(imx664, IMX664_REG_HCG_SEF2, 1, hcg);
+	imx664_write_reg(imx664, IMX664_REG_HOLD, 1, 0);
+	return ret;
+}
+
 /**
  * imx664_update_exp_gain() - Set updated exposure and gain
  * @imx664: pointer to imx664 device
@@ -1569,6 +1643,9 @@ static void imx664_set_exp_activity(struct imx664 *imx664)
 
 	v4l2_ctrl_activate(imx664->sef2.again_ctrl, sef2);
 	v4l2_ctrl_activate(imx664->sef2.exp_ctrl, sef2);
+
+	v4l2_ctrl_activate(imx664->hcg_sef1_ctrl, sef1);
+	v4l2_ctrl_activate(imx664->hcg_sef2_ctrl, sef2);
 }
 
 static int imx664_set_hdr_mode(struct imx664 *imx664, bool enable)
@@ -1758,18 +1835,55 @@ static int imx664_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		break;
 	case IMX664_CID_HCG:
-		/* Set controls only if sensor is in power on state */
+		/* Global HCG: sync per-exposure cached values unconditionally,
+		 * write registers only if sensor is powered on */
+		/* Controls are independent (no cluster) so direct cur.val update is safe */
+		imx664->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx664->cur_mode->dol >= 2)
+			imx664->hcg_sef1_ctrl->cur.val = ctrl->val;
+		if (imx664->cur_mode->dol >= 3)
+			imx664->hcg_sef2_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(imx664->dev))
 			return 0;
-		
-		dev_dbg(imx664->dev, "Setting HCG to %u\n", ctrl->val);
 
+		dev_dbg(imx664->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx664_set_hcg_mode(imx664, ctrl->val);
-		if (ret) {
+		if (ret)
 			dev_err(imx664->dev, "Failed to set HCG mode: %d\n", ret);
-		}
 		pm_runtime_put(imx664->dev);
-    	break;
+		break;
+	case IMX664_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(imx664->dev))
+			return 0;
+		dev_dbg(imx664->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx664_set_hcg_lef(imx664, ctrl->val);
+		if (ret)
+			dev_err(imx664->dev, "Failed to set HCG LEF: %d\n", ret);
+		pm_runtime_put(imx664->dev);
+		break;
+	case IMX664_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx664->dev))
+			return 0;
+		dev_dbg(imx664->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx664_set_hcg_sef1(imx664, ctrl->val);
+		if (ret)
+			dev_err(imx664->dev, "Failed to set HCG SEF1: %d\n", ret);
+		pm_runtime_put(imx664->dev);
+		break;
+	case IMX664_CID_HCG_SEF2:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx664->dev))
+			return 0;
+		dev_dbg(imx664->dev, "Setting HCG SEF2 to %u\n", ctrl->val);
+		ret = imx664_set_hcg_sef2(imx664, ctrl->val);
+		if (ret)
+			dev_err(imx664->dev, "Failed to set HCG SEF2: %d\n", ret);
+		pm_runtime_put(imx664->dev);
+		break;
 	case IMX664_CID_WDR_PRIMING:
 		imx664->wdr_priming_val = ctrl->val;
 		ret = 0;
@@ -2579,7 +2693,12 @@ static int imx664_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx664 *imx664 = to_imx664(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx664->reset_gpio, 1);
 
@@ -2594,10 +2713,12 @@ static int imx664_power_on(struct device *dev)
 
 	usleep_range(18000, 20000);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 
 error_reset:
 	gpiod_set_value_cansleep(imx664->reset_gpio, 0);
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return ret;
 }
@@ -2612,10 +2733,17 @@ static int imx664_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx664 *imx664 = to_imx664(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx664->reset_gpio, 0);
 
 	clk_disable_unprepare(imx664->inclk);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -2681,8 +2809,12 @@ static int imx664_init_controls(struct imx664 *imx664)
 	imx664_setup_custom_ctrl(imx664, &imx664->vmax_ctrl, IMX664_CID_VMAX);
 	imx664_setup_custom_ctrl(imx664, &imx664->hmax_ctrl, IMX664_CID_HMAX);
 
-	/* Initialize HCG control */
+	/* Initialize HCG control cluster */
 	imx664_setup_custom_ctrl(imx664, &imx664->hcg_ctrl, IMX664_CID_HCG);
+	imx664_setup_custom_ctrl(imx664, &imx664->hcg_lef_ctrl, IMX664_CID_HCG_LEF);
+	imx664_setup_custom_ctrl(imx664, &imx664->hcg_sef1_ctrl, IMX664_CID_HCG_SEF1);
+	imx664_setup_custom_ctrl(imx664, &imx664->hcg_sef2_ctrl, IMX664_CID_HCG_SEF2);
+
 
 	/* Custom RHS1 stub (not implemented for this sensor) */
 	imx664_setup_custom_ctrl_limits(imx664, &imx664->custom_rhs1_ctrl, IMX664_CID_CUSTOM_RHS1,
@@ -2744,7 +2876,10 @@ static int imx664_init_controls(struct imx664 *imx664)
 	}
 
 	imx664->sd.ctrl_handler = ctrl_hdlr;
-	
+
+	/* Set initial activity state for per-exposure controls */
+	imx664_set_exp_activity(imx664);
+
 	return 0;
 }
 

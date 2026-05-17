@@ -43,7 +43,7 @@
 #define IMX662_2DOL_SMALL_GAP 2
 #define IMX662_2DOL_LARGE_GAP 5
 #define IMX662_2DOL_SHR0_RHS1_GAP   IMX662_2DOL_LARGE_GAP
-#define IMX662_2DOL_SHR0_FSC_GAP    IMX662_2DOL_SMALL_GAP
+#define IMX662_2DOL_SHR0_FSC_GAP    IMX662_MIN_SHR0_LENGTH
 #define IMX662_2DOL_SHR1_MIN_GAP    IMX662_2DOL_LARGE_GAP
 #define IMX662_2DOL_SHR1_RHS1_GAP   IMX662_2DOL_SMALL_GAP
 
@@ -127,6 +127,8 @@
 #define IMX662_CID_CUSTOM_RHS1 (IMX662_CID_BASE + 13)
 #define IMX662_CID_WDR_PRIMING (IMX662_CID_BASE + 14)
 #define IMX662_CID_CUSTOM_RHS1_PRIMING (IMX662_CID_BASE + 15)
+#define IMX662_CID_HCG_LEF  (IMX662_CID_BASE + 16)
+#define IMX662_CID_HCG_SEF1 (IMX662_CID_BASE + 17)
 
 /* Priming defaults */
 #define IMX662_CUSTOM_RHS1_PRIMING_MIN -1
@@ -230,7 +232,10 @@ struct imx662 {
 	struct v4l2_ctrl *hblank_ctrl;
 	struct v4l2_ctrl *test_pattern;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
 
 	/* Read-only timing readback controls */
 	struct v4l2_ctrl *rhs1_ctrl;
@@ -697,7 +702,12 @@ static int imx662_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx662 *sensor = to_imx662(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	/* 1) Hold XCLR low for >= 500 ns (use 1 µs margin) */
 	if (sensor->reset_gpio)
@@ -718,12 +728,14 @@ static int imx662_power_on(struct device *dev)
 		/* attempt to leave XCLR low for safety */
 		if (sensor->reset_gpio)
 			gpiod_set_value_cansleep(sensor->reset_gpio, 0);
+		i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 		return ret;
 	}
 
 	/* 4) Wait >= 20 µs for internal stabilization */
 	usleep_range(20, 25);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 }
 
@@ -731,6 +743,11 @@ static int imx662_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx662 *sensor = to_imx662(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	/* 1) Disable master clock first (stop INCK) */
 	clk_disable_unprepare(sensor->inclk);
@@ -738,6 +755,8 @@ static int imx662_power_off(struct device *dev)
 	/* 2) Assert XCLR low (make sure input is 0V before OVDD falls) */
 	if (sensor->reset_gpio)
 		gpiod_set_value_cansleep(sensor->reset_gpio, 0);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -1094,6 +1113,16 @@ static int imx662_set_hcg_mode(struct imx662 *imx662, u32 hcg)
 	return 0;
 }
 
+static int imx662_set_hcg_lef(struct imx662 *imx662, u32 hcg)
+{
+	return imx662_write_reg(imx662, IMX662_REG_HCG, 1, hcg);
+}
+
+static int imx662_set_hcg_sef1(struct imx662 *imx662, u32 hcg)
+{
+	return imx662_write_reg(imx662, IMX662_REG_HCG_SEF1, 1, hcg);
+}
+
 static void imx662_set_mode(struct imx662 *imx662, const struct imx662_mode *mode)
 {
 	int ret;
@@ -1128,6 +1157,7 @@ static void imx662_set_exp_activity(struct imx662 *imx662)
 
 	v4l2_ctrl_activate(imx662->sef1.again_ctrl, sef1);
 	v4l2_ctrl_activate(imx662->sef1.exp_ctrl, sef1);
+	v4l2_ctrl_activate(imx662->hcg_sef1_ctrl, sef1);
 }
 
 static int imx662_update_exp_vblank_controls(struct imx662 *imx662)
@@ -1264,12 +1294,38 @@ static int imx662_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case IMX662_CID_HCG:
+		/* Global HCG: sync per-exposure cached values unconditionally,
+		 * write registers only if sensor is powered on */
+		/* Controls are independent (no cluster) so direct cur.val update is safe */
+		imx662->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx662->cur_mode->dol >= 2)
+			imx662->hcg_sef1_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(&client->dev))
 			return 0;
 
-		dev_dbg(&client->dev, "Setting HCG to %u\n", ctrl->val);
+		dev_dbg(&client->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx662_set_hcg_mode(imx662, ctrl->val);
+		if (ret)
+			dev_err(&client->dev, "Failed to set HCG mode: %d\n", ret);
+		pm_runtime_put(&client->dev);
+		break;
 
+	case IMX662_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(&client->dev))
+			return 0;
+		dev_dbg(&client->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx662_set_hcg_lef(imx662, ctrl->val);
+		pm_runtime_put(&client->dev);
+		break;
+
+	case IMX662_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(&client->dev))
+			return 0;
+		dev_dbg(&client->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx662_set_hcg_sef1(imx662, ctrl->val);
 		pm_runtime_put(&client->dev);
 		break;
 
@@ -1737,7 +1793,7 @@ static int imx662_init_controls(struct imx662 *imx662)
 			.ops = &imx662_ctrl_ops,
 			.id = IMX662_CID_HCG,
 			.type = V4L2_CTRL_TYPE_BOOLEAN,
-			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 			.name = "hcg",
 			.step = IMX662_HCG_STEP,
 			.min = IMX662_HCG_MIN,
@@ -1746,6 +1802,40 @@ static int imx662_init_controls(struct imx662 *imx662)
 		};
 		imx662->hcg_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_cfg, NULL);
 	}
+
+	/* Per-exposure HCG LEF control */
+	{
+		struct v4l2_ctrl_config hcg_lef_cfg = {
+			.ops = &imx662_ctrl_ops,
+			.id = IMX662_CID_HCG_LEF,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.name = "hcg_lef",
+			.step = IMX662_HCG_STEP,
+			.min = IMX662_HCG_MIN,
+			.max = IMX662_HCG_MAX,
+			.def = IMX662_HCG_DEFAULT,
+		};
+		imx662->hcg_lef_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_lef_cfg, NULL);
+	}
+
+	/* Per-exposure HCG SEF1 control */
+	{
+		struct v4l2_ctrl_config hcg_sef1_cfg = {
+			.ops = &imx662_ctrl_ops,
+			.id = IMX662_CID_HCG_SEF1,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.name = "hcg_sef1",
+			.step = IMX662_HCG_STEP,
+			.min = IMX662_HCG_MIN,
+			.max = IMX662_HCG_MAX,
+			.def = IMX662_HCG_DEFAULT,
+		};
+		imx662->hcg_sef1_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_sef1_cfg, NULL);
+	}
+
+
 
 	/* Custom RHS1 stub */
 	{
