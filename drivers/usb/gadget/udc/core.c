@@ -1134,7 +1134,6 @@ static inline void usb_gadget_udc_stop(struct usb_udc *udc)
 		dev_err(&udc->dev, "UDC had already stopped\n");
 		return;
 	}
-
 	udc->gadget->ops->udc_stop(udc->gadget);
 	udc->started = false;
 }
@@ -1421,7 +1420,7 @@ EXPORT_SYMBOL_GPL(usb_add_gadget_udc);
 
 static void usb_gadget_remove_driver(struct usb_udc *udc)
 {
-	dev_dbg(&udc->dev, "unregistering UDC driver [%s]\n",
+	dev_info(&udc->dev, "unregistering UDC driver [%s]\n",
 			udc->driver->function);
 
 	kobject_uevent(&udc->dev.kobj, KOBJ_CHANGE);
@@ -1430,6 +1429,7 @@ static void usb_gadget_remove_driver(struct usb_udc *udc)
 	usb_gadget_disable_async_callbacks(udc);
 	if (udc->gadget->irq)
 		synchronize_irq(udc->gadget->irq);
+
 	udc->driver->unbind(udc->gadget);
 	usb_gadget_udc_stop(udc);
 

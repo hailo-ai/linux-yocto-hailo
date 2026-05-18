@@ -77,6 +77,7 @@
 
 #include "isp_ioctl.h"
 #include "isp_fe.h"
+#include "../hailo15-isp-hw-defs.h"
 
 #define VIVCAM_FE_NAME "vivfe"
 #define VIVCAM_FE_MAXCNT 2
@@ -90,16 +91,8 @@
 #define VI_ISP_IMSC_OFFSET 0x5bc
 #define VI_MI_IMSC_OFFSET 0x16c0
 #define VIV_ISP_FE_DMA_TIMOUT_MS	1000
-#define VIV_ISP_PROCESS_TIMOUT_MS	400
 #define VIV_ISP_FE_DEBUG_DUMP		0
 #define VIV_ISP_FE_UNUSED_OFFSET	((uint32_t)-1)
-
-#define viv_check_retval(x)\
-       do {\
-               if ((x))\
-                       return -EIO;\
-       } while (0)
-
 
 static bool fe0_enable = true;
 module_param(fe0_enable, bool, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -140,6 +133,13 @@ static unsigned int vvcam_fe_minor;
 static struct class *vvcam_fe_class;
 static unsigned int fe_register_index;
 
+
+// forward declaration
+static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev);
+static int isp_fe_clean_wo_bits(struct vvcam_fe_dev *dev);
+static int isp_fe_read_vdid_reg_from_full_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t *val);
+static int isp_fe_write_vdid_reg_to_full_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t val);
+
 static void isp_fe_raw_write_reg(struct vvcam_fe_dev *dev, u32 offset, u32 val)
 {
 	if (offset >= ISP_FE_REG_OFFSET_BYTE_MAX)
@@ -161,15 +161,36 @@ static uint32_t isp_fe_raw_read_reg(struct vvcam_fe_dev *dev, u32 offset)
 	return val;
 }
 
-static uint32_t isp_fe_hash_map(struct isp_fe_context *fe, uint32_t offset)
+static int isp_fe_get_full_cmdbuf_cmd(struct isp_fe_context *fe, uint32_t offset,
+			      	      uint8_t vdid, union isp_fe_cmd_u **out_cmd)
 {
 	uint32_t mapped_index;
+
+	if (!fe || !out_cmd) {
+		pr_err("%s: invalid parameters\n", __func__);
+		return -EINVAL;
+	}
+
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s: invalid vdid %d\n", __func__, vdid);
+		return -EINVAL;
+	}
+
 	if (offset < ISP_FE_REG_OFFSET_BYTE_MAX) {
 		mapped_index = (uint32_t)fe->hash_map_tbl[offset / ISP_FE_REG_SIZE];
 	} else {
 		mapped_index = offset / ISP_FE_REG_SIZE;
 	}
-	return mapped_index;
+
+	/* Validate mapped_index is within buffer bounds */
+	if (mapped_index >= fe->fe_buff[vdid].refresh_full_regs.cmd_num_max) {
+		pr_err("%s: mapped_index %u out of bounds (max %u) for offset 0x%x\n",
+		       __func__, mapped_index, fe->fe_buff[vdid].refresh_full_regs.cmd_num_max, offset);
+		return -EINVAL;
+	}
+
+	*out_cmd = &fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index];
+	return 0;
 }
 
 #if VIV_ISP_FE_DEBUG_DUMP == 1
@@ -222,7 +243,7 @@ static void isp_fe_cmdbuffer_parse(struct isp_fe_cmd_buffer_t *refresh_regs)
 }
 #endif
 
-static int isp_fe_buffer_memset(union isp_fe_cmd_u *cmd_buffer, u32 buffer_num)
+static void isp_fe_buffer_memset(union isp_fe_cmd_u *cmd_buffer, u32 buffer_num)
 {
 	int32_t i;
 	struct isp_fe_cmd_nop_t cmd_nop;
@@ -234,22 +255,30 @@ static int isp_fe_buffer_memset(union isp_fe_cmd_u *cmd_buffer, u32 buffer_num)
 			cmd_buffer[i].cmd_nop = cmd_nop;
 		}
 	}
-	return 0;
+}
+
+static inline void isp_fe_fill_write_cmd(struct isp_fe_cmd_wreg_t *cmd, uint32_t offset, uint32_t val)
+{
+	cmd->fe_cmd.cmd.start_reg_addr = offset;
+	cmd->fe_cmd.cmd.length = 1;
+	cmd->fe_cmd.cmd.rsv = 0;
+	cmd->fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
+	cmd->w_data = val;
 }
 
 static int isp_fe_get_reg_def_val(struct vvcam_fe_dev *dev)
 {
 	uint32_t i;
 	uint8_t vdid;
-	union isp_fe_cmd_u *full_cmd_buffer;
-	uint32_t mapped_index, offset, ctrl_index = 0;
+	uint32_t offset, ctrl_index = 0;
 	uint32_t ctrl_num = ARRAY_SIZE(ctrl_regs);
 	struct isp_fe_context *fe = &dev->fe;
+	union isp_fe_cmd_u *cmd;
+	int ret;
 	isp_info("enter %s\n", __func__);
 
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
 		ctrl_index = 0;
-		full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
 		for (i = 0; i < ISP_FE_REG_NUM; i++) {
 			//read the default register value from isp hardware
 			//before isp startup
@@ -259,27 +288,35 @@ static int isp_fe_get_reg_def_val(struct vvcam_fe_dev *dev)
 			if (offset == fe->general_ctrl.isp_hist) {
 				continue;
 			}
-			if (fe->state == ISP_FE_STATE_GOT_BUFFER) {
-				fe->reg_buffer[i] = isp_fe_raw_read_reg(dev, offset);
-			}
 
-			mapped_index = isp_fe_hash_map(fe, offset);
+			fe->reg_buffer[i] = isp_fe_raw_read_reg(dev, offset);
+
+			ret = isp_fe_get_full_cmdbuf_cmd(fe, offset, vdid, &cmd);
+			if (ret) {
+				pr_err("%s: invalid cmd for offset 0x%x during init, ret=%d\n", __func__, offset, ret);
+				return ret;
+			}
 			/*set the ctrl registers with default value */
 			if (ctrl_index < ctrl_num && ctrl_regs[ctrl_index] == offset) {
-				full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.start_reg_addr = offset;
-				full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.length = 1;
-				full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.rsv = 0;
-				full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
+				isp_fe_fill_write_cmd(&cmd->cmd_wreg, offset, fe->reg_buffer[i]);
 				ctrl_index++;
+			} else {
+				// for non-control, we want the data to be correct when reading
+				// without setting the command to a write command
+				cmd->cmd_wreg.w_data = fe->reg_buffer[i];
 			}
-			full_cmd_buffer[mapped_index].cmd_wreg.w_data = fe->reg_buffer[i];
 
 		}
 
 		//set lut register to nop in full cmd buffer
 		for (i = 0; i < fe->fe_buff[vdid].tbl_reg_addr_num; i++) {
-			mapped_index = isp_fe_hash_map(fe, fe->fe_buff[vdid].tbl_buffer[i].tbl_reg_offset);
-			isp_fe_buffer_memset(&full_cmd_buffer[mapped_index], 1);
+			ret = isp_fe_get_full_cmdbuf_cmd(fe, fe->fe_buff[vdid].tbl_buffer[i].tbl_reg_offset, vdid, &cmd);
+			if (ret) {
+				pr_err("%s: invalid cmd for LUT offset 0x%x, ret=%d\n", __func__,
+				       fe->fe_buff[vdid].tbl_buffer[i].tbl_reg_offset, ret);
+				return ret;
+			}
+			isp_fe_buffer_memset(cmd, 1);
 		}
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 		isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
@@ -287,18 +324,20 @@ static int isp_fe_get_reg_def_val(struct vvcam_fe_dev *dev)
 #endif
 	}
 
-	fe->state = ISP_FE_STATE_READY;
 	return 0;
 }
 
-static bool is_start_fe_dma(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+static int is_start_fe_dma(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val, bool *out_start)
 {				//init start or MCM start
-	bool ret = false;
+	int ret = 0;
 	bool en_updated = false;
 	struct isp_fe_context *fe = &dev->fe;
-#if defined(ISP_MIV2) || defined(ISP_MIV1)
-	uint32_t mapped_index;
-#endif
+	uint32_t mi_ctrl_val;
+
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s error: vdid %d is out of range (max=%d)\n", __func__, vdid, fe->vdid_num);
+		return -EINVAL;
+	}
 //		  isp_info("enter %s\n", __func__);
 
 //Case 1: normal
@@ -311,8 +350,12 @@ static bool is_start_fe_dma(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t off
 #if defined(ISP_MIV2)
 	if (fe->general_ctrl.mi_imsc3 == offset &&
 		(val & fe->general_ctrl.mi_imsc3_mask) == fe->general_ctrl.mi_imsc3_mask) {	//enable irq
-		mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_ctrl);
-		if (fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data != 0) {
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_ctrl, &mi_ctrl_val);
+		if (ret) {
+			pr_err("%s: reading mi_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_ctrl, ret);
+			return ret;
+		}
+		if (mi_ctrl_val != 0) {
 			fe->fe_buff[vdid].isp_mi_enable = 1;
 			en_updated = true;
 		}
@@ -321,9 +364,12 @@ static bool is_start_fe_dma(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t off
 	if (fe->general_ctrl.mi_init == offset &&
 		(val & fe->general_ctrl.mi_init_mask) ==
 		fe->general_ctrl.mi_init_mask) {
-		mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_ctrl);
-		if ((fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data &
-				fe->general_ctrl.mi_ctrl_mask) != 0) {
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_ctrl, &mi_ctrl_val);
+		if (ret) {
+			pr_err("%s: reading mi_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_ctrl, ret);
+			return ret;
+		}
+		if ((mi_ctrl_val & fe->general_ctrl.mi_ctrl_mask) != 0) {
 			fe->fe_buff[vdid].isp_mi_enable = 1;	//disable in stop function
 			en_updated = true;
 		}
@@ -333,26 +379,34 @@ static bool is_start_fe_dma(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t off
 	if (en_updated == true &&
 		fe->fe_buff[vdid].isp_ctrl_enable == 1 &&
 		fe->fe_buff[vdid].isp_mi_enable == 1) {
-		return true;
+		*out_start = true;
+		return 0;
 	}
 //case 3: TPG
 	if (fe->general_ctrl.isp_tpg_ctrl == offset &&
 		(val & fe->general_ctrl.isp_tpg_ctrl_mask) ==
 		fe->general_ctrl.isp_tpg_ctrl_mask) {
-		return true;
+		*out_start = true;
+		return 0;
 	}
 
-	return ret;
+	*out_start = false;
+	return 0;
 }
 
-static bool is_stop_isp(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+static int is_stop_isp(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val, bool *out_stop)
 {				//stop
-	bool ret = false;
 	bool en_updated = false;
 	struct isp_fe_context *fe = &dev->fe;
 #if defined(ISP_MIV1)
-	uint32_t mapped_index;
+	int ret;
+	uint32_t mi_ctrl_val;
 #endif
+
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s error: vdid %d is out of range (max=%d)\n", __func__, vdid, fe->vdid_num);
+		return -EINVAL;
+	}
 
 //Case 1: normal
 	if (fe->general_ctrl.isp_ctrl == offset &&
@@ -370,9 +424,12 @@ static bool is_stop_isp(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset,
 	if (fe->general_ctrl.mi_init == offset &&
 		(val & fe->general_ctrl.mi_init_mask) ==
 		fe->general_ctrl.mi_init_mask) {
-		mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_ctrl);
-		if ((fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data &
-			fe->general_ctrl.mi_ctrl_mask) == 0) {
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_ctrl, &mi_ctrl_val);
+		if (ret) {
+			pr_err("%s: reading mi_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_ctrl, ret);
+			return ret;
+		}
+		if ((mi_ctrl_val & fe->general_ctrl.mi_ctrl_mask) == 0) {
 			fe->fe_buff[vdid].isp_mi_enable = 0;
 			en_updated = true;
 		}
@@ -382,147 +439,186 @@ static bool is_stop_isp(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset,
 	if (en_updated == true &&
 		fe->fe_buff[vdid].isp_ctrl_enable == 0 &&
 		fe->fe_buff[vdid].isp_mi_enable == 0) {
-		return true;
+		*out_stop = true;
+		return 0;
 	}
 //case 3: TPG
 	if (fe->general_ctrl.isp_tpg_ctrl == offset &&
 		(val & fe->general_ctrl.isp_tpg_ctrl_mask) == 0) {
-		return true;
-	}
-
-	return ret;
-}
-
-static bool is_cpu_write(struct vvcam_fe_dev *dev, uint32_t offset)
-{
-	bool cpu_write = false;
-	struct isp_fe_context *fe = &dev->fe;
-
-	if (fe->general_ctrl.fe_icr == offset ||
-		fe->general_ctrl.isp_icr == offset ||
-		fe->general_ctrl.mi_icr == offset ||
-#if defined(ISP_MIV2)
-		fe->general_ctrl.mi_icr1 == offset ||
-		fe->general_ctrl.mi_icr2 == offset ||
-		fe->general_ctrl.mi_icr3 == offset ||
-#endif
-		fe->general_ctrl.isp_stitching_icr == offset ||
-		fe->general_ctrl.fe_ctrl == offset ||
-		fe->general_ctrl.mipi_icr == offset) {
-		cpu_write = true;
-	} else if ((offset >= 0x1200 && offset <= 0x1294) ||
-			(offset >= 0x1610 && offset <= 0x1668) ||
-			(offset >= 0x3300 && offset <= 0x33FC) ||
-			(offset >= 0x500c && offset <= 0x5060) ||
-			(offset >= 0x5700 && offset <= 0x5894) ||
-			(offset >= 0x5900 && offset <= 0x5924) ||
-			(offset >= 0x5980 && offset <= 0x59A4)) {
-		cpu_write = true;
-	}
-
-	return cpu_write;
-}
-
-static bool is_cpu_read(struct vvcam_fe_dev *dev, uint32_t offset)
-{
-	bool cpu_read = false;
-	struct isp_fe_context *fe = &dev->fe;
-
-	if (fe->general_ctrl.isp_mis == offset ||
-		fe->general_ctrl.fe_mis == offset ||
-		fe->general_ctrl.mi_mis == offset ||
-#if defined(ISP_MIV2)
-		fe->general_ctrl.mi_mis1 == offset ||
-		fe->general_ctrl.mi_mis2 == offset ||
-		fe->general_ctrl.mi_mis3 == offset ||
-#endif
-		fe->general_ctrl.isp_stitching_mis == offset ||
-		// @hailo - reading fe_ctrl is only for debugging purposes
-		fe->general_ctrl.fe_ctrl == offset ||
-			fe->general_ctrl.mipi_mis == offset) {
-		cpu_read = true;
-	} else if ((offset >= 0x1200 && offset <= 0x1294) ||
-			(offset >= 0x1610 && offset <= 0x1668) ||
-			(offset >= 0x3300 && offset <= 0x33FC) ||
-			(offset >= 0x500c && offset <= 0x5060) ||
-			(offset >= 0x5700 && offset <= 0x5894) ||
-			(offset >= 0x5900 && offset <= 0x5924) ||
-			(offset >= 0x5980 && offset <= 0x59A4)) {
-		cpu_read = true;
-	}
-
-	return cpu_read;
-}
-
-int isp_fe_read_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val)
-{
-	union isp_fe_cmd_u *full_cmd_buffer;
-	uint32_t mapped_index;
-	struct isp_fe_context *fe;
-	unsigned long flags;
-
-	if (!dev) {
-		isp_err("%s error: dev is NULL!", __func__);
-		return -ENODEV;
-	}
-
-	fe = &dev->fe;
-
-	if (fe->state == ISP_FE_STATE_INIT) {
-		pr_warn("%s - trying to read from offset 0x%04x when fe is not ready\n", __func__, offset);
-		return -EINVAL;
-	}
-
-	if (offset == fe->general_ctrl.isp_hist && offset != VIV_ISP_FE_UNUSED_OFFSET) {
-		*val = fe->fe_buff[vdid].fixed_reg_buffer[fe->fe_buff[vdid].rd_index++];
-		if (fe->fe_buff[vdid].rd_index == fe->fe_buff[vdid].fixed_reg_rd_num) {
-			fe->fe_buff[vdid].rd_index = 0;
-		}
+		*out_stop = true;
 		return 0;
 	}
 
-	full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
-	mapped_index = isp_fe_hash_map(fe, offset);
-	//read register directly
-	if (is_cpu_read(dev, offset) == true) {
-		// If not in atomic context, acquire read lock to allow concurrent raw reg reads
-		// but block during fe transaction (e.g. IRQ or holding spinlock)
-		if (in_atomic()) {
-			*val = isp_fe_raw_read_reg(dev, offset);
-		} else {
-			down_read(&fe->cpu_rw_sem);
-			*val = isp_fe_raw_read_reg(dev, offset);
-			up_read(&fe->cpu_rw_sem);
-		}
-		spin_lock_irqsave(&fe->full_buff_lock, flags);
-		full_cmd_buffer[mapped_index].cmd_wreg.w_data = *val;
-		spin_unlock_irqrestore(&fe->full_buff_lock, flags);
-	} else {
-		if (fe->state == ISP_FE_STATE_EXIT) {
-			isp_err("%s error: fe is destoried!", __func__);
-			return -EINVAL;
-		}
+	*out_stop = false;
+	return 0;
+}
 
-		*val = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
+bool isp_fe_is_non_fe_control_register(uint32_t offset)
+{
+	return (MIV2_MIS == offset || MIV2_ICR == offset ||
+		MIV2_MIS1 == offset || MIV2_ICR1 == offset ||
+		MIV2_MIS2 == offset || MIV2_ICR2 == offset ||
+		MIV2_MIS3 == offset || MIV2_ICR3 == offset ||
+		ISP_MIS == offset || ISP_ICR == offset ||
+		MIPI_MIS == offset || MIPI_ICR == offset) ||
+		(offset >= 0x1200 && offset <= 0x1294) ||
+		(offset >= 0x1610 && offset <= 0x1668) ||
+		(offset >= 0x3300 && offset <= 0x33FC) ||
+		(offset >= 0x500c && offset <= 0x5060) ||
+		(offset >= 0x5700 && offset <= 0x5894) ||
+		(offset >= 0x5900 && offset <= 0x5924) ||
+		(offset >= 0x5980 && offset <= 0x59A4);
+}
+EXPORT_SYMBOL(isp_fe_is_non_fe_control_register);
+
+bool isp_fe_is_fe_control_register(uint32_t offset)
+{
+	// @hailo - reading fe_ctrl is only for debugging purposes
+	return FE_MIS == offset || FE_ICR == offset || FE_CTRL == offset;
+}
+EXPORT_SYMBOL(isp_fe_is_fe_control_register);
+
+bool isp_fe_is_control_register(uint32_t offset)
+{
+	return isp_fe_is_non_fe_control_register(offset) || isp_fe_is_fe_control_register(offset);
+}
+EXPORT_SYMBOL(isp_fe_is_control_register);
+
+bool isp_fe_is_vdid_register(uint32_t offset)
+{
+	return !isp_fe_is_control_register(offset);
+}
+EXPORT_SYMBOL(isp_fe_is_vdid_register);
+
+static bool isp_fe_is_status_reg(struct isp_fe_context *fe, uint32_t offset)
+{
+	uint32_t i, reg_index, reg_offset;
+
+	for (i = 0; i < (uint32_t)fe->status_regs_num; i++) {
+		reg_offset = fe->status_regs[i].reg_base;
+		for (reg_index = 0; reg_index < fe->status_regs[i].reg_num; reg_index++) {
+			if (offset == reg_offset)
+				return true;
+			reg_offset += fe->status_regs[i].reg_step;
+		}
 	}
+	return false;
+}
+
+static void __isp_fe_read_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
+{
+	//read register directly
+	*val = isp_fe_raw_read_reg(dev, offset);
+
+	// NOTE: originally reading CPU registers would also update
+	// their copy in the command buffer. We removed it since these are control
+	// registers and should not be in the FE command buffer in the first place.
+}
+
+static int __isp_fe_read_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val)
+{
+	struct isp_fe_context *fe = &dev->fe;
+	uint32_t hw_val;
+	int ret;
+
+
+	/* Histogram special handling */
+	if (offset == fe->general_ctrl.isp_hist && offset != VIV_ISP_FE_UNUSED_OFFSET) {
+		if (vdid == fe->curr_vdid && fe->fe_buff[vdid].rd_index == 0) {
+			/* First read (index 0) on current VDID: read all N values from HW */
+			uint32_t i;
+
+			for (i = 0; i < fe->fe_buff[vdid].fixed_reg_rd_num; i++)
+				fe->fe_buff[vdid].fixed_reg_buffer[i] =
+					isp_fe_raw_read_reg(dev, fe->general_ctrl.isp_hist);
+		}
+		/* Return from fixed_reg_buffer (just populated if index was 0 and current VDID) */
+		*val = fe->fe_buff[vdid].fixed_reg_buffer[fe->fe_buff[vdid].rd_index++];
+		if (fe->fe_buff[vdid].rd_index == fe->fe_buff[vdid].fixed_reg_rd_num)
+			fe->fe_buff[vdid].rd_index = 0;
+		return 0;
+	}
+
+	if (vdid == fe->curr_vdid && isp_fe_is_status_reg(fe, offset)) {
+		/* Status register on current VDID: read from HW, update command buffer */
+		hw_val = isp_fe_raw_read_reg(dev, offset);
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, offset, hw_val);
+		if (ret) {
+			pr_err("%s: failed to update status reg 0x%x in cmd buf, ret=%d\n", __func__, offset, ret);
+			return ret;
+		}
+	}
+
+	return isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, offset, val);
+}
+
+static void __isp_fe_write_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val)
+{
+	isp_fe_raw_write_reg(dev, offset, val);
+
+	//MCM+FE+HDR workaroud.
+	if (offset == 0x5700) {
+		mdelay(1);
+	}
+}
+
+static int isp_fe_write_vdid_reg_to_full_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t val)
+{
+	int ret;
+	union isp_fe_cmd_u *cmd;
+
+	ret = isp_fe_get_full_cmdbuf_cmd(fe, offset, vdid, &cmd);
+	if (ret) {
+		pr_err("%s: invalid cmd for offset 0x%x, ret=%d\n", __func__, offset, ret);
+		return ret;
+	}
+	isp_fe_fill_write_cmd(&cmd->cmd_wreg, offset, val);
+	return 0;
+}
+
+static int isp_fe_read_vdid_reg_from_full_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t *val)
+{
+	union isp_fe_cmd_u *cmd;
+	int ret;
+
+	ret = isp_fe_get_full_cmdbuf_cmd(fe, offset, vdid, &cmd);
+	if (ret) {
+		pr_err("%s: invalid cmd for offset 0x%x, ret=%d\n", __func__, offset, ret);
+		return ret;
+	}
+	*val = cmd->cmd_wreg.w_data;
 
 	return 0;
 }
 
-int isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+static int isp_fe_write_vdid_reg_to_partial_cmd_buf(struct isp_fe_context *fe, uint8_t vdid, uint32_t offset, uint32_t val)
+{
+	struct isp_fe_cmd_buffer_t *part_cmd_buffer;
+
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s error: vdid %d is out of range (max=%d)\n", __func__, vdid, fe->vdid_num);
+		return -EINVAL;
+	}
+
+	part_cmd_buffer = &fe->fe_buff[vdid].refresh_part_regs;
+
+	if (part_cmd_buffer->curr_cmd_num >= ISP_FE_REG_PART_REFRESH_NUM) {
+		// partial buffer is used until full.
+		// if it is full, full command buffer is used instead.
+		return 0;
+	}
+	isp_fe_fill_write_cmd(&part_cmd_buffer->cmd_buffer[part_cmd_buffer->curr_cmd_num].cmd_wreg, offset, val);
+	part_cmd_buffer->curr_cmd_num++;
+	return 0;
+}
+
+static int __isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
 {
 	int ret = 0;
 	struct isp_fe_cmd_wreg_t *tbl_cmd_buffer;
-	union isp_fe_cmd_u *part_cmd_buffer;
 	struct isp_fe_context *fe = &dev->fe;
 	uint8_t tbl_index;
 	uint16_t params_index;
-	unsigned long flags;
-
-	if (fe->state == ISP_FE_STATE_INIT) {
-		isp_err("%s error: fe buffer is not ready!", __func__);
-		return -EINVAL;
-	}
 
 	tbl_index = fe->fe_buff[vdid].prev_index;
 	do {//optimize the search algorithm
@@ -533,24 +629,13 @@ int isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, ui
 				fe->fe_buff[vdid].tbl_buffer[tbl_index].params_num) {
 				fe->fe_buff[vdid].tbl_buffer[tbl_index].curr_index = 0;
 			}
-			tbl_cmd_buffer[params_index].fe_cmd.cmd.start_reg_addr = offset;
-			tbl_cmd_buffer[params_index].fe_cmd.cmd.length = 1;
-			tbl_cmd_buffer[params_index].fe_cmd.cmd.rsv = 0;
-			tbl_cmd_buffer[params_index].fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-			tbl_cmd_buffer[params_index].w_data = val;
+			isp_fe_fill_write_cmd(&tbl_cmd_buffer[params_index], offset, val);
 			fe->fe_buff[vdid].prev_index = tbl_index;	//for next time search
-			spin_lock_irqsave(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
-			if (fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
-				part_cmd_buffer =
-					&fe->fe_buff[vdid].refresh_part_regs.cmd_buffer[fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num];
-				part_cmd_buffer->cmd_wreg.fe_cmd.cmd.start_reg_addr = offset;
-				part_cmd_buffer->cmd_wreg.fe_cmd.cmd.length = 1;
-				part_cmd_buffer->cmd_wreg.fe_cmd.cmd.rsv = 0;
-				part_cmd_buffer->cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-				part_cmd_buffer->cmd_wreg.w_data = val;
-				fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num++;
+			ret = isp_fe_write_vdid_reg_to_partial_cmd_buf(fe, vdid, offset, val);
+			if (ret) {
+				pr_err("%s error: failed to write to partial cmd buffer for vdid %d, offset 0x%08x\n", __func__, vdid, offset);
+				return ret;
 			}
-			spin_unlock_irqrestore(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
 			break;
 		}
 		tbl_index++;	//(tbl_index + 1) % fe->tbl_reg_addr_num;
@@ -639,163 +724,293 @@ static void isp_fe_mcm_busid_filter(struct isp_fe_context *fe, u32 offset, u32 *
 #endif
 }
 
-static void isp_fe_save_and_disable_interrupts(struct vvcam_fe_dev *dev, uint8_t vdid)
+
+static int isp_fe_handle_pre_transaction(struct vvcam_fe_dev *dev, uint8_t vdid)
 {
-	struct isp_fe_context *fe = &dev->fe;
-	uint32_t mi_imsc, isp_imsc;
 	int ret;
+	struct isp_fe_context *fe = &dev->fe;
+
+	reinit_completion(&fe->fe_completion);
 
 	// @hailo - we have logic that prevents register writes while an FE transaction is in progress
 	// disable mi_imsc so we don't handle interrupts while in fe transaction
 	// also disable mi_imsc in the cmd buffer because the FE transaction will write the mask back
-	fe->saved_mi_imsc = isp_fe_raw_read_reg(dev, VI_MI_IMSC_OFFSET);
-	if (fe->saved_mi_imsc != 0) {
-		/* make sure mask writes from cmd buffer that were not written to HW are also saved */
-		ret = isp_fe_read_reg(dev, vdid, VI_MI_IMSC_OFFSET, &mi_imsc);
-		if (ret != 0) {
-			isp_err("%s: failed to read mi_imsc: 0x%x\n", __func__, ret);
-		}
-		fe->saved_mi_imsc |= mi_imsc;
-		isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, 0x00000000);
-		isp_fe_write_reg(dev, vdid, VI_MI_IMSC_OFFSET, 0x00000000);
+	/* make sure mask writes from cmd buffer that were not written to HW are also saved */
+	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, 0);
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, &fe->saved_mi_imsc);
+	if (ret) {
+		pr_err("%s: failed to read MI_IMSC, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, 0);
+	if (ret) {
+		pr_err("%s: failed to write MI_IMSC, ret=%d\n", __func__, ret);
+		return ret;
 	}
 
 	// disable isp_imsc so we don't handle interrupts while in fe transaction
 	// also disable isp_imsc in the cmd buffer because the FE transaction will write the mask back
-	fe->saved_isp_imsc = isp_fe_raw_read_reg(dev, VI_ISP_IMSC_OFFSET);
-	if (fe->saved_isp_imsc != 0) {
-		/* make sure mask writes from cmd buffer that were not written to HW are also saved */
-		ret = isp_fe_read_reg(dev, vdid, VI_ISP_IMSC_OFFSET, &isp_imsc);
-		if (ret != 0) {
-			isp_err("%s: failed to read isp_imsc: 0x%x\n", __func__, ret);
-		}
-		fe->saved_isp_imsc |= isp_imsc;
-		isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, 0x00000000);
-		isp_fe_write_reg(dev, vdid, VI_ISP_IMSC_OFFSET, 0x00000000);
+	/* make sure mask writes from cmd buffer that were not written to HW are also saved */
+	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, 0);
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, &fe->saved_isp_imsc);
+	if (ret) {
+		pr_err("%s: failed to read ISP_IMSC, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, 0);
+	if (ret) {
+		pr_err("%s: failed to write ISP_IMSC, ret=%d\n", __func__, ret);
+		return ret;
 	}
 
-	// make sure no pending interrupts are being processed
-	synchronize_irq(fe->isp_irq);
+	// set FE transaction is active while isp_irq is diabled
+	disable_irq(fe->isp_irq);
+	atomic_set(&dev->fe_transaction_active, 1);
+	enable_irq(fe->isp_irq);
+
+	fe->state = ISP_FE_STATE_RUNNING;
+
+	return 0;
+}
+
+static void isp_fe_log_dma_info(struct vvcam_fe_dev *dev, uint8_t vdid)
+{
+	struct isp_fe_context *fe = &dev->fe;
+#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
+	u64 dma_t_ns;
+
+	dma_t_ns = fe->last_t_end_ns - fe->last_t_ns;
+	if (fe->prev_vdid == vdid) {
+		if (fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
+			isp_info("fe dma time num 0x%x %lldns\n",
+				fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num, dma_t_ns);
+		} else {
+			isp_info("fe dma time num 0x%x %lldns\n",
+				fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num, dma_t_ns);
+		}
+	} else {
+		isp_info("fe dma time num 0x%x %lldns\n",
+				fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num, dma_t_ns);
+	}
+#else
+	if (fe->prev_vdid == vdid) {
+		if (fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
+			isp_info("fe dma num 0x%04x\n",
+				fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
+		} else {
+			isp_info("fe dma num 0x%04x\n",
+				fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
+		}
+	} else {
+		isp_info("fe dma num 0x%04x\n",
+				fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
+	}
+#endif
+}
+
+static int isp_fe_wait_transaction_handle_post(struct vvcam_fe_dev *dev, uint8_t vdid)
+{
+	struct isp_fe_context *fe = &dev->fe;
+	int ret;
+
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s error: vdid %d is out of range (max=%d)\n", __func__, vdid, fe->vdid_num);
+		return -EINVAL;
+	}
+
+	// Wait for completion before returning...
+	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
+		WARN(1, "fe transaction timeout! FE is stuck\n");
+		return -ETIMEDOUT;
+	}
+
+	isp_fe_log_dma_info(dev, vdid);
+	ret = isp_fe_clean_wo_bits(dev);
+	if (ret) {
+		isp_err("%s: failed to clean wo bits, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
+
+	atomic_set(&dev->fe_transaction_active, 0);
+
+	isp_fe_perform_post_fe_writes(dev);
+
+	isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, fe->saved_mi_imsc);
+	isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, fe->saved_isp_imsc);
+
+	// restore mi_imsc from command buffer
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_MI_IMSC_OFFSET, fe->saved_mi_imsc);
+	if (ret) {
+		pr_err("%s: failed to write MI_IMSC, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	fe->saved_mi_imsc = 0;
+
+	// restore isp_imsc from command buffer
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_ISP_IMSC_OFFSET, fe->saved_isp_imsc);
+	if (ret) {
+		pr_err("%s: failed to write ISP_IMSC, ret=%d\n", __func__, ret);
+		return ret;
+	}
+	fe->saved_isp_imsc = 0;
+
+	fe->prev_vdid = vdid;
+	fe->state = ISP_FE_STATE_WAITING;
+
+	return 0;
 }
 
 static int isp_fe_set_dma(struct vvcam_fe_dev *dev, uint8_t vdid, struct isp_fe_cmd_buffer_t *refresh_regs)
 {
 #if defined(ISP_MIV2)
-	union isp_fe_cmd_u *full_cmd_buffer;
-	uint32_t mapped_index;
 	u32 miv2_mcm_bus_id;
 #endif
 	struct isp_fe_context *fe = &dev->fe;
+	int ret;
+
 	isp_info("enter %s\n", __func__);
 
-	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000000);
+	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0);
 
 #if defined(ISP_MIV2)
-	full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
-	mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_mcm_bus_id);
-	miv2_mcm_bus_id = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_mcm_bus_id, &miv2_mcm_bus_id);
+	if (ret) {
+		pr_err("%s: failed to read mi_mcm_bus_id from full cmd buffer, ret=%d\n", __func__, ret);
+		return ret;
+	}
 	isp_fe_mcm_busid_filter(fe, fe->general_ctrl.mi_mcm_bus_id, &miv2_mcm_bus_id);
-	full_cmd_buffer[mapped_index].cmd_wreg.w_data = miv2_mcm_bus_id;
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_mcm_bus_id, miv2_mcm_bus_id);
+	if (ret) {
+		pr_err("%s: failed to write mi_mcm_bus_id to full cmd buffer, ret=%d\n", __func__, ret);
+		return ret;
+	}
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.mi_mcm_bus_id, miv2_mcm_bus_id);	//0x0DCABD1E
 #endif
 
-	isp_fe_save_and_disable_interrupts(dev, vdid);
+	ret = isp_fe_handle_pre_transaction(dev, vdid);
+	if (ret) {
+		pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
+		return ret;
+	}
 
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_imsc, 0x00000001);
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, refresh_regs->cmd_dma_addr);
 	isp_info("refresh_regs->cmd_dma_addr=%08llx\n", refresh_regs->cmd_dma_addr);
 	isp_info("refresh_regs->curr_cmd_num=%08x\n", refresh_regs->curr_cmd_num);
-	reinit_completion(&fe->fe_completion);
-	reinit_completion(&fe->isp_completion);
 	fe->curr_vdid = vdid;
-	fe->state = ISP_FE_STATE_RUNNING;
 #if VIV_ISP_FE_DMA_TIME_DEBUG == 1
 	fe->last_t_ns = ktime_get_ns();
 #endif
 	isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | refresh_regs->curr_cmd_num);
 
-	return 0;
+	return isp_fe_wait_transaction_handle_post(dev, vdid);
 }
 
 /*call when irq*/
 static int isp_fe_writeback_status(struct vvcam_fe_dev *dev)
 {//3A statics HIST64
-	union isp_fe_cmd_u *full_cmd_buffer;
-	uint32_t mapped_index, i, reg_index, offset;
+	uint32_t i, reg_index, offset, reg_val;
 	uint8_t vdid;
 	struct isp_fe_context *fe = &dev->fe;
+	int ret;
+
 	vdid = fe->curr_vdid;
 
-	full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
+	if (vdid >= fe->vdid_num) {
+		pr_err("%s error: vdid %d is out of range (max=%d)\n", __func__, vdid, fe->vdid_num);
+		return -EINVAL;
+	}
+
 	for (i = 0; i < (uint32_t) fe->status_regs_num; i++) {
 		offset = fe->status_regs[i].reg_base;
 		for (reg_index = 0; reg_index < fe->status_regs[i].reg_num; reg_index++) {
-			mapped_index = isp_fe_hash_map(fe, offset);
-			full_cmd_buffer[mapped_index].cmd_wreg.w_data = __raw_readl(dev->base + offset);
+			reg_val = isp_fe_raw_read_reg(dev, offset);
+			ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, offset, reg_val);
+			if (ret) {
+				pr_err("%s: failed to write to full cmd buffer for offset 0x%x, ret=%d\n", __func__, offset, ret);
+				return ret;
+			}
 			offset = offset + fe->status_regs[i].reg_step;
 		}
 	}
 
 	if (fe->general_ctrl.isp_hist != VIV_ISP_FE_UNUSED_OFFSET) {
 		for (i = 0; i < fe->fe_buff[vdid].fixed_reg_rd_num; i++) {
-			fe->fe_buff[vdid].fixed_reg_buffer[i] = __raw_readl(dev->base + fe->general_ctrl.isp_hist);
+			fe->fe_buff[vdid].fixed_reg_buffer[i] = isp_fe_raw_read_reg(dev, fe->general_ctrl.isp_hist);
 		}
 	}
 
 	return 0;
 }
 
-static void isp_fe_clean_wo_bits(struct vvcam_fe_dev *dev)
+static int isp_fe_clean_wo_bits(struct vvcam_fe_dev *dev)
 {
-	uint32_t mapped_index, rdma_mapped_index;
-	uint32_t mcm_g0_index, mcm_g1_index;
 	uint8_t vdid, i;
 	struct isp_fe_context *fe = &dev->fe;
+	int ret;
+	uint32_t val;
+
 	isp_info("enter %s\n", __func__);
 	vdid = fe->curr_vdid;
 
 	if (fe->general_ctrl.mi_hdr_ctrl != VIV_ISP_FE_UNUSED_OFFSET) {
-		mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_hdr_ctrl);
-		fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data &= ~(1 << 7);
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_hdr_ctrl, &val);
+		if (ret) {
+			pr_err("%s: reading mi_hdr_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_hdr_ctrl, ret);
+			return ret;
+		}
+		val &= ~(1 << 7);
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_hdr_ctrl, val);
+		if (ret) {
+			pr_err("%s: writing mi_hdr_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_hdr_ctrl, ret);
+			return ret;
+		}
 
 	}
 	if (fe->general_ctrl.mi_ctrl != VIV_ISP_FE_UNUSED_OFFSET) {
-		mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.mi_ctrl);
-		fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data &= ~fe->general_ctrl.isp_wo_bits_mask[1];
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_ctrl, &val);
+		if (ret) {
+			pr_err("%s: reading mi_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_ctrl, ret);
+			return ret;
+		}
+		val &= ~fe->general_ctrl.isp_wo_bits_mask[1];
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, fe->general_ctrl.mi_ctrl, val);
+		if (ret) {
+			pr_err("%s: writing mi_ctrl (0x%x) failed, ret=%d\n", __func__, fe->general_ctrl.mi_ctrl, ret);
+			return ret;
+		}
 		//clean the read dma start in mi ctrl,fill nop
-		rdma_mapped_index = fe->special_reg_base;
-		isp_fe_buffer_memset(&fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[rdma_mapped_index], ISP_FE_SPECIAL_REG_NUM);
+		isp_fe_buffer_memset(&fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[fe->special_reg_base], ISP_FE_SPECIAL_REG_NUM);
 	}
 
-	mcm_g0_index = isp_fe_hash_map(fe, 0x1600);
-	mcm_g1_index = isp_fe_hash_map(fe, 0x5000);
-	spin_lock(&fe->full_buff_lock);
 	for (i = 0; i < fe->vdid_num; i++) {
-		fe->fe_buff[i].refresh_full_regs.cmd_buffer[mcm_g0_index].cmd_wreg.w_data &= ~0x46;
-		fe->fe_buff[i].refresh_full_regs.cmd_buffer[mcm_g1_index].cmd_wreg.w_data &= ~0x26;
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, i, 0x1600, &val);
+		if (ret) {
+			return ret;
+		}
+		val &= ~0x46;
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, 0x1600, val);
+		if (ret) {
+			return ret;
+		}
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, i, 0x5000, &val);
+		if (ret) {
+			return ret;
+		}
+		val &= ~0x26;
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, 0x5000, val);
+		if (ret) {
+			return ret;
+		}
 	}
-	spin_unlock(&fe->full_buff_lock);
-
+	return 0;
 }
 
-
-/* we call this from the tasklet when the FE interrupt is raised (after posting to userspace)
-   we trigger this when a frame is done processing */
-static void isp_fe_isp_irq_work(struct vvcam_fe_dev *dev)
-{
-	if (dev->fe.state == ISP_FE_STATE_INIT) {
-		return;
-	}
-
-	/* this reads back into the full command buffer, all the 3a statistics registers */
-	isp_fe_writeback_status(dev);
-	dev->fe.is_isp_processing = false;
-	complete_all(&dev->fe.isp_completion);
-}
 
 /* this is called once when starting the stream with FE and once in the end of the stream */
-static void isp_fe_update_cmd(struct vvcam_fe_dev *dev)
+static int isp_fe_update_cmd(struct vvcam_fe_dev *dev)
 {
 	uint8_t vdid;
 	uint32_t curr_cmd_num;
@@ -804,6 +1019,7 @@ static void isp_fe_update_cmd(struct vvcam_fe_dev *dev)
 	vdid = fe->curr_vdid;
 
 	curr_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
+	/* use partial or full command buffer depending on number of registers in the partial buffer */
 	if (curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
 		//refresh part registers
 		isp_fe_buffer_append_end(&fe->fe_buff[vdid].refresh_part_regs.cmd_buffer[curr_cmd_num],
@@ -812,60 +1028,36 @@ static void isp_fe_update_cmd(struct vvcam_fe_dev *dev)
 		isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_part_regs);
 #endif
 		//config dma
-		isp_fe_set_dma(dev, vdid, &fe->fe_buff[vdid].refresh_part_regs);
+		return isp_fe_set_dma(dev, vdid, &fe->fe_buff[vdid].refresh_part_regs);
 	} else {		//refresh the whole registers
 		//config dma
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 		isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
 		//isp_fe_cmdbuffer_parse(&fe->fe_buff[vdid].refresh_full_regs);
 #endif
-		isp_fe_set_dma(dev, vdid, &fe->fe_buff[vdid].refresh_full_regs);
+		return isp_fe_set_dma(dev, vdid, &fe->fe_buff[vdid].refresh_full_regs);
 	}
-
 }
 
-/* Note: This function is currently used only for 1 offset/value at a time.
-   If needed to support more than 1, change function implementation */
-static void isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val, int idx)
+static int isp_fe_register_post_fe_write(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val, enum isp_fe_post_offsets idx)
 {
 	struct isp_fe_context *fe = &dev->fe;
 
-	if (fe->state == ISP_FE_STATE_INIT) {
-		isp_err("%s error: fe buffer is not ready!", __func__);
-		return;
-	}
-
-	if (vdid >= fe->vdid_num) {
-		isp_err("%s error: vdid %d is invalid!", __func__, vdid);
-		return;
-	}
-
 	if (idx >= ISP_FE_POST_OFFSET_MAX || idx < 0) {
 		isp_err("%s error: idx %d is invalid!", __func__, idx);
-		return;
+		return -EINVAL;
 	}
 
 	fe->post_fe_modify_reg_offset[idx] = offset;
 	fe->post_fe_modify_reg_value[idx] = val;
+	return 0;
 }
 
-/* Note: This function is currently used only for 1 offset/value at a time.
-   If needed to support more than 1, change function implementation */
-static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev, uint8_t vdid)
+static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev)
 {
 	struct isp_fe_context *fe = &dev->fe;
 	int reg;
 	int i;
-
-	if (fe->state == ISP_FE_STATE_INIT) {
-		isp_err("%s error: fe buffer is not ready!", __func__);
-		return;
-	}
-
-	if (vdid >= fe->vdid_num) {
-		isp_err("%s error: vdid %d is invalid!", __func__, vdid);
-		return;
-	}
 
 	for (i = 0; i < ISP_FE_POST_OFFSET_MAX; i++) {
 		if (fe->post_fe_modify_reg_offset[i] != -1 && fe->post_fe_modify_reg_value[i] != -1) {
@@ -878,218 +1070,183 @@ static void isp_fe_perform_post_fe_writes(struct vvcam_fe_dev *dev, uint8_t vdid
 	}
 }
 
-int isp_fe_write_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+static int __isp_fe_write_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
 {
-	unsigned long part_buff_flags, full_buff_flags;
-	union isp_fe_cmd_u *part_cmd_buffer;
-	union isp_fe_cmd_u *full_cmd_buffer;
-	uint32_t mapped_index, curr_cmd_num;
 	uint32_t mcm_path_enable, mcm_path_enable_mask, mi_ctrl_val, part_val, vi_dpcl_val;
 	uint32_t vi_if_select, vi_if_select_mask;
 	uint8_t i;
 	bool start, stop, update_immediately = false;
-	struct isp_fe_context *fe;
+	struct isp_fe_context *fe = &dev->fe;
+	int ret;
 
-	if (dev == NULL) {
-		isp_err("%s error: dev is NULL!", __func__);
-		return -ENODEV;
-	}
 
-	fe = &dev->fe;
+	isp_fe_mcm_busid_filter(fe, offset, &val);
+	//mask some ctrl enable and shadow enable bits update immediately
+	isp_fe_shd_to_immediately(fe, offset, &val);
 
-	if (fe->state == ISP_FE_STATE_INIT) {
-		pr_warn("%s - trying to write to offset 0x%04x, val 0x%08x when fe is not ready\n", __func__, offset, val);
-		return -EINVAL;
-	}
-
-	if (fe->fst_wr_flag == true) {
-		isp_fe_get_reg_def_val(dev);	/*update the reset value when writing register at first time */
-		fe->fst_wr_flag = false;
-	}
-
-	//write register directly
-	if (is_cpu_write(dev, offset) == true) {
-		// If in atomic context (IRQ or holding spinlock), skip the read lock
-		// to avoid sleeping function call from invalid context
-		if (in_atomic()) {
-			isp_fe_raw_write_reg(dev, offset, val);
-		} else {
-			down_read(&fe->cpu_rw_sem);
-			isp_fe_raw_write_reg(dev, offset, val);
-			up_read(&fe->cpu_rw_sem);
+	if ((offset >= 0x1600 && offset <= 0x160c) || (offset >= 0x5000 && offset <= 0x5008)) {
+		for (i = 0; i < fe->vdid_num; i++) {
+			ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, offset, val);
+			if (ret) {
+				pr_err("%s: failed to write to full cmd buffer for offset 0x%x, ret=%d\n", __func__, offset, ret);
+				return ret;
+			}
 		}
-		//MCM+FE+HDR workaroud.
-		if (offset == 0x5700) {
-			mdelay(1);
+	}
+
+	if (fe->general_ctrl.mi_ctrl == offset) {
+		switch (vdid) {
+		case 0:
+			mcm_path_enable = val & (1 << 6);
+			mcm_path_enable_mask = ~(1 << 6);
+			break;
+		case 1:
+			mcm_path_enable = val & (1 << 7);
+			mcm_path_enable_mask = ~(1 << 7);
+			break;
+		case 2:
+			mcm_path_enable = val & (1 << 17);
+			mcm_path_enable_mask = ~(1 << 17);
+			break;
+		case 3:
+			mcm_path_enable = val & (1 << 18);
+			mcm_path_enable_mask = ~(1 << 18);
+			break;
+		default:
+			mcm_path_enable = 0;
+			mcm_path_enable_mask = ~0;
+			break;
+		}
+
+		for (i = 0; i < fe->vdid_num; i++) {
+			ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, i, offset, &mi_ctrl_val);
+			if (ret < 0) {
+				pr_err("%s: failed to read from full cmd buffer for vdid %d, ret=%d\n", __func__, i, ret);
+				return ret;
+			}
+			mi_ctrl_val &= mcm_path_enable_mask;
+			mi_ctrl_val |= mcm_path_enable;
+			ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, offset, mi_ctrl_val);
+			if (ret < 0) {
+				pr_err("%s: failed to write to full cmd buffer for vdid %d, ret=%d\n", __func__, i, ret);
+				return ret;
+			}
+		}
+
+		// If MI_CTRL bits 0/1/11 (certain paths enabled) or bit 12 (sp2_raw_rdma_start)
+		if ((val & 0x1803000) != 0) {
+			// Disable sp2_raw_rdma_start_con (continuous mode)
+			val &= ~((1 << 13) | (1 << 24));
+			update_immediately = true;
+		}
+
+		// mcm read dma start (MI_CTRL_MCM_RAW_RDMA_START in isp-hw) - should be post-FE to prevent inner race within FE.
+		// This is a HW issue in FE - so instead of writing this value to command buffer, we use raw write for it post-FE.
+		if (val & (1 << 15)) {
+			val &= ~(1 << 15);	// disable MCM read dma start
+			ret = isp_fe_register_post_fe_write(dev, offset, 1 << 15, ISP_FE_POST_OFFSET_MCM_RAW_RDMA_START);
+			if (ret) {
+				pr_err("%s: failed to register post fe write for MCM_RAW_RDMA_START, ret=%d\n", __func__, ret);
+				return ret;
+			}
+		}
+	}
+
+	if (offset == VI_DPCL_OFFSET) {
+		//if_select0~if_select3 is the same value in each full buffer
+		vi_if_select_mask = (3<<26) | (3<<24) | (3<<16) | (3<<8);
+		vi_if_select = val & vi_if_select_mask;
+		for (i = 0; i < fe->vdid_num; i++) {
+			ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, i, VI_DPCL_OFFSET, &vi_dpcl_val);
+			if (ret) {
+				pr_err("%s: failed to read VI_DPCL_OFFSET for vdid %d, ret=%d\n", __func__, i, ret);
+				return ret;
+			}
+			vi_dpcl_val = (vi_dpcl_val & (~vi_if_select_mask)) | vi_if_select;
+			ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, VI_DPCL_OFFSET, vi_dpcl_val);
+			if (ret) {
+				pr_err("%s: failed to write VI_DPCL_OFFSET for vdid %d, ret=%d\n", __func__, i, ret);
+				return ret;
+			}
+		}
+	}
+
+	//reset isp
+	//TODO
+	part_val = val;
+	//move the read dma to the last step
+	if (update_immediately) {	//sp2 read dma
+		ret = isp_fe_register_post_fe_write(dev, offset, val, ISP_FE_POST_OFFSET_SP2_RAW_RDMA_START);
+		if (ret) {
+			pr_err("%s: failed to register post fe write for SP2_RAW_RDMA_START, ret=%d\n", __func__, ret);
+			return ret;
+		}
+		val &= ~((1 << 12) | (1 << 23));
+	}
+
+	//fe->reg_buffer[offset / ISP_FE_REG_SIZE] = val;
+	ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, offset, val);
+	if (ret) {
+		pr_err("%s: failed to write to full cmd buffer for offset 0x%x, ret=%d\n", __func__, offset, ret);
+		return ret;
+	}
+
+	ret = isp_fe_write_vdid_reg_to_partial_cmd_buf(fe, vdid, offset, part_val);
+	if (ret) {
+		pr_err("%s: failed to write to partial cmd buffer, ret=%d\n", __func__, ret);
+		return ret;
+	}
+
+	ret = is_start_fe_dma(dev, vdid, offset, val, &start);
+	if (ret) {
+		pr_err("%s: failed to check if start fe dma for offset 0x%x, val 0x%x, ret=%d\n", __func__, offset, val, ret);
+		return ret;
+	}
+	if (fe->running_num) {
+		ret = is_stop_isp(dev, vdid, offset, val, &stop);
+		if (ret) {
+			pr_err("%s: failed to check if stop isp for offset 0x%x, val 0x%x, ret=%d\n", __func__, offset, val, ret);
+			return ret;
 		}
 	} else {
-		if (fe->state == ISP_FE_STATE_EXIT) {
-			isp_err("%s error: fe is destoried!", __func__);
-			return -EINVAL;
+		stop = false;
+	}
+
+	if (fe->running_num < fe->vdid_num && start == true && fe->virt_running[vdid] == false) {
+		fe->running_num++;
+		fe->virt_running[vdid] = true;
+	}
+
+	if (fe->state == ISP_FE_STATE_WAITING && stop && fe->virt_running[vdid]) {
+		fe->running_num--;
+		fe->virt_running[vdid] = false;
+	}
+
+	if (fe->state == ISP_FE_STATE_READY && start) {
+		fe->curr_vdid = vdid;
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, VI_DPCL_OFFSET, &vi_dpcl_val);
+		if (ret) {
+			pr_err("%s: failed to read VI_DPCL_OFFSET, ret=%d\n", __func__, ret);
+			return ret;
+		}
+		vi_dpcl_val &= (~(0xf << 20));
+		vi_dpcl_val |= (vdid << 20) | (vdid << 22);
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, vdid, VI_DPCL_OFFSET, vi_dpcl_val);
+		if (ret) {
+			pr_err("%s: failed to write VI_DPCL_OFFSET, ret=%d\n", __func__, ret);
+			return ret;
 		}
 
-		if (fe->state == ISP_FE_STATE_RUNNING && (vdid == fe->curr_vdid ||
-							(offset >= 0x1600 && offset <= 0x160c) ||
-							(offset >= 0x5000 && offset <= 0x5008) ||
-							offset == fe->general_ctrl.mi_ctrl)) {
-
-			/* On interrupt context, fail we can't wait, to mark timeout so that caller will be able to defer this call */
-			if (in_interrupt()) {
-				return -ETIMEDOUT;
-			}
-
-			/* Block the write when FE is running, add completion for FE */
-			if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-				isp_err("%s error:vdid %d, offset 0x%04x, val 0x%08x wait FE DMA time out!", __func__ ,vdid, offset,val);
-				return -ETIMEDOUT;
-			}
+		ret = isp_fe_update_cmd(dev);
+		if (ret) {
+			pr_err("%s: failed to update cmd, ret=%d\n", __func__, ret);
+			return ret;
 		}
-
-		isp_fe_mcm_busid_filter(fe, offset, &val);
-		//mask some ctrl enable and shadow enable bits update immediately
-		isp_fe_shd_to_immediately(fe, offset, &val);
-
-		if ((offset >= 0x1600 && offset <= 0x160c) || (offset >= 0x5000 && offset <= 0x5008)) {
-			mapped_index = isp_fe_hash_map(fe, offset);
-			spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
-			for (i = 0; i < fe->vdid_num; i++) {
-				full_cmd_buffer = fe->fe_buff[i].refresh_full_regs.cmd_buffer;
-				full_cmd_buffer[mapped_index].cmd_wreg.w_data = val;
-			}
-			spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
-		}
-
-		if (fe->general_ctrl.mi_ctrl == offset) {
-			mapped_index = isp_fe_hash_map(fe, offset);
-			switch (vdid) {
-			case 0:
-				mcm_path_enable = val & (1 << 6);
-				mcm_path_enable_mask = ~(1 << 6);
-				break;
-			case 1:
-				mcm_path_enable = val & (1 << 7);
-				mcm_path_enable_mask = ~(1 << 7);
-				break;
-			case 2:
-				mcm_path_enable = val & (1 << 17);
-				mcm_path_enable_mask = ~(1 << 17);
-				break;
-			case 3:
-				mcm_path_enable = val & (1 << 18);
-				mcm_path_enable_mask = ~(1 << 18);
-				break;
-			default:
-				mcm_path_enable = 0;
-				mcm_path_enable_mask = ~0;
-			    break;
-			}
-			spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
-			for (i = 0; i < fe->vdid_num; i++) {
-				full_cmd_buffer = fe->fe_buff[i].refresh_full_regs.cmd_buffer;
-				mi_ctrl_val = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
-				mi_ctrl_val &= mcm_path_enable_mask;
-				mi_ctrl_val |= mcm_path_enable;
-				full_cmd_buffer[mapped_index].cmd_wreg.w_data = mi_ctrl_val;
-			}
-			spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
-
-			// If MI_CTRL bits 0/1/11 (certain paths enabled) or bit 12 (sp2_raw_rdma_start)
-			if ((val & 0x1803000) != 0) {
-				// Disable sp2_raw_rdma_start_con (continuous mode)
-				val &= ~((1 << 13) | (1 << 24));
-				update_immediately = true;
-			}
-
-			// mcm read dma start (MI_CTRL_MCM_RAW_RDMA_START in isp-hw) - should be post-FE to prevent inner race within FE.
-			// This is a HW issue in FE - so instead of writing this value to command buffer, we use raw write for it post-FE.
-			if (val & (1 << 15)) {
-				val &= ~(1 << 15);	// disable MCM read dma start
-				isp_fe_register_post_fe_write(dev, vdid, offset, 1 << 15, ISP_FE_POST_OFFSET_MCM_RAW_RDMA_START);
-			}
-		}
-
-		if (offset == VI_DPCL_OFFSET) {
-			//if_select0~if_select3 is the same value in each full buffer
-			mapped_index = isp_fe_hash_map(fe, VI_DPCL_OFFSET);
-			vi_if_select_mask = (3<<26) | (3<<24) | (3<<16) | (3<<8);
-			vi_if_select = val & vi_if_select_mask;
-			spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
-			for (i = 0; i < fe->vdid_num; i++) {
-				full_cmd_buffer = fe->fe_buff[i].refresh_full_regs.cmd_buffer;
-				vi_dpcl_val = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
-				vi_dpcl_val = (vi_dpcl_val & (~vi_if_select_mask)) | vi_if_select;
-				full_cmd_buffer[mapped_index].cmd_wreg.w_data = vi_dpcl_val;
-			}
-			spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
-		}
-
-		//reset isp
-		//TODO
-		part_val = val;
-		//move the read dma to the last step
-		if (update_immediately) {	//sp2 read dma
-			isp_fe_register_post_fe_write(dev, vdid, offset, val, ISP_FE_POST_OFFSET_SP2_RAW_RDMA_START);
-			val &= ~((1 << 12) | (1 << 23));
-		}
-
-		//fe->reg_buffer[offset / ISP_FE_REG_SIZE] = val;
-		spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
-		mapped_index = isp_fe_hash_map(fe, offset);
-		full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.start_reg_addr = offset;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.length = 1;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.rsv = 0;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-		full_cmd_buffer[mapped_index].cmd_wreg.w_data = val;
-		spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
-
-		spin_lock_irqsave(&fe->fe_buff[vdid].cmd_buffer_lock, part_buff_flags);
-		curr_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
-		if (curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
-			part_cmd_buffer = &fe->fe_buff[vdid].refresh_part_regs.cmd_buffer[curr_cmd_num];
-			part_cmd_buffer->cmd_wreg.fe_cmd.cmd.start_reg_addr = offset;
-			part_cmd_buffer->cmd_wreg.fe_cmd.cmd.length = 1;
-			part_cmd_buffer->cmd_wreg.fe_cmd.cmd.rsv = 0;
-			part_cmd_buffer->cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-			part_cmd_buffer->cmd_wreg.w_data = part_val;
-			fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num++;
-		}
-		spin_unlock_irqrestore(&fe->fe_buff[vdid].cmd_buffer_lock, part_buff_flags);
-
-		start = is_start_fe_dma(dev, vdid, offset, val);
-		if (fe->running_num) {
-			stop = is_stop_isp(dev, vdid, offset, val);
-		} else {
-			stop = false;
-		}
-
-		if (fe->running_num < fe->vdid_num && start == true && fe->virt_running[vdid] == false) {
-			fe->running_num++;
-			fe->virt_running[vdid] = true;
-		}
-
-		if (fe->state > ISP_FE_STATE_READY && stop == true && fe->virt_running[vdid] == true) {
-			fe->running_num--;
-			fe->virt_running[vdid] = false;
-		}
-
-		if (fe->state == ISP_FE_STATE_READY && start == true) {
-			fe->curr_vdid = vdid;
-
-			mapped_index = isp_fe_hash_map(fe, VI_DPCL_OFFSET);
-			full_cmd_buffer = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer;
-			vi_dpcl_val = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
-			vi_dpcl_val &= (~(0xf << 20));
-			vi_dpcl_val |= (vdid << 20) | (vdid << 22);
-			full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.start_reg_addr = VI_DPCL_OFFSET;
-			full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.length = 1;
-			full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.rsv = 0;
-			full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-			full_cmd_buffer[mapped_index].cmd_wreg.w_data = vi_dpcl_val;
-
-			isp_fe_update_cmd(dev);
-		} else if (fe->state > ISP_FE_STATE_READY && stop == true && fe->running_num == 0) {
-			isp_fe_update_cmd(dev);
+	} else if (fe->state == ISP_FE_STATE_WAITING && stop && fe->running_num == 0) {
+		ret = isp_fe_update_cmd(dev);
+		if (ret) {
+			pr_err("%s: failed to update cmd on stop, ret=%d\n", __func__, ret);
+			return ret;
 		}
 	}
 
@@ -1105,36 +1262,23 @@ static int isp_fe_get_vdid(struct vvcam_fe_dev *dev, uint8_t *vdid)
 	return 0;
 }
 
-static int isp_fe_get_workmode(struct vvcam_fe_dev *dev, uint8_t *workmode)
+static int __isp_fe_get_status(struct vvcam_fe_dev *dev, struct isp_fe_status_t *status)
 {
-	struct isp_fe_context *fe = &dev->fe;
-	if (workmode) {
-		*workmode = fe->work_mode;
-	}
-	return 0;
-}
-
-int isp_fe_get_status(struct vvcam_fe_dev *dev, void __user *args)
-{
-	int ret;
-	struct isp_fe_status_t fe_status;
 	struct isp_fe_context *fe = &dev->fe;
 	isp_info("enter %s\n", __func__);
 
-	fe_status.enable = (uint8_t) fe->enable;
-	fe_status.status = (uint32_t) fe->state;
-	fe_status.curr_channel = (uint32_t) fe->curr_vdid;
-	ret = copy_to_user(args, &fe_status, sizeof(struct isp_fe_status_t));
-	return ret;
+	status->enable = (uint8_t) fe->enable;
+	status->status = (uint32_t) fe->state;
+	status->curr_channel = (uint32_t) fe->curr_vdid;
+	return 0;
 }
 
 static int isp_fe_update_sensor_id(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch)
 {
 	uint8_t i;
-	uint32_t mapped_index, vi_dpcl_val;
-	union isp_fe_cmd_u *full_cmd_buffer;
-	unsigned long full_buff_flags;
+	uint32_t vi_dpcl_val;
 	struct isp_fe_context *fe = &dev->fe;
+	int ret;
 	isp_info("enter %s\n", __func__);
 
 	//update the current and next sensor id when the channel not need to be switch
@@ -1144,81 +1288,64 @@ static int isp_fe_update_sensor_id(struct vvcam_fe_dev *dev, struct isp_fe_switc
 	isp_fe_raw_write_reg(dev, VI_DPCL_OFFSET, vi_dpcl_val);
 
 	//update the current and next sensor id in the full registers
-	mapped_index = isp_fe_hash_map(fe, VI_DPCL_OFFSET);
-	spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
 	for (i = 0; i < fe->vdid_num; i++) {
-		full_cmd_buffer = fe->fe_buff[i].refresh_full_regs.cmd_buffer;
-		vi_dpcl_val = full_cmd_buffer[mapped_index].cmd_wreg.w_data;
+		ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, i, VI_DPCL_OFFSET, &vi_dpcl_val);
+		if (ret) {
+			pr_err("%s: failed to read VI_DPCL_OFFSET for vdid %d, ret=%d\n", __func__, i, ret);
+			return ret;
+		}
 		vi_dpcl_val &= ~(0xf << 20);
 		vi_dpcl_val |= (fe_switch->next_vdid[0] << 20) | (fe_switch->next_vdid[1] << 22);
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.start_reg_addr = VI_DPCL_OFFSET;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.length = 1;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.rsv = 0;
-		full_cmd_buffer[mapped_index].cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-		full_cmd_buffer[mapped_index].cmd_wreg.w_data = vi_dpcl_val;
+		ret = isp_fe_write_vdid_reg_to_full_cmd_buf(fe, i, VI_DPCL_OFFSET, vi_dpcl_val);
+		if (ret) {
+			pr_err("%s: failed to write VI_DPCL_OFFSET for vdid %d, ret=%d\n", __func__, i, ret);
+			return ret;
+		}
 	}
-	spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
 
 	return 0;
 }
 
 
-static void isp_fe_buffer_append_isp_update(struct vvcam_fe_dev *dev)
+static int isp_fe_buffer_append_isp_update(struct vvcam_fe_dev *dev)
 {
 	struct isp_fe_context *fe = &dev->fe;
 	uint8_t vdid = fe->curr_vdid;
-	uint32_t mapped_index, isp_ctrl_val, curr_cmd_num;
-	union isp_fe_cmd_u *part_cmd_buffer;
-	mapped_index = isp_fe_hash_map(fe, fe->general_ctrl.isp_ctrl);
-	isp_ctrl_val = fe->fe_buff[vdid].refresh_full_regs.cmd_buffer[mapped_index].cmd_wreg.w_data;
+	uint32_t isp_ctrl_val;
+	int ret;
+
+	ret = isp_fe_read_vdid_reg_from_full_cmd_buf(fe, vdid, fe->general_ctrl.isp_ctrl, &isp_ctrl_val);
+	if (ret) {
+		pr_err("%s: invalid cmd for isp_ctrl, ret=%d\n", __func__, ret);
+		return ret;
+	}
+
 	isp_ctrl_val |= fe->general_ctrl.isp_ctrl_mask[3];
-	curr_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
-	part_cmd_buffer = &fe->fe_buff[vdid].refresh_part_regs.cmd_buffer[curr_cmd_num];
-	part_cmd_buffer->cmd_wreg.fe_cmd.cmd.start_reg_addr = fe->general_ctrl.isp_ctrl;
-	part_cmd_buffer->cmd_wreg.fe_cmd.cmd.length = 1;
-	part_cmd_buffer->cmd_wreg.fe_cmd.cmd.rsv = 0;
-	part_cmd_buffer->cmd_wreg.fe_cmd.cmd.op_code = ISP_FE_CMD_REG_WRITE;
-	part_cmd_buffer->cmd_wreg.w_data = isp_ctrl_val;
-	fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num++;
+
+	return isp_fe_write_vdid_reg_to_partial_cmd_buf(fe, vdid, fe->general_ctrl.isp_ctrl, isp_ctrl_val);
 }
 
 static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch)
 {
-	int ret = 0;
 	uint8_t vdid;
 	uint32_t part_cmd_num;
-	unsigned long flags, full_buff_flags;
 	struct isp_fe_context *fe = &dev->fe;
-	int mi_ctrl;
+	int ret;
 
 	isp_info("enter %s\n", __func__);
-	//wait fe dma
-	if (fe->state == ISP_FE_STATE_RUNNING) {
-		//block the write when FE is running, add completion for FE
-		if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-			isp_err("%s error: wait FE DMA time out!", __func__);
-			return -ETIMEDOUT;
-		}
-	}
 
-	reinit_completion(&fe->fe_completion);
-	reinit_completion(&fe->isp_completion);
-	isp_fe_update_sensor_id(dev, fe_switch);
+	ret = isp_fe_update_sensor_id(dev, fe_switch);
+	if (ret) {
+		pr_err("%s: failed to update sensor id, ret=%d\n", __func__, ret);
+		return ret;
+	}
 
 	vdid = fe->curr_vdid;
 	isp_info("%s vdid value = %d, next id value = %d\n", __func__, vdid, fe_switch->next_vdid[0]);
 
-	ret = isp_fe_read_reg(dev, vdid, fe->general_ctrl.mi_ctrl, &mi_ctrl);
-	if (ret != 0) {
-		isp_err("%s - failed to read mi_ctrl from vdid %d\n", __func__, vdid);
-		return ret;
-	}
-
-	/* trigger RDMA start registration */
-	mi_ctrl |= (1 << 15);
-	ret = isp_fe_write_reg(dev, vdid, fe->general_ctrl.mi_ctrl, mi_ctrl);
-	if (ret != 0) {
-		isp_err("%s - failed to write mi_ctrl to vdid %d\n", __func__, vdid);
+	ret = isp_fe_register_post_fe_write(dev, fe->general_ctrl.mi_ctrl, 1 << 15, ISP_FE_POST_OFFSET_MCM_RAW_RDMA_START);
+	if (ret) {
+		pr_err("%s: failed to register post fe write for MCM_RAW_RDMA_START, ret=%d\n", __func__, ret);
 		return ret;
 	}
 
@@ -1227,7 +1354,12 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 			return 0;
 		}
 
-		spin_lock_irqsave(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
+		ret = isp_fe_handle_pre_transaction(dev, vdid);
+		if (ret) {
+			pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
+			return ret;
+		}
+
 		part_cmd_num = fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num;
 #if 0
 		if (part_cmd_num < ISP_FE_REG_PART_REFRESH_NUM - 1) {
@@ -1235,11 +1367,14 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 		if (0) {
 #endif
 			//refresh part registers
-			isp_fe_buffer_append_isp_update(dev);
+			ret = isp_fe_buffer_append_isp_update(dev);
+			if (ret) {
+				pr_err("%s: failed to append isp update cmd into part cmd buffer for vdid %d, ret=%d\n", __func__, vdid, ret);
+				return ret;
+			}
 			part_cmd_num++;
 			isp_fe_buffer_append_end(&fe->fe_buff[vdid].refresh_part_regs.cmd_buffer[part_cmd_num],
 						&fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
-			spin_unlock_irqrestore(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
 			//isp_info("%s: refresh_part_regs.curr_cmd_num=0x%08x\n", __func__, fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
 			//config dma
 #if VIV_ISP_FE_DEBUG_DUMP == 1
@@ -1247,37 +1382,41 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 #endif
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_part_regs.cmd_dma_addr);
-			fe->state = ISP_FE_STATE_RUNNING;
 #if VIV_ISP_FE_DMA_TIME_DEBUG == 1
 			fe->last_t_ns = ktime_get_ns();
 #endif
-			spin_lock_irqsave(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
-			spin_unlock_irqrestore(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
 		} else {	//refresh the whole registers
 			//config dma
-			spin_unlock_irqrestore(&fe->fe_buff[vdid].cmd_buffer_lock, flags);
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 			isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
 #endif
 
 			//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-			isp_fe_save_and_disable_interrupts(dev, vdid);
-			down_write(&fe->cpu_rw_sem);
-			fe->cpu_rw_sem_write_held = true;
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
-			fe->state = ISP_FE_STATE_RUNNING;
 #if VIV_ISP_FE_DMA_TIME_DEBUG == 1
 			fe->last_t_ns = ktime_get_ns();
 #endif
-			spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
 			isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-			spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
 		}
 	} else {
+		/* VDID is changing - writeback current status regs before switching */
+		ret = isp_fe_writeback_status(dev);
+		if (ret) {
+			pr_err("%s: failed to writeback status, ret=%d\n", __func__, ret);
+			return ret;
+		}
+
 		fe->curr_vdid = fe_switch->next_vdid[0];
 		vdid = fe_switch->next_vdid[0];
+
+		ret = isp_fe_handle_pre_transaction(dev, vdid);
+		if (ret) {
+			pr_err("%s: failed in pre-transaction handling, ret=%d\n", __func__, ret);
+			return ret;
+		}
+
 #if VIV_ISP_FE_DEBUG_DUMP == 1
 		isp_fe_cmdbuffer_dump(&fe->fe_buff[vdid].refresh_full_regs);
 #endif
@@ -1286,68 +1425,34 @@ static int __isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_
 		//config dma
 		//isp_info("%s: refresh_full_regs.curr_cmd_num=0x%08x\n", __func__, fe->refresh_full_regs.curr_cmd_num);
 
-		isp_fe_save_and_disable_interrupts(dev, vdid);
-		down_write(&fe->cpu_rw_sem);
-		fe->cpu_rw_sem_write_held = true;
 		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_ctrl, 0x00000001);
 		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_ad, (u32) fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr);
-		fe->state = ISP_FE_STATE_RUNNING;
 #if VIV_ISP_FE_DMA_TIME_DEBUG == 1
 		fe->last_t_ns = ktime_get_ns();
 #endif
-		spin_lock_irqsave(&fe->full_buff_lock, full_buff_flags);
 		isp_fe_raw_write_reg(dev, fe->general_ctrl.fe_dma_start, 0x00010000 | fe->fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-		spin_unlock_irqrestore(&fe->full_buff_lock, full_buff_flags);
 	}
 
-	// Wait for completion before returning...
-	if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-		pr_err("fe switch timeout! FE is stuck\n");
-		return -ETIMEDOUT;
-	}
-
-	return ret;
+	return isp_fe_wait_transaction_handle_post(dev, vdid);
 }
 
-static int isp_fe_switch(struct vvcam_fe_dev *dev, void __user *args){
-	struct isp_fe_switch_t fe_switch;
-	
-	memset(&fe_switch, 0, sizeof(fe_switch));
-	isp_info("enter %s\n", __func__);
-
-	viv_check_retval(copy_from_user(&fe_switch, args, sizeof(struct isp_fe_switch_t)));
-
-	return __isp_fe_switch(dev, &fe_switch);
-}
-
-int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
+static int __isp_fe_set_params(struct vvcam_fe_dev *dev, struct isp_fe_params_t *params)
 {
 	int ret;
 	int i;
 	uint8_t vdid;
 	uint32_t curr_cmd_num;
-	struct isp_fe_params_t fe_params;
 	uint16_t offset, mapped_index, index = 0, ctrl_index = 0;
 	static uint16_t ctrl_regs_num = ARRAY_SIZE(ctrl_regs);
 
 	struct isp_fe_context *fe = &dev->fe;
 	pr_info("enter %s\n", __func__);
 
-	if (fe->state != ISP_FE_STATE_INIT) {
-		ret = isp_fe_reset(dev);
-		if (ret != 0) {
-			isp_err("%s: fe reset error!\n", __func__);
-			return -1;
-		}
-	}
-
-	viv_check_retval(copy_from_user(&fe_params, args, sizeof(struct isp_fe_params_t)));
-
-	if (fe_params.max_vd_caps > ISP_FE_VIRT_MAXCNT) {
+	if (params->max_vd_caps > ISP_FE_VIRT_MAXCNT) {
 		isp_err("%s: alloc fe buff error!\n", __func__);
 		return -1;
 	}
-	fe->vdid_num = fe_params.max_vd_caps;
+	fe->vdid_num = params->max_vd_caps;
 
 	if (!dev->dev->dma_mask) {
 		dev->dev->dma_mask = &dev->dev->coherent_dma_mask;
@@ -1359,9 +1464,9 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		return -1;
 	}
 
-	fe->general_ctrl = fe_params.general_ctrl;
+	fe->general_ctrl = params->general_ctrl;
 
-	fe->fe_buff = kzalloc(sizeof(struct isp_fe_buff_t) * fe_params.max_vd_caps, GFP_KERNEL);
+	fe->fe_buff = kzalloc(sizeof(struct isp_fe_buff_t) * params->max_vd_caps, GFP_KERNEL);
 	if (!fe->fe_buff) {
 		isp_err("%s: alloc fe buff error!\n", __func__);
 		return -1;
@@ -1383,7 +1488,6 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 	}
 
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
-		spin_lock_init(&fe->fe_buff[vdid].cmd_buffer_lock);
 		fe->fe_buff[vdid].refresh_part_regs.cmd_num_max = ISP_FE_REG_PART_REFRESH_NUM;
 		fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
 		fe->fe_buff[vdid].refresh_part_regs.cmd_buffer = dma_alloc_coherent(dev->dev,
@@ -1399,12 +1503,12 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		isp_fe_buffer_memset(fe->fe_buff[vdid].refresh_part_regs.cmd_buffer, fe->fe_buff[vdid].refresh_part_regs.curr_cmd_num);
 	}
 
-	fe->special_reg_base = ISP_FE_FULL_BUFFER_NUM +fe_params.tbl_total_params_num;
+	fe->special_reg_base = ISP_FE_FULL_BUFFER_NUM +params->tbl_total_params_num;
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
-		fe->fe_buff[vdid].tbl_reg_addr_num = fe_params.tbl_reg_addr_num;
-		fe->fe_buff[vdid].tbl_total_params_num = fe_params.tbl_total_params_num;
+		fe->fe_buff[vdid].tbl_reg_addr_num = params->tbl_reg_addr_num;
+		fe->fe_buff[vdid].tbl_total_params_num = params->tbl_total_params_num;
 		fe->fe_buff[vdid].refresh_full_regs.cmd_num_max = ISP_FE_FULL_BUFFER_NUM +
-								fe_params.tbl_total_params_num + ISP_FE_SPECIAL_REG_NUM + 2;	//2--end or nop+end flag
+								params->tbl_total_params_num + ISP_FE_SPECIAL_REG_NUM + 2;	//2--end or nop+end flag
 		fe->fe_buff[vdid].refresh_full_regs.cmd_buffer = dma_alloc_coherent(dev->dev,
 								sizeof(union isp_fe_cmd_u) * fe->fe_buff[vdid].refresh_full_regs.cmd_num_max,
 								&fe->fe_buff[vdid].refresh_full_regs.cmd_dma_addr, GFP_KERNEL);
@@ -1426,10 +1530,10 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 	}
 
 	for (vdid = 0; vdid < fe->vdid_num; vdid++) {
-		for (i = 0; i < fe_params.tbl_reg_addr_num; i++) {
+		for (i = 0; i < params->tbl_reg_addr_num; i++) {
 			fe->fe_buff[vdid].tbl_buffer[i].curr_index = 0;
-			fe->fe_buff[vdid].tbl_buffer[i].params_num = fe_params.tbl[i].params_num;
-			fe->fe_buff[vdid].tbl_buffer[i].tbl_reg_offset = fe_params.tbl[i].tbl_reg_offset;
+			fe->fe_buff[vdid].tbl_buffer[i].params_num = params->tbl[i].params_num;
+			fe->fe_buff[vdid].tbl_buffer[i].tbl_reg_offset = params->tbl[i].tbl_reg_offset;
 			if (i == 0) {
 				fe->fe_buff[vdid].tbl_buffer[i].tbl_cmd_buffer =
 					(struct isp_fe_cmd_wreg_t *)(fe->fe_buff[vdid].refresh_full_regs.cmd_buffer + ISP_FE_FULL_BUFFER_NUM);
@@ -1440,9 +1544,9 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		}
 	}
 
-	fe->status_regs_num = fe_params.status_regs_num;
-	for (i = 0; i < fe_params.status_regs_num; i++) {
-		fe->status_regs[i] = fe_params.status_regs[i];
+	fe->status_regs_num = params->status_regs_num;
+	for (i = 0; i < params->status_regs_num; i++) {
+		fe->status_regs[i] = params->status_regs[i];
 	}
 
 	for (offset = 0; offset < ISP_FE_REG_OFFSET_BYTE_MAX; offset += ISP_FE_REG_SIZE) {
@@ -1465,7 +1569,6 @@ int isp_fe_set_params(struct vvcam_fe_dev *dev, void __user *args)
 		fe->hash_map_tbl[index++] = mapped_index;
 	}
 
-	fe->state = ISP_FE_STATE_GOT_BUFFER;
 	isp_info("exit %s\n", __func__);
 
 	return 0;
@@ -1498,7 +1601,7 @@ alloc_fixed_buf_err:
 
 }
 
-int isp_fe_reset(struct vvcam_fe_dev *dev)
+static int __isp_fe_reset(struct vvcam_fe_dev *dev)
 {
 	struct isp_fe_context *fe = &dev->fe;
 	int vdid = 0;
@@ -1507,21 +1610,7 @@ int isp_fe_reset(struct vvcam_fe_dev *dev)
 
 	isp_info("enter %s\n", __func__);
 
-	if (fe->state == ISP_FE_STATE_RUNNING) {//block the destory when FE is running
-		if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-			isp_err("%s error: wait FE DMA time out!", __func__);
-			return -ETIMEDOUT;
-		}
-	}
-
 	if (fe->running_num != 0) {
-		if (fe->is_isp_processing == true) {
-			if (wait_for_completion_timeout(&fe->isp_completion, msecs_to_jiffies(VIV_ISP_PROCESS_TIMOUT_MS)) == 0) {
-				isp_err("%s error: wait ISP process time out!", __func__);
-				return -ETIMEDOUT;
-			}
-		}
-
 		//isp reset
 		isp_fe_raw_write_reg(dev, VI_IRCL_OFFSET, 0xFFFFFFBF);
 		mdelay(1);
@@ -1535,10 +1624,8 @@ int isp_fe_reset(struct vvcam_fe_dev *dev)
 		fe->running_num = 0;
 	}
 
-	fe->state = ISP_FE_STATE_INIT;
-	fe->fst_wr_flag = true;
-	fe->is_isp_processing = false;
-	fe->cpu_rw_sem_write_held = false;
+	atomic_set(&dev->fe_transaction_active, 0);
+
 	//the default id value is set to invaild.
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->curr_vdid = VIV_INVALID_VDID;
@@ -1608,15 +1695,9 @@ int isp_fe_init(struct vvcam_fe_dev *dev)
 	}
 
 	init_completion(&fe->fe_completion);
-	init_completion(&fe->isp_completion);
-	spin_lock_init(&fe->full_buff_lock);
-	init_rwsem(&fe->cpu_rw_sem);
-	fe->cpu_rw_sem_write_held = false;
 
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->state = ISP_FE_STATE_INIT;
-	fe->fst_wr_flag = true;
-	fe->is_isp_processing = false;
 	for (i = 0; i < ISP_FE_POST_OFFSET_MAX; i++) {
 		fe->post_fe_modify_reg_offset[i] = -1;
 		fe->post_fe_modify_reg_value[i] = -1;
@@ -1637,15 +1718,7 @@ int isp_fe_destory(struct vvcam_fe_dev *dev)
 	struct isp_fe_context *fe = &dev->fe;
 	isp_info("enter %s\n", __func__);
 
-	if (fe->state == ISP_FE_STATE_RUNNING) {	//block the destory when FE is running
-		if (wait_for_completion_timeout(&fe->fe_completion, msecs_to_jiffies(VIV_ISP_FE_DMA_TIMOUT_MS)) == 0) {
-			isp_err("%s error: wait FE DMA time out!", __func__);
-			return -ETIMEDOUT;
-		}
-	}
-
 	fe->state = ISP_FE_STATE_EXIT;
-	fe->fst_wr_flag = true;
 
 	if (fe->fe_buff) {
 		for (vdid = 0; vdid < fe->vdid_num; vdid++) {
@@ -1685,89 +1758,317 @@ int isp_fe_destory(struct vvcam_fe_dev *dev)
 	return 0;
 }
 
+/* === IRQ context ops: no mutex, no state checks === */
+
+static int isp_fe_ops_irq_read_fe_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
+{
+	if (WARN(!in_interrupt(), "%s called in non-interrupt context", __func__))
+		return -EINVAL;
+	if (WARN(!isp_fe_is_fe_control_register(offset), "%s called with invalid FE control register offset: 0x%08x", __func__, offset))
+		return -EINVAL;
+	*val = isp_fe_raw_read_reg(dev, offset);
+	return 0;
+}
+
+static int isp_fe_ops_irq_read_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
+{
+	if (WARN(!in_interrupt(), "%s called in non-interrupt context", __func__))
+		return -EINVAL;
+	if (WARN(!isp_fe_is_control_register(offset), "%s called with invalid control register offset: 0x%08x", __func__, offset))
+		return -EINVAL;
+	if (WARN(atomic_read(&dev->fe_transaction_active), "%s called with active FE transaction", __func__))
+		return -EINVAL;
+	*val = isp_fe_raw_read_reg(dev, offset);
+	return 0;
+}
+
+static int isp_fe_ops_irq_write_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val)
+{
+	if (WARN(!in_interrupt(), "%s called in non-interrupt context", __func__))
+		return -EINVAL;
+	if (WARN(!isp_fe_is_non_fe_control_register(offset), "%s called with invalid non-FE control register offset: 0x%08x", __func__, offset))
+		return -EINVAL;
+	if (WARN(atomic_read(&dev->fe_transaction_active), "%s called with active FE transaction", __func__))
+		return -EINVAL;
+	isp_fe_raw_write_reg(dev, offset, val);
+	return 0;
+}
+
+/* === API layer: mutex + state management === */
+
+static int isp_fe_read_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state != ISP_FE_STATE_GOT_BUFFER &&
+	    dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s), offset=0x%08x\n", __func__, isp_fe_state_to_str(dev->fe.state), offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (!isp_fe_is_control_register(offset)) {
+		isp_err("%s: invalid control register offset: 0x%08x\n", __func__, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+
+	__isp_fe_read_control_reg(dev, offset, val);
+	ret = 0;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+static int isp_fe_write_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state == ISP_FE_STATE_GOT_BUFFER) {
+		ret = isp_fe_get_reg_def_val(dev);
+		if (ret) {
+			isp_err("%s: failed to init cmd buffer, ret=%d\n", __func__, ret);
+			goto unlock;
+		}
+		dev->fe.state = ISP_FE_STATE_READY;
+	}
+	if (dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s), offset=0x%08x\n", __func__, isp_fe_state_to_str(dev->fe.state), offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (!isp_fe_is_control_register(offset)) {
+		isp_err("%s: invalid control register offset: 0x%08x\n", __func__, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+
+	__isp_fe_write_control_reg(dev, offset, val);
+	ret = 0;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+static int isp_fe_read_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state == ISP_FE_STATE_GOT_BUFFER) {
+		ret = isp_fe_get_reg_def_val(dev);
+		if (ret) {
+			isp_err("%s: failed to init cmd buffer, ret=%d\n", __func__, ret);
+			goto unlock;
+		}
+		dev->fe.state = ISP_FE_STATE_READY;
+	}
+	if (dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s), vdid=%d, offset=0x%08x\n", __func__, isp_fe_state_to_str(dev->fe.state), vdid, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (!isp_fe_is_vdid_register(offset)) {
+		isp_err("%s: invalid VDID register offset: 0x%08x\n", __func__, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (vdid >= dev->fe.vdid_num) {
+		isp_err("%s: vdid %d is out of range (max=%d)\n", __func__, vdid, dev->fe.vdid_num);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_read_vdid_reg(dev, vdid, offset, val);
+	if (ret)
+		dev->fe.state = ISP_FE_STATE_ERROR;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+static int isp_fe_write_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state == ISP_FE_STATE_GOT_BUFFER) {
+		ret = isp_fe_get_reg_def_val(dev);
+		if (ret) {
+			isp_err("%s: failed to init cmd buffer, ret=%d\n", __func__, ret);
+			goto unlock;
+		}
+		dev->fe.state = ISP_FE_STATE_READY;
+	}
+	if (dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s), vdid=%d, offset=0x%08x\n", __func__, isp_fe_state_to_str(dev->fe.state), vdid, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (!isp_fe_is_vdid_register(offset)) {
+		isp_err("%s: invalid VDID register offset: 0x%08x\n", __func__, offset);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (vdid >= dev->fe.vdid_num) {
+		isp_err("%s: vdid %d is out of range (max=%d)\n", __func__, vdid, dev->fe.vdid_num);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_write_vdid_reg(dev, vdid, offset, val);
+	if (ret)
+		dev->fe.state = ISP_FE_STATE_ERROR;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+int isp_fe_write_tbl(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s)\n", __func__, isp_fe_state_to_str(dev->fe.state));
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (vdid >= dev->fe.vdid_num) {
+		isp_err("%s: vdid %d is out of range (max=%d)\n", __func__, vdid, dev->fe.vdid_num);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_write_tbl(dev, vdid, offset, val);
+	if (ret)
+		dev->fe.state = ISP_FE_STATE_ERROR;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+static int isp_fe_switch(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s)\n", __func__, isp_fe_state_to_str(dev->fe.state));
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_switch(dev, fe_switch);
+	if (ret)
+		dev->fe.state = ISP_FE_STATE_ERROR;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+int isp_fe_get_status(struct vvcam_fe_dev *dev, struct isp_fe_status_t *status)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state == ISP_FE_STATE_EXIT) {
+		isp_err("%s: called in invalid state (EXIT)\n", __func__);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_get_status(dev, status);
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+int isp_fe_reset(struct vvcam_fe_dev *dev)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state != ISP_FE_STATE_INIT &&
+	    dev->fe.state != ISP_FE_STATE_GOT_BUFFER &&
+	    dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING &&
+	    dev->fe.state != ISP_FE_STATE_ERROR) {
+		isp_err("%s: called in invalid state (%s)\n", __func__, isp_fe_state_to_str(dev->fe.state));
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = __isp_fe_reset(dev);
+	if (ret)
+		dev->fe.state = ISP_FE_STATE_ERROR;
+	else
+		dev->fe.state = ISP_FE_STATE_INIT;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
+int isp_fe_set_params(struct vvcam_fe_dev *dev, struct isp_fe_params_t *params)
+{
+	int ret;
+	struct vvcam_fe_driver_dev *pdriver_dev = platform_get_drvdata(to_platform_device(dev->dev));
+
+	mutex_lock(&pdriver_dev->vvmutex);
+	if (dev->fe.state != ISP_FE_STATE_INIT &&
+	    dev->fe.state != ISP_FE_STATE_GOT_BUFFER &&
+	    dev->fe.state != ISP_FE_STATE_READY &&
+	    dev->fe.state != ISP_FE_STATE_WAITING) {
+		isp_err("%s: called in invalid state (%s)\n", __func__, isp_fe_state_to_str(dev->fe.state));
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (dev->fe.state != ISP_FE_STATE_INIT) {
+		ret = __isp_fe_reset(dev);
+		if (ret) {
+			isp_err("%s: reset error %d\n", __func__, ret);
+			dev->fe.state = ISP_FE_STATE_ERROR;
+			goto unlock;
+		}
+		dev->fe.state = ISP_FE_STATE_INIT;
+	}
+	ret = __isp_fe_set_params(dev, params);
+	if (!ret)
+		dev->fe.state = ISP_FE_STATE_GOT_BUFFER;
+unlock:
+	mutex_unlock(&pdriver_dev->vvmutex);
+	return ret;
+}
+
 static int vvcam_fe_dma_irq(struct vvcam_fe_dev *dev)
 {
 	u32 isp_fe_mis;
-	uint8_t vdid;
-	vdid = dev->fe.curr_vdid;
 
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-	u64 dma_t_ns;
-	dma_t_ns = ktime_get_ns() - dev->fe.last_t_ns;
-#endif
-	
-	if (dev->fe.state == ISP_FE_STATE_INIT) {
-		return 0;
+	if (WARN_ONCE((dev->fe.state == ISP_FE_STATE_INIT || dev->fe.state == ISP_FE_STATE_EXIT),
+				  "fe dma irq handler called in unexpected state (%s)\n", isp_fe_state_to_str(dev->fe.state))) {
+		return -EINVAL;
 	}
 
-	isp_fe_read_reg(dev, vdid, dev->fe.general_ctrl.fe_mis, &isp_fe_mis);
+	isp_fe_mis = isp_fe_raw_read_reg(dev, dev->fe.general_ctrl.fe_mis);
 	if (isp_fe_mis) {
-#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
-		if (dev->fe.prev_vdid == vdid) {
-			if (dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
-				isp_info("fe mis 0x%02x dma time num 0x%x %lldns\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num, dma_t_ns);
-			} else {
-				isp_info("fe mis 0x%02x dma time num 0x%x %lldns\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_full_regs.curr_cmd_num, dma_t_ns);
-			}
-		} else {
-			isp_info("fe mis 0x%02x dma time num 0x%x %lldns\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_full_regs.curr_cmd_num, dma_t_ns);
+		isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_icr, isp_fe_mis);
+		if (WARN_ONCE(dev->fe.state != ISP_FE_STATE_RUNNING, "fe dma irq fired in unexpected state (%s)\n", isp_fe_state_to_str(dev->fe.state))) {
+			return -EINVAL;
 		}
-#else
-		if (dev->fe.prev_vdid == vdid) {
-			if (dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num < ISP_FE_REG_PART_REFRESH_NUM) {
-				isp_info("fe mis 0x%02x dma num 0x%04x\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num);
-			} else {
-				isp_info("fe mis 0x%02x dma num 0x%04x\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-			}
-		} else {
-			isp_info("fe mis 0x%02x dma num 0x%04x\n", isp_fe_mis,
-					dev->fe.fe_buff[vdid].refresh_full_regs.curr_cmd_num);
-		}
-#endif
-		isp_fe_write_reg(dev, vdid, dev->fe.general_ctrl.fe_icr, isp_fe_mis);
 		if (isp_fe_mis & 0x01) {
-			isp_fe_write_reg(dev, vdid, dev->fe.general_ctrl.fe_ctrl, 0x00000000);
-			isp_fe_clean_wo_bits(dev);
-			spin_lock(&dev->fe.fe_buff[vdid].cmd_buffer_lock);
-			dev->fe.fe_buff[vdid].refresh_part_regs.curr_cmd_num = 0;
-			spin_unlock(&dev->fe.fe_buff[vdid].cmd_buffer_lock);
-
-			// restore mi_imsc from register
-			if (dev->fe.saved_mi_imsc != 0) {
-				isp_fe_raw_write_reg(dev, VI_MI_IMSC_OFFSET, dev->fe.saved_mi_imsc);
-			}
-
-			// restore isp_imsc from register
-			if (dev->fe.saved_isp_imsc != 0) {
-				isp_fe_raw_write_reg(dev, VI_ISP_IMSC_OFFSET, dev->fe.saved_isp_imsc);
-			}
-
-			isp_fe_perform_post_fe_writes(dev, vdid);
-			dev->fe.prev_vdid = vdid;
-			dev->fe.state = ISP_FE_STATE_WAITING;
-			dev->fe.is_isp_processing = true;
-
-			if (dev->fe.cpu_rw_sem_write_held) {
-				up_write(&dev->fe.cpu_rw_sem);
-				dev->fe.cpu_rw_sem_write_held = false;
-			}
-
-			// restore mi_imsc from command buffer (has to happen when fe state is not running)
-			if (dev->fe.saved_mi_imsc != 0) {
-				isp_fe_write_reg(dev, vdid, VI_MI_IMSC_OFFSET, dev->fe.saved_mi_imsc);
-				dev->fe.saved_mi_imsc = 0;
-			}
-
-			// restore isp_imsc from command buffer (has to happen when fe state is not running)
-			if (dev->fe.saved_isp_imsc != 0) {
-				isp_fe_write_reg(dev, vdid, VI_ISP_IMSC_OFFSET, dev->fe.saved_isp_imsc);
-				dev->fe.saved_isp_imsc = 0;
-			}
+#if VIV_ISP_FE_DMA_TIME_DEBUG == 1
+			dev->fe.last_t_end_ns = ktime_get_ns();
+#endif
+			isp_fe_raw_write_reg(dev, dev->fe.general_ctrl.fe_ctrl, 0);
 			complete_all(&dev->fe.fe_completion);
 		}
 	}
@@ -1788,7 +2089,6 @@ static long vvcam_fe_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 	long ret = 0;
 	struct vvcam_fe_driver_dev *pdriver_dev;
 	struct vvcam_fe_dev *pfe_dev;
-	struct isp_fe_virt_reg_t reg;
 
 	pdriver_dev = file->private_data;
 	if (pdriver_dev == NULL) {
@@ -1798,52 +2098,76 @@ static long vvcam_fe_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 
 	pfe_dev = pdriver_dev->private;
 
-	mutex_lock(&pdriver_dev->vvmutex);
 	switch (cmd) {
-	case FEIOC_READ_REG:
-		if (copy_from_user(&reg, (void __user *)args, sizeof(reg))) {
-			mutex_unlock(&pdriver_dev->vvmutex);
-			return -EIO;
-		}
-		ret = isp_fe_read_reg(pfe_dev, reg.vdid, reg.offset, &reg.val);
-		viv_check_retval(copy_to_user((void __user *)args, &reg, sizeof(reg)));
-		if (copy_to_user((void __user *)args, &reg, sizeof(reg))) {
-			mutex_unlock(&pdriver_dev->vvmutex);
-			return -EIO;
-		}
+	case FEIOC_READ_REG: {
+		struct isp_fe_virt_reg_t reg;
+
+		if (copy_from_user(&reg, (void __user *)args, sizeof(reg)))
+			return -EFAULT;
+		if (isp_fe_is_control_register(reg.offset))
+			ret = isp_fe_read_control_reg(pfe_dev, reg.offset, &reg.val);
+		else
+			ret = isp_fe_read_vdid_reg(pfe_dev, reg.vdid, reg.offset, &reg.val);
+		if (ret)
+			return ret;
+		if (copy_to_user((void __user *)args, &reg, sizeof(reg)))
+			return -EFAULT;
 		break;
-	case FEIOC_WRITE_REG:
-		if (copy_from_user(&reg, (void __user *)args, sizeof(reg))) {
-			mutex_unlock(&pdriver_dev->vvmutex);
-			return -EIO;
-		}
-		ret = isp_fe_write_reg(pfe_dev, reg.vdid, reg.offset, reg.val);
+	}
+	case FEIOC_WRITE_REG: {
+		struct isp_fe_virt_reg_t reg;
+
+		if (copy_from_user(&reg, (void __user *)args, sizeof(reg)))
+			return -EFAULT;
+		if (isp_fe_is_control_register(reg.offset))
+			ret = isp_fe_write_control_reg(pfe_dev, reg.offset, reg.val);
+		else
+			ret = isp_fe_write_vdid_reg(pfe_dev, reg.vdid, reg.offset, reg.val);
 		break;
-	case FEIOC_WRITE_TBL:
-		if (copy_from_user(&reg, (void __user *)args, sizeof(reg))) {
-			mutex_unlock(&pdriver_dev->vvmutex);
-			return -EIO;
-		}
+	}
+	case FEIOC_WRITE_TBL: {
+		struct isp_fe_virt_reg_t reg;
+
+		if (copy_from_user(&reg, (void __user *)args, sizeof(reg)))
+			return -EFAULT;
 		ret = isp_fe_write_tbl(pfe_dev, reg.vdid, reg.offset, reg.val);
 		break;
-	case FEIOC_G_FE_STATUS:
-		ret = isp_fe_get_status(pfe_dev, (void __user *)args);
+	}
+	case FEIOC_G_FE_STATUS: {
+		struct isp_fe_status_t fe_status;
+
+		ret = isp_fe_get_status(pfe_dev, &fe_status);
+		if (ret)
+			return ret;
+		if (copy_to_user((void __user *)args, &fe_status, sizeof(fe_status)))
+			return -EFAULT;
 		break;
+	}
 	case FEIOC_S_FE_RESET:
 		ret = isp_fe_reset(pfe_dev);
 		break;
-	case FEIOC_S_FE_PARAMS:
-		ret = isp_fe_set_params(pfe_dev, (void __user *)args);
+	case FEIOC_S_FE_PARAMS: {
+		struct isp_fe_params_t fe_params;
+
+		if (copy_from_user(&fe_params, (void __user *)args, sizeof(fe_params)))
+			return -EFAULT;
+		ret = isp_fe_set_params(pfe_dev, &fe_params);
 		break;
-	case FEIOC_S_FE_SWITCH:
-		ret = isp_fe_switch(pfe_dev, (void __user *)args);
+	}
+	case FEIOC_S_FE_SWITCH: {
+		struct isp_fe_switch_t fe_switch;
+
+		memset(&fe_switch, 0, sizeof(fe_switch));
+		if (copy_from_user(&fe_switch, (void __user *)args, sizeof(fe_switch)))
+			return -EFAULT;
+		ret = isp_fe_switch(pfe_dev, &fe_switch);
 		break;
+	}
 	default:
-		ret = -1;
+		ret = -EINVAL;
 		isp_err("unsupported command 0x%04x", cmd);
 		break;
 	}
-	mutex_unlock(&pdriver_dev->vvmutex);
 
 	return ret;
 }
@@ -1855,14 +2179,11 @@ static int vvcam_fe_release(struct inode *inode, struct file *file)
 	struct vvcam_fe_dev *pfe_dev;
 
 	pdriver_dev = container_of(inode->i_cdev, struct vvcam_fe_driver_dev, cdev);
-	file->private_data = pdriver_dev;
-
 	pfe_dev = pdriver_dev->private;
+
 	ret = isp_fe_reset(pfe_dev);
-	if (ret != 0) {
+	if (ret)
 		pr_err("%s: release fe error(%d)!\n", __func__, ret);
-		return ret;
-	}
 
 	return ret;
 }
@@ -1988,16 +2309,24 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 		pfe_dev->fe.enable = false;
 	}
 	if (pfe_dev->fe.enable == true) {
-		isp_fe_init(pfe_dev);
+		ret = isp_fe_init(pfe_dev);
+		if (ret) {
+			pr_err("%s: isp_fe_init failed, ret=%d\n", __func__, ret);
+			return ret;
+		}
 	}
 
 	pfe_dev->fe_get_vdid = isp_fe_get_vdid;
-	pfe_dev->fe_get_workmode = isp_fe_get_workmode;
 	pfe_dev->fe_dma_irq = vvcam_fe_dma_irq;
-	pfe_dev->fe_isp_irq_work = isp_fe_isp_irq_work;
-	pfe_dev->fe_read_reg = isp_fe_read_reg;
-	pfe_dev->fe_write_reg = isp_fe_write_reg;
-	pfe_dev->fe_switch = __isp_fe_switch;
+	pfe_dev->irq_read_fe_control_reg = isp_fe_ops_irq_read_fe_control_reg;
+	pfe_dev->irq_read_control_reg = isp_fe_ops_irq_read_control_reg;
+	pfe_dev->irq_write_control_reg = isp_fe_ops_irq_write_control_reg;
+	pfe_dev->read_control_reg = isp_fe_read_control_reg;
+	pfe_dev->write_control_reg = isp_fe_write_control_reg;
+	pfe_dev->read_vdid_reg = isp_fe_read_vdid_reg;
+	pfe_dev->write_vdid_reg = isp_fe_write_vdid_reg;
+	pfe_dev->fe_switch = isp_fe_switch;
+
 	fe_register_index++;
 	fe_dev = pfe_dev;
 	pr_info("exit %s\n", __func__);
@@ -2006,15 +2335,19 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 
 static int vvcam_fe_remove(struct platform_device *pdev)
 {
+	int ret = 0;
 	struct vvcam_fe_driver_dev *pdriver_dev;
 	struct vvcam_fe_dev *pfe_dev;
+
 	pr_info("enter %s\n", __func__);
 	fe_register_index--;
 	pdriver_dev = platform_get_drvdata(pdev);
 
 	pfe_dev = (struct vvcam_fe_dev *)pdriver_dev->private;
 	if (pfe_dev->fe.enable == true) {
-		isp_fe_destory(pfe_dev);
+		ret = isp_fe_destory(pfe_dev);
+		if (ret)
+			pr_err("%s: isp_fe_destory failed, ret=%d\n", __func__, ret);
 	}
 
 	cdev_del(&pdriver_dev->cdev);
@@ -2023,7 +2356,7 @@ static int vvcam_fe_remove(struct platform_device *pdev)
 	if (fe_register_index == 0) {
 		class_destroy(pdriver_dev->class);
 	}
-	return 0;
+	return ret;
 }
 
 static struct platform_driver vvcam_fe_driver = {

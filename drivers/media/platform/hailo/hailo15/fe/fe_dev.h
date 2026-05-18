@@ -70,22 +70,28 @@
 //#define ISP_FE_SPECIAL_RGE_INDEX		(ISP_FE_FULL_BUFFER_NUM - ISP_FE_SPECIAL_RGE_NUM)
 
 enum isp_fe_state {
-	ISP_FE_STATE_INIT,
-	ISP_FE_STATE_GOT_BUFFER,
-	ISP_FE_STATE_READY,
-	ISP_FE_STATE_RUNNING,
-	ISP_FE_STATE_WAITING,
-	ISP_FE_STATE_EXIT
+	ISP_FE_STATE_INIT,        /* After init/reset, no buffers */
+	ISP_FE_STATE_GOT_BUFFER,  /* Buffers allocated (after set_params) */
+	ISP_FE_STATE_READY,       /* Ready for next operation. Before first DMA. */
+	ISP_FE_STATE_RUNNING,     /* DMA in progress */
+	ISP_FE_STATE_WAITING,     /* Waiting for next operation. After first DMA. */
+	ISP_FE_STATE_ERROR,       /* Only reset allowed */
+	ISP_FE_STATE_EXIT,        /* Destroyed */
 };
 
-enum fe_work_mode_e {
-	ISP_FE_WORK_MODE_BYPASS = 0,
-	ISP_FE_WORK_MODE_MCM = 1,
-	ISP_FE_WORK_MODE_TEST = 2,
-    ISP_FE_WORK_MODE_FIX = 3,
-    ISP_FE_WORK_MODE_DUP = 4,
-	ISP_FE_WORK_MODE_MAX
-};
+static inline const char *isp_fe_state_to_str(enum isp_fe_state state)
+{
+	switch (state) {
+	case ISP_FE_STATE_INIT:       return "INIT";
+	case ISP_FE_STATE_GOT_BUFFER: return "GOT_BUFFER";
+	case ISP_FE_STATE_READY:      return "READY";
+	case ISP_FE_STATE_RUNNING:    return "RUNNING";
+	case ISP_FE_STATE_WAITING:    return "WAITING";
+	case ISP_FE_STATE_ERROR:      return "ERROR";
+	case ISP_FE_STATE_EXIT:       return "EXIT";
+	default:                      return "UNKNOWN";
+	}
+}
 
 enum isp_fe_cmd_type_e {
 	ISP_FE_CMD_REG_READ = 0, /**< unused */
@@ -287,9 +293,6 @@ struct isp_fe_fusa_buf_t {
 };
 
 struct stl_fe_buff_t {
-#ifdef __KERNEL__
-	spinlock_t cmd_buffer_lock;
-#endif
 	uint8_t tbl_reg_addr_num;	/*number of register address for LUT */
 	uint16_t tbl_total_params_num;	/*the total number of params for LUT */
 	struct isp_fe_tbl_buffer_t tbl_buffer[ISP_FE_TBL_REG_MAX];
@@ -298,9 +301,6 @@ struct stl_fe_buff_t {
 	struct isp_fe_cmd_buffer_t refresh_fixed_regs;
 };
 struct isp_fe_buff_t {
-#ifdef __KERNEL__
-	spinlock_t cmd_buffer_lock;
-#endif
 	uint8_t prev_index; /* Speed up the search for LUT buffer index */
 	uint8_t tbl_reg_addr_num;	/*number of register address for LUT */
 	uint16_t tbl_total_params_num;	/*the total number of params for LUT */
@@ -308,7 +308,6 @@ struct isp_fe_buff_t {
 
 	struct isp_fe_cmd_buffer_t refresh_full_regs;
 	struct isp_fe_cmd_buffer_t refresh_part_regs;
-	struct isp_fe_cmd_buffer_t refresh_fusa_regs;
 	uint32_t rd_index;
 	uint32_t fixed_reg_rd_num;	/*statics register which has the fixed offset */
 	uint32_t *fixed_reg_buffer; /* only store the value of statics register
@@ -326,16 +325,11 @@ enum isp_fe_post_offsets {
 
 struct isp_fe_context {
 	bool enable;
-	enum fe_work_mode_e work_mode;
 	bool fe_dup_flag;
 #ifdef __KERNEL__
 	struct completion fe_completion;
-	struct completion isp_completion;
-	spinlock_t full_buff_lock;
-	struct rw_semaphore cpu_rw_sem;
 #endif
 	enum isp_fe_state state;
-	bool fst_wr_flag;	//first write
 	bool fst_isp_wr_flag;	//first isp write
 	struct isp_fe_reg_t general_ctrl;
 
@@ -361,12 +355,11 @@ struct isp_fe_context {
 	struct isp_fe_status_regs_t status_regs[ISP_FE_STATUS_REGS_MAX];
 
 	u64 last_t_ns;
-	bool is_isp_processing;
+	u64 last_t_end_ns;
 	int post_fe_modify_reg_offset[ISP_FE_POST_OFFSET_MAX];
 	int post_fe_modify_reg_value[ISP_FE_POST_OFFSET_MAX];
 	u32 saved_mi_imsc;
 	u32 saved_isp_imsc;
-	bool cpu_rw_sem_write_held;	// track if write lock is held
 	int isp_irq;
 };
 
@@ -378,15 +371,32 @@ struct vvcam_fe_dev {
 
 	u32 isp_mis;
 	int id;
+	atomic_t fe_transaction_active;
 
 	struct isp_fe_context fe;
 	int (*fe_get_vdid) (struct vvcam_fe_dev *dev, uint8_t *vd_id);
-	int (*fe_get_workmode)(struct vvcam_fe_dev *dev, uint8_t *workmode);
+	// IRQ handler for FE interrupts
 	int (*fe_dma_irq) (struct vvcam_fe_dev *dev);
-	void (*fe_isp_irq_work) (struct vvcam_fe_dev *dev);
-	int (*fe_read_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
-	int (*fe_write_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
+	// irq_*_control_reg are for IRQ context
+	int (*irq_read_fe_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
+	// not including FE control regs
+	int (*irq_read_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
+	int (*irq_write_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val);
+
+	// following APIs are from process context only
+	// control here includes FE control regs
+	int (*read_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
+	int (*write_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val);
+	int (*read_vdid_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
+	int (*write_vdid_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 	int (*fe_switch)(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch);
 };
+
+// these functions are to be used even when FE is disabled
+// in order for us to assert all code uses correct function
+bool isp_fe_is_non_fe_control_register(uint32_t offset);
+bool isp_fe_is_fe_control_register(uint32_t offset);
+bool isp_fe_is_control_register(uint32_t offset);
+bool isp_fe_is_vdid_register(uint32_t offset);
 
 #endif //_FE_DEV_H_   

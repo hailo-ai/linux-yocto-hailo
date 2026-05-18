@@ -160,8 +160,10 @@ int hailo15_video_post_event(struct video_device *vdev,
 		if (ret) {
 			pr_err("%s: post event id: %d timeout\n", __func__,
 				   event_meta.event_id);
-		} else {
-			ret = event_shm->result;
+		} else if (event_shm->result) {
+			pr_err("%s: post event id: %d failed with result: %d\n",
+					__func__, event_meta.event_id, event_shm->result);
+			ret = -EIO;
 		}
 
 		mutex_unlock(&event_resource->event_lock);
@@ -189,12 +191,34 @@ int hailo15_video_post_event_create_pipeline(struct hailo15_video_node *vid_node
 									vid_node->pad.index, NULL, 0);
 }
 
-int hailo15_video_post_event_release_pipeline(
-	struct hailo15_video_node *vid_node)
+int hailo15_video_post_event_release_pipeline(struct hailo15_video_node *vid_node)
 {
 	hailo15_daemon_event_meta_t meta = {
 		HAILO15_DEAMON_VIDEO_EVENT,
 		HAILO15_DAEMON_VIDEO_EVENT_DESTROY_PIPELINE
+	};
+	return hailo15_video_post_event(vid_node->video_dev, meta,
+					&(vid_node->event_resource),
+					vid_node->pad.index, NULL, 0);
+}
+
+int hailo15_video_post_event_create_pipeline_fast_toggle(struct hailo15_video_node *vid_node)
+{
+	hailo15_daemon_event_meta_t meta = {
+		HAILO15_DEAMON_VIDEO_EVENT,
+		HAILO15_DAEMON_VIDEO_EVENT_CREATE_PIPELINE_FAST_TOGGLE
+	};
+	return hailo15_video_post_event(vid_node->video_dev, meta,
+									&(vid_node->event_resource),
+									vid_node->pad.index, NULL, 0);
+}
+
+int hailo15_video_post_event_release_pipeline_fast_toggle(
+	struct hailo15_video_node *vid_node)
+{
+	hailo15_daemon_event_meta_t meta = {
+		HAILO15_DEAMON_VIDEO_EVENT,
+		HAILO15_DAEMON_VIDEO_EVENT_DESTROY_PIPELINE_FAST_TOGGLE
 	};
 	return hailo15_video_post_event(vid_node->video_dev, meta,
 					&(vid_node->event_resource),
