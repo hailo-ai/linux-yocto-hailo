@@ -630,6 +630,13 @@ static int cdns_xspi_probe(struct platform_device *pdev)
 			dev_err(dev, "Failed to remap wrapper address\n");
 			return PTR_ERR(cdns_xspi->wrapperbase);
 		}
+
+		/* clear any residual interrupts */
+		writel(readl(cdns_xspi->iobase + CDNS_XSPI_INTR_STATUS_REG),
+		       cdns_xspi->iobase + CDNS_XSPI_INTR_STATUS_REG);
+		writel(XSPI_HAILO_WRAPPER_IRQ_CLEAR_VALUE,
+		       cdns_xspi->wrapperbase + XSPI_HAILO_WRAPPER_IRQ_CLEAR_OFFSET);
+
 		/* enable interrupt on wrapper */
 		writel(XSPI_HAILO_WRAPPER_IRQ_MASK_VALUE, cdns_xspi->wrapperbase + XSPI_HAILO_WRAPPER_IRQ_MASK_OFFSET);
 	}

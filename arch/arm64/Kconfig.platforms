@@ -146,6 +146,7 @@ config ARCH_HAILO15
 	bool "Hailo-15 SoC"
 	select ARM_PL320_MBOX
 	select ARCH_DMA_ADDR_T_64BIT
+	select REGMAP_I2C
 	help
 	  This enables support for the Hailo-15 ARMv8 SoC.
 

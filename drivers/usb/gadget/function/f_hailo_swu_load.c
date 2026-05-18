@@ -26,8 +26,10 @@
 #include <linux/vmalloc.h>
 #include <linux/kthread.h>
 #include <linux/umh.h>
+#include <linux/usb/gadget.h>
 
 #include "u_hailo_swu_load.h"
+#include "u_f.h"
 
 /* External function to get board SKU ID from soc-hailo driver */
 extern void board_sku_id_to_str(u32 board_sku_id, char *name, size_t name_size);
@@ -98,9 +100,6 @@ struct f_hailo_swu_load {
     /* Endpoints */
     struct usb_ep *bulk_out_ep;
     struct usb_ep *intr_in_ep;
-    
-    /* EP0 control reply buffer */
-    struct usb_request *ep0_req;
     
     /* Bulk OUT endpoint operation mode */
     enum hailo_swu_state state;
@@ -400,29 +399,6 @@ static void hailo_swu_load_status_timer_fn(struct timer_list *t)
 }
 
 /* EP0 (control endpoint) completion callback for vendor requests */
-static void hailo_swu_load_ep0_complete(struct usb_ep *ep, struct usb_request *req)
-{
-    struct f_hailo_swu_load *swu = req->context;
-
-    pr_debug("hailo_swu: ep0 control request completed invoked\n");
-    /* Safety check: ensure context is valid and function is not being unbound */
-    if (!swu || atomic_read(&swu->unbinding)) {
-        pr_debug("hailo_swu: ep0 completion during unbind, ignoring\n");
-        return;
-    }
-
-    if (req->status && req->status != -ESHUTDOWN) {
-        pr_warn("hailo_swu: ep0 req status %d\n", req->status);
-        /* Reset request status after connection errors to allow reuse */
-        if (req->status == -ECONNRESET || req->status == -ENODEV || req->status == -EPROTO) {
-            pr_debug("hailo_swu: resetting ep0 request status after connection error\n");
-            req->status = 0;
-        }
-    } else {
-        pr_debug("hailo_swu: ep0 control request completed successfully (%d bytes)\n", req->actual);
-    }
-}
-
 /* Interrupt completion: handle interrupt request completion */
 static void hailo_swu_load_intr_in_complete(struct usb_ep *ep, struct usb_request *req)
 {
@@ -905,7 +881,7 @@ static int hailo_swu_load_setup(struct usb_function *f, const struct usb_ctrlreq
 {
     struct f_hailo_swu_load *swu = to_f_hailo_swu_load(f);
     struct usb_composite_dev *cdev = f->config->cdev;
-    struct usb_request *req = swu->ep0_req;
+    struct usb_request *req = cdev->req;
     unsigned value = le16_to_cpu(ctrl->wValue);
     unsigned length = le16_to_cpu(ctrl->wLength);
     unsigned resp_length;
@@ -1246,11 +1222,12 @@ static int hailo_swu_load_get_alt(struct usb_function *f, unsigned intf)
 static void hailo_swu_load_disable(struct usb_function *f)
 {
     struct f_hailo_swu_load *swu = to_f_hailo_swu_load(f);
+    int rc;
 
     /* Early return if already disabled to avoid duplicate operations */
     if (swu->bulk_out_ep && !swu->bulk_out_ep->enabled && 
         swu->intr_in_ep && !swu->intr_in_ep->enabled) {
-        pr_debug("hailo_swu: disable called again (already disabled)\n");
+        pr_info("hailo_swu: disable called again (already disabled)\n");
         return;
     }
     
@@ -1270,17 +1247,23 @@ static void hailo_swu_load_disable(struct usb_function *f)
      * The USB controller will handle cleanup when endpoints are disabled. */
     
     /* Disable endpoints with additional safety checks - prevent double disable */
-    if (swu->bulk_out_ep) {
-        pr_debug("hailo_swu: disabling bulk_out_ep (enabled=%d)\n", swu->bulk_out_ep->enabled);
-        if (swu->bulk_out_ep->enabled) {
-            usb_ep_disable(swu->bulk_out_ep);
+    if (swu->bulk_out_ep && swu->bulk_out_ep->enabled) {
+        pr_info("hailo_swu: bulk_out_ep disabling...\n");
+        rc = usb_ep_disable(swu->bulk_out_ep);
+        if (rc) {
+            pr_err("hailo_swu: bulk_out_ep disabling failed, rc = %d\n", rc);
+        } else {
+            pr_info("hailo_swu: bulk_out_ep disabled successfully\n");
         }
     }
     
-    if (swu->intr_in_ep) {
-        pr_debug("hailo_swu: disabling intr_in_ep (enabled=%d)\n", swu->intr_in_ep->enabled);
-        if (swu->intr_in_ep->enabled) {
-            usb_ep_disable(swu->intr_in_ep);
+    if (swu->intr_in_ep && swu->intr_in_ep->enabled) {
+        pr_info("hailo_swu: intr_in_ep disabling...\n");
+        rc = usb_ep_disable(swu->intr_in_ep);
+        if (rc) {
+            pr_err("hailo_swu: intr_in_ep disabling failed, rc = %d\n", rc);
+        } else {
+            pr_info("hailo_swu: intr_in_ep disabled successfully\n");
         }
     }
     
@@ -1295,7 +1278,7 @@ static int hailo_swu_load_bind(struct usb_configuration *c, struct usb_function 
     struct usb_string *us;
     int ret;
 
-    pr_info("hailo_swu: bind\n");
+    pr_info("hailo_swu: bind...\n");
     
     mutex_lock(&opts->lock);
     if (opts->bound) {
@@ -1314,25 +1297,11 @@ static int hailo_swu_load_bind(struct usb_configuration *c, struct usb_function 
     /* Allocate dynamic interface ID */
     ret = usb_interface_id(c, f);
     if (ret < 0) {
-        pr_err("hailo_swu: failed to allocate interface ID: %d\n", ret);
+        pr_err("hailo_swu: failed to allocate interface ID, rc = %d\n", ret);
         goto fail;
     }
     hailo_swu_load_intf_desc.bInterfaceNumber = ret;
     pr_info("hailo_swu: assigned interface ID %d\n", ret);
-
-    /* Allocate EP0 request buffer */
-    swu->ep0_req = usb_ep_alloc_request(cdev->gadget->ep0, GFP_KERNEL);
-    if (!swu->ep0_req)
-        return -ENOMEM;
-    swu->ep0_req->buf = kzalloc(HAILO_SWU_EP0_BUFFER_SIZE, GFP_KERNEL);
-    if (!swu->ep0_req->buf) {
-        usb_ep_free_request(cdev->gadget->ep0, swu->ep0_req);
-        return -ENOMEM;
-    }
-    
-    /* CRITICAL: Set completion callback for EP0 control requests */
-    swu->ep0_req->complete = hailo_swu_load_ep0_complete;
-    swu->ep0_req->context = swu;
 
     /* Initialize vmalloc buffer fields */
     swu->swu_vmalloc_buf = NULL;
@@ -1420,22 +1389,13 @@ static int hailo_swu_load_bind(struct usb_configuration *c, struct usb_function 
 
     pr_info("hailo_swu: bulk_out ep %s, intr_in ep %s\n",
             swu->bulk_out_ep->name, swu->intr_in_ep->name);
+    pr_info("hailo_swu: bind completed\n");
 
     return 0;
 
 fail:
-    if (swu->intr_in_req) {
-        if (swu->intr_in_req->buf) kfree(swu->intr_in_req->buf);
-        usb_ep_free_request(swu->intr_in_ep, swu->intr_in_req);
-    }
-    if (swu->bulk_out_req) {
-        if (swu->bulk_out_req->buf) kfree(swu->bulk_out_req->buf);
-        usb_ep_free_request(swu->bulk_out_ep, swu->bulk_out_req);
-    }
-    if (swu->ep0_req) {
-        if (swu->ep0_req->buf) kfree(swu->ep0_req->buf);
-        usb_ep_free_request(cdev->gadget->ep0, swu->ep0_req);
-    }
+    free_ep_req(swu->intr_in_ep, swu->intr_in_req);
+    free_ep_req(swu->bulk_out_ep, swu->bulk_out_req);
     return ret;
 }
 
@@ -1443,8 +1403,9 @@ static void hailo_swu_load_unbind(struct usb_configuration *c, struct usb_functi
 {
     struct f_hailo_swu_load_opts *opts = to_f_hailo_swu_load_opts(f->fi);
     struct f_hailo_swu_load *swu = to_f_hailo_swu_load(f);
+    int rc;
 
-    pr_info("hailo_swu: unbind\n");
+    pr_info("hailo_swu: unbind...\n");
     
     /* Set unbinding flag to prevent completion callbacks from accessing freed memory */
     atomic_set(&swu->unbinding, 1);
@@ -1465,9 +1426,6 @@ static void hailo_swu_load_unbind(struct usb_configuration *c, struct usb_functi
     
     usb_free_all_descriptors(f);
     
-    /* Cleanup any SWU resources */
-    hailo_swu_load_cleanup_swu_resources(swu);
-    
     /* Cleanup workqueue and wait for any pending file operations */
     if (swu->file_wq) {
         flush_workqueue(swu->file_wq);
@@ -1475,28 +1433,22 @@ static void hailo_swu_load_unbind(struct usb_configuration *c, struct usb_functi
         swu->file_wq = NULL;
     }
     
-    /* CRITICAL FIX: Dequeue all pending requests FIRST while completion callbacks are still valid */
+    /* Dequeue any remaining requests as a safety measure (after disable) */
     if (swu->bulk_out_req && swu->bulk_out_ep) {
-        usb_ep_dequeue(swu->bulk_out_ep, swu->bulk_out_req);
+        rc = usb_ep_dequeue(swu->bulk_out_ep, swu->bulk_out_req);
+        if (rc && rc != -EINVAL) /* -EINVAL means request wasn't queued, which is fine */
+            pr_err("hailo_swu: bulk_out_req dequeue failed, rc = %d\n", rc);
+        else
+            pr_debug("hailo_swu: bulk_out_req dequeue completed\n");
     }
     if (swu->intr_in_req && swu->intr_in_ep) {
-        usb_ep_dequeue(swu->intr_in_ep, swu->intr_in_req);
+        rc = usb_ep_dequeue(swu->intr_in_ep, swu->intr_in_req);
+        if (rc && rc != -EINVAL) /* -EINVAL means request wasn't queued, which is fine */
+            pr_err("hailo_swu: intr_in_req dequeue failed, rc = %d\n", rc);
+        else
+            pr_debug("hailo_swu: intr_in_req dequeue completed\n");
     }
-    
-    /* Ensure all endpoints are disabled after dequeuing */
-    if (swu->bulk_out_ep && swu->bulk_out_ep->enabled) {
-        usb_ep_disable(swu->bulk_out_ep);
-    }
-    if (swu->intr_in_ep && swu->intr_in_ep->enabled) {
-        usb_ep_disable(swu->intr_in_ep);
-    }
-    
-    /* Force synchronization barriers to ensure all dequeue operations complete */
-    synchronize_rcu();
-    
-    /* Wait for all USB controller operations to complete */
-    msleep(500);
-    
+          
     /* DO NOT set completion callbacks to NULL - this causes race conditions! 
      * The USB controller may still call these callbacks even after dequeue.
      * Instead, rely on the atomic unbinding flag to make callbacks no-op.
@@ -1504,30 +1456,13 @@ static void hailo_swu_load_unbind(struct usb_configuration *c, struct usb_functi
      * and return early if unbinding is in progress.
      */
     
-    /* Final wait to ensure dequeue operations complete */
-    msleep(100);
-    
     /* Free USB requests and their buffers */
-    if (swu->intr_in_req && swu->intr_in_ep) {
-        if (swu->intr_in_req->buf)
-            kfree(swu->intr_in_req->buf);
-        usb_ep_free_request(swu->intr_in_ep, swu->intr_in_req);
-    }
-
-    if (swu->bulk_out_req && swu->bulk_out_ep) {
-        if (swu->bulk_out_req->buf)
-            kfree(swu->bulk_out_req->buf);
-        usb_ep_free_request(swu->bulk_out_ep, swu->bulk_out_req);
-    }
+    free_ep_req(swu->intr_in_ep, swu->intr_in_req);
+    free_ep_req(swu->bulk_out_ep, swu->bulk_out_req);
 
     /* Free vmalloc buffer if allocated */
     hailo_swu_image_buf_free(swu);
-
-    if (swu->ep0_req && f->config && f->config->cdev && f->config->cdev->gadget) {
-        if (swu->ep0_req->buf)
-            kfree(swu->ep0_req->buf);
-        usb_ep_free_request(f->config->cdev->gadget->ep0, swu->ep0_req);
-    }
+    pr_info("hailo_swu: unbind completed\n");
 }
 
 static void hailo_swu_load_free_func(struct usb_function *f)

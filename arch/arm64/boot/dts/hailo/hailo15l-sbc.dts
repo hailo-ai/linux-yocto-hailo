@@ -1,6 +1,6 @@
 // SPDX-License-Identifier:     GPL-2.0
 /*
- * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 /dts-v1/;
@@ -352,7 +352,42 @@
     pinctrl-0 = <&pinctrl_gpio_1>, <&pinctrl_usb_drive_vbus>;
 };
 
+&soc {
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_jtag_tck>,
+                <&pinctrl_jtag_tdi>,
+                <&pinctrl_jtag_tdo>,
+                <&pinctrl_jtag_tms>,
+                <&pinctrl_jtag_trstn_in>;
+};
+
+&spi0_flash0 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_flash_cs0_n>,
+                <&pinctrl_flash_dq_0_mosi>,
+                <&pinctrl_flash_dq_1_miso>,
+                <&pinctrl_flash_dq_2>,
+                <&pinctrl_flash_dq_3>,
+                <&pinctrl_flash_sclk>;
+};
+
 &pinctrl {
+    early-assignment-pin-groups =
+        "uart0_rxd_in_0_grp",
+        "uart0_txd_out_0_grp",
+        "uart1_rxd_in_0_grp",
+        "uart1_txd_out_0_grp",
+        "flash_spi_dq_0_grp",
+        "flash_spi_dq_1_grp",
+        "flash_spi_dq_2_grp",
+        "flash_spi_dq_3_grp",
+        "flash_spi_sclk_out_grp",
+	"jtag_tck_in_grp",
+	"jtag_tdi_in_grp",
+	"jtag_tdo_out_grp",
+	"jtag_tms_grp",
+	"jtag_trstn_in_grp";
 
     /* IO_PAD_0 */
     pinctrl_i2c0_scl: i2c0_scl {
@@ -535,8 +570,8 @@
 
     /* IO_PAD_28 */
     pinctrl_flash_cs2_n: flash_cs2_n_out {
-	    function = "gpio20";
-        groups = "gpio20_1_grp";
+	    function = "flash_spi_cs2n_clkc_rebar_out";
+        groups = "flash_spi_cs2n_clkc_rebar_out_grp";
     };
 
     /* IO_PAD_29 - In SBC, flash_ds pin is serving as gpio function, and not connected to any external function */
@@ -945,24 +980,11 @@
 
 &i2c_0 {
     status = "ok";
-    
-    sensor_0: camera-sensor@1a {
-        status = "ok";
-        compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
-        reg = <0x1a>;
-        clocks = <&sensor_clk>;
-        clock-names = "inclk";
-        clock-frequency = <24000000>;
-        csi-id = <0>;
-        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
-        port {
-            sensor_out_csi2rx: endpoint {
-                data-lanes = <1 2 3 4>;
-                remote-endpoint = <&csi2rx_in_sensor>;
-		        link-frequencies = /bits/ 64 <720000000 891000000 1188000000 1440000000 1782000000>;
-            };
-        };
-     };
+};
+
+&sensor_0 {
+    status = "ok";
+    reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 };
 
 &csi2rx0 {
@@ -1017,11 +1039,6 @@
 };
 
 / {
-    sensor_clk: sensor_clk {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <24000000>;
-    };
 };
 
 &hailo_vc8000e {
