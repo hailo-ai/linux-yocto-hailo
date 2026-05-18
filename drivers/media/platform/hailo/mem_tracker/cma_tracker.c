@@ -877,7 +877,7 @@ static void probe_cma_alloc_finish(void *data, const char *name,
 	INIT_PERFORMANCE_TIMER(main_track);
 	INIT_PERFORMANCE_TIMER(emit_stats); 
 	
-	if (!cma_tracker || !mem_tracker_is_enabled())
+	if (!cma_tracker || !mem_tracker_is_enabled(cma_tracker))
 		return;
 
 	START_TIMER(total);
@@ -950,7 +950,7 @@ static void probe_cma_release(void *data, const char *name,
 	INIT_PERFORMANCE_TIMER(main_track);
 	INIT_PERFORMANCE_TIMER(emit_stats);
 	
-	if (!cma_tracker || !mem_tracker_is_enabled())
+	if (!cma_tracker || !mem_tracker_is_enabled(cma_tracker))
 		return;
 	
 	START_TIMER(total);	
@@ -1028,6 +1028,7 @@ static struct mem_tracker_config cma_config = {
 	.buffer_size = MEM_TRACKER_DEFAULT_BUFFER_SIZE,
 	.stack_capture = MEM_TRACKER_STACK_DISABLED,  /* Default: disabled */
 	.ops = &cma_ops,
+	.enable = true,
 };
 
 /*

@@ -13,7 +13,7 @@
     // Updated by u-boot at runtime or by u-boot-spl falcon mode.
     memory {
         device_type = "memory";
-        reg = <0x00000000 0x80000000 0x00000002 0x00000000>;
+        reg = <0x00000000 0x80000000 0x00000001 0x00000000>;
     };
 };
 

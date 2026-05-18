@@ -201,7 +201,7 @@ hailo15_isp_configure_buffer(struct hailo15_isp_device *isp_dev,
 		}
 		mutex_lock(&isp_dev->mcm_lock);
 		if(isp_dev->cur_buf[buf->grp_id]){
-			list_add_tail(&buf->irqlist, &isp_dev->mcm_queue);
+			hailo15_buf_list_add_tail(buf, &isp_dev->mcm_queue);
 			mutex_unlock(&isp_dev->mcm_lock);
 			trace_isp_mcm_in_buffer_queue(buf->grp_id, buf->vb.vb2_buf.index,
 						     buf->dma[0], ktime_get_ns());
@@ -238,6 +238,10 @@ hailo15_isp_configure_buffer(struct hailo15_isp_device *isp_dev,
 						    buf->dma[0], ktime_get_ns());
 	} else {
 		isp_dev->cur_buf[buf->grp_id] = buf;
+		/* In MCM mode, defer HW configuration until FE is enabled.
+		 * s_stream will call hailo15_isp_configure_buffer() on cur_buf. */
+		if (isp_dev->mcm_mode && !isp_dev->fe_enable)
+			return;
 		hailo15_isp_configure_frame_base(isp_dev, buf->dma, buf->grp_id);
 	}
 }
@@ -460,7 +464,8 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 
 	// Stream teardown handle - stop vid10 stream if needed
 	if (isp_dev->fast_toggle_state == FAST_TOGGLE_TEARDOWN) {
-		if (toggle_data->type == FAST_TOGGLE_HDR_SDR) {
+		if (toggle_data->type == TOGGLE_MERCURY_HDR_SDR || toggle_data->type == TOGGLE_MERCURY_PREISP_SDR
+			|| toggle_data->type == TOGGLE_PLUTO_PREISP_SDR || toggle_data->type == TOGGLE_PLUTO_PREISP_HDR) {
 			// stop stream from vid10 path
 			orig_grp_id = sd->grp_id;
 			sd->grp_id = HAILO15_VID_GRP_MCM_IN;
@@ -814,18 +819,18 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		mutex_lock(&isp_dev->mlock);
 		memcpy(&isp_reg, arg, sizeof(struct isp_reg_data));
 		/* only called when not in mcm mode */
-		isp_reg.value = hailo15_isp_read_reg(isp_dev, isp_reg.reg);
-		memcpy(arg, &isp_reg, sizeof(struct isp_reg_data));
+		ret = hailo15_isp_ioctl_read_reg(isp_dev, isp_reg.reg, &isp_reg.value);
+		if (ret == 0) {
+			memcpy(arg, &isp_reg, sizeof(struct isp_reg_data));
+		}
 		mutex_unlock(&isp_dev->mlock);
-		ret = 0;
 		break;
 	case ISPIOC_V4L2_WRITE_REG:
 		mutex_lock(&isp_dev->mlock);
 		memcpy(&isp_reg, arg, sizeof(struct isp_reg_data));
 		/* only called when not in mcm mode */
-		hailo15_isp_write_reg(isp_dev, isp_reg.reg, isp_reg.value);
+		ret = hailo15_isp_ioctl_write_reg(isp_dev, isp_reg.reg, isp_reg.value);
 		mutex_unlock(&isp_dev->mlock);
-		ret = 0;
 		break;
 	case ISPIOC_V4L2_RMEM:
 		port = ((struct hailo15_rmem *)arg)->port;
@@ -884,6 +889,20 @@ static long hailo15_vsi_isp_priv_ioctl(struct v4l2_subdev *sd, unsigned int cmd,
 		break;
 	case ISPIOC_V4L2_MCM_MODE:
         ret = hailo15_isp_mcm_extract_mode(sd, arg);
+		break;
+	case ISPIOC_V4L2_SET_HDR_COMPRESSION:
+		uint32_t val = 0;
+		mutex_lock(&isp_dev->mlock);
+		val = *((uint32_t *)arg);
+
+		if (val > 1) {
+			dev_err(isp_dev->dev, "invalid hdr compression value %u\n", val);
+			ret = -EINVAL;
+			break;
+		}
+		isp_dev->hdr_compression_enabled = !!val;
+		mutex_unlock(&isp_dev->mlock);
+		ret = 0;
 		break;
 	case ISPIOC_V4L2_REQBUFS:
 		ret = hailo15_isp_requbufs(sd, arg);
@@ -1024,12 +1043,14 @@ static int hailo15_isp_enable_clocks(struct hailo15_isp_device *isp_dev)
 	}
 	isp_dev->is_ip_clk_enabled = 1;
 
+	enable_irq(isp_dev->irq[0]);
 	enable_irq(isp_dev->irq[1]);
 	return ret;
 }
 
 static void hailo15_isp_disable_clocks(struct hailo15_isp_device *isp_dev)
 {
+	disable_irq(isp_dev->irq[0]);
 	disable_irq(isp_dev->irq[1]);
 
 	if (isp_dev->is_ip_clk_enabled) {
@@ -1335,21 +1356,23 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 		isp_dev->output_ready = 1;
 		mutex_unlock(&isp_dev->ready_lock);
 
-		ret = hailo15_isp_post_event_start_stream(isp_dev, source_pad_index);
+		ret = hailo15_isp_post_event_start_stream(isp_dev, source_pad_index, isp_dev->fast_toggle_state != FAST_TOGGLE_NONE);
 		if (ret) {
 			pr_warn("%s - start stream event failed with %d\n", __func__, ret);
+			mutex_lock(&isp_dev->ready_lock);
+			isp_dev->output_ready = 0;
+			mutex_unlock(&isp_dev->ready_lock);
+			hailo15_isp_refcnt_dec_disable(isp_dev);
 			return ret;
 		}
 
 		/* set the raw0, raw1 address after posting event so daemon doesn't override the address */
 		if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
 			/* if this is the first stream, set the raw frame base immediately */
-			spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
 			if (stream_cnt == 0) {
 				hailo15_isp_configure_mcm_raw_frame_base(isp_dev,
 					&isp_dev->cur_raw_buf[sink_pad_index]->phys_addr, sink_pad_index);
 			}
-			spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 		} else if (isp_dev->mcm_mode == ISP_MCM_MODE_RAW_WRITE) {
 			/* we reach this point for grp_ids for MP,
 			 * so after the start event was posted,
@@ -1427,6 +1450,22 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 
 disable:
+		/* If stream was never fully enabled, do minimal cleanup only.
+		 * Only undo resources when coming from a failed enable (goto disable),
+		 * not from a disable call via the err: path in start_streaming. */
+		if (!isp_dev->stream_enabled[sink_pad_index]) {
+			if (enable) {
+				hailo15_isp_post_event_stop_stream(isp_dev,
+					source_pad_index,
+					isp_dev->fast_toggle_state != FAST_TOGGLE_NONE);
+				mutex_lock(&isp_dev->ready_lock);
+				isp_dev->output_ready = 0;
+				mutex_unlock(&isp_dev->ready_lock);
+				hailo15_isp_refcnt_dec_disable(isp_dev);
+			}
+			return ret;
+		}
+
 		spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
 		isp_dev->stream_enabled[sink_pad_index] = 0;
 		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
@@ -1440,7 +1479,7 @@ disable:
 			}
 		}
 
-		ret = hailo15_isp_post_event_stop_stream(isp_dev, source_pad_index);
+		ret = hailo15_isp_post_event_stop_stream(isp_dev, source_pad_index, isp_dev->fast_toggle_state != FAST_TOGGLE_NONE);
 		if (ret) {
 			pr_warn("%s - stop stream event failed with %d\n", __func__, ret);
 		}
@@ -1463,7 +1502,7 @@ disable_rdma:
 
 			mutex_lock(&isp_dev->mcm_lock);
 			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_queue, irqlist){
-				list_del(&pos->irqlist);
+				hailo15_buf_list_del(pos);
 				trace_isp_mcm_in_buffer_dequeue(sd->grp_id, pos->vb.vb2_buf.index,
 							       pos->dma[0], ktime_get_ns());
 				hailo15_dma_buffer_done(ctx, sd->grp_id, pos);
@@ -1490,7 +1529,7 @@ disable_rdma:
 			/* Clear cur_buf and queue. Return all buffers to userspace */
 			mutex_lock(&isp_dev->mcm_raw_wr_lock);
 			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_raw_wr_queue, irqlist){
-				list_del(&pos->irqlist);
+				hailo15_buf_list_del(pos);
 				trace_isp_mcm_raw_wr_buffer_dequeue(sd->grp_id, pos->vb.vb2_buf.index,
 								    pos->dma[0], ktime_get_ns());
 				hailo15_dma_buffer_done(ctx, sd->grp_id, pos);
@@ -1524,9 +1563,6 @@ disable_rdma:
 		}
 
 		if (stream_cnt <= 1) {
-			/* make sure fe completes so no wait gets stuck */
-			isp_dev->fe_dev->fe_isp_irq_work(isp_dev->fe_dev);
-
 			drain_workqueue(isp_dev->isp_mis_wq);
 			if(isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
 				wake_up_interruptible_all(&isp_dev->raw_frame_available_wait_q);
@@ -1562,7 +1598,7 @@ disable_rdma:
 	return ret;
 }
 
-static bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format)
+bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format)
 {
     if (format->format.width == 0 || format->format.height == 0)
         return false;
@@ -1625,9 +1661,11 @@ static int fast_toggle_set_format(struct v4l2_subdev *sd,
 		}
 	}
 
-	// Note that in SDR->HDR, the set_fmt is done from vid2->rxwrapper - don't override
-	// In HDR->SDR, vid0 calls this (vid2 does nothing), so here we should call the sensor/rxw set_fmt
-	if (toggle_type == FAST_TOGGLE_HDR_SDR) {
+	// in case of p2a: set_fmt is done from vid2->rxwrapper - don't override
+	// if toggline into non-p2a profile, vid0 calls this (vid2 does nothing), so here we should call the sensor/rxw set_fmt
+	if (toggle_type == TOGGLE_MERCURY_HDR_SDR || toggle_type == TOGGLE_MERCURY_PREISP_SDR
+		|| toggle_type == TOGGLE_PLUTO_HDR_SDR || toggle_type == TOGGLE_PLUTO_SDR_HDR
+		|| toggle_type == TOGGLE_PLUTO_PREISP_HDR) {
 		pad = &isp_dev->pads[sink_pad_idx];
 		if (pad && pad->entity) {
 			pad = media_entity_remote_pad(pad);
@@ -1702,7 +1740,7 @@ int hailo15_isp_fast_toggle_stream(struct hailo15_dma_ctx *dma_ctx, int grp_id, 
 		return ret;
 	}
 
-	if (toggle_type_int != FAST_TOGGLE_SDR_SDR) {
+	if (toggle_type_int != TOGGLE_MERCURY_SDR_SDR) {
 		// Send set state of FAST_TOGGLE_ACTIVE - in order to activate rxwrapper
 		toggle_data.type = toggle_type;
 		toggle_data.state = FAST_TOGGLE_ACTIVE;
@@ -1713,7 +1751,8 @@ int hailo15_isp_fast_toggle_stream(struct hailo15_dma_ctx *dma_ctx, int grp_id, 
 		}
 	}
 
-	if (toggle_type_int == FAST_TOGGLE_SDR_HDR) {
+	if (toggle_type_int == TOGGLE_MERCURY_SDR_HDR || toggle_type_int == TOGGLE_MERCURY_SDR_PREISP
+		|| toggle_type_int == TOGGLE_PLUTO_SDR_PREISP || toggle_type_int == TOGGLE_PLUTO_HDR_PREISP) {
 		// start mcm in (should be started after vid2 is started, but before vid0)
 		trace_isp_fast_toggle_mcm_in_start(grp_id, toggle_type);
 		hailo15_isp_start_mcm_in(isp_dev);
@@ -1947,7 +1986,7 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 			return;
 		}
 		if(isp_dev->cur_buf[grp_id]){
-			list_del(&isp_dev->cur_buf[grp_id]->irqlist);
+			hailo15_buf_list_del(isp_dev->cur_buf[grp_id]);
 			next_buf = isp_dev->cur_buf[grp_id];
 		}
 		mutex_unlock(&isp_dev->mcm_lock);
@@ -2245,7 +2284,7 @@ static int hailo15_isp_init_platdev(struct hailo15_isp_device *isp_dev)
 		return -ENXIO;
 	}
 
-	ret = devm_request_irq(dev, isp_dev->irq[0], hailo15_isp_irq_handler, 0,
+	ret = devm_request_irq(dev, isp_dev->irq[0], hailo15_isp_irq_handler, IRQF_NO_AUTOEN,
 				   dev_name(dev), isp_dev);
 	if (ret) {
 		dev_err(dev, "request isp irq error\n");
@@ -2495,9 +2534,9 @@ static int hailo15_init_isp_device(struct hailo15_isp_device *isp_dev)
 	init_waitqueue_head(&isp_dev->toggle_sensors_wait_q);
 	isp_dev->toggle_sensors = false;
 
+	isp_dev->hdr_compression_enabled = false;
 	spin_lock_init(&isp_dev->stream_state_lock);
 
-	tasklet_init(&isp_dev->fe_tasklet, mcm_fe_irq_tasklet, (unsigned long)isp_dev);
 	init_waitqueue_head(&isp_dev->buf_done_wait_q);
 	atomic_set(&isp_dev->buf_done_ready, 0);
 
