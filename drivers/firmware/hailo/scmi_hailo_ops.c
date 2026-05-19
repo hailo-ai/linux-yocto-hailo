@@ -34,6 +34,7 @@ static int scmi_hailo_set_source_clock(struct scmi_hailo_set_source_clock_a2p *p
 static int scmi_hailo_get_source_clock(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
 static int scmi_hailo_get_identification_attributes(struct scmi_hailo_identification_attributes_p2a *params);
 static int scmi_hailo_get_sku_id(struct scmi_hailo_get_sku_id_p2a *params);
+static int scmi_hailo_send_host_current_limit(struct scmi_hailo_send_host_current_limit_a2p *params);
 
 const struct scmi_hailo_ops ops = {
 	.register_notifier = scmi_hailo_register_notifier,
@@ -57,6 +58,7 @@ const struct scmi_hailo_ops ops = {
 	.get_source_clock = scmi_hailo_get_source_clock,
 	.get_identification_attributes = scmi_hailo_get_identification_attributes,
 	.get_sku_id = scmi_hailo_get_sku_id,
+	.send_host_current_limit = scmi_hailo_send_host_current_limit,
 };
 
 static int scmi_hailo_register_notifier(u8 evt_id, struct notifier_block *nb)
@@ -125,6 +127,11 @@ static int scmi_hailo_get_fuse_info(struct scmi_hailo_get_fuse_info_p2a *fuse_in
 static int scmi_hailo_send_boot_success_ind(struct scmi_hailo_boot_success_indication_a2p *params)
 {
 	return hailo_ops->send_boot_success_ind(ph, params);
+}
+
+static int scmi_hailo_send_host_current_limit(struct scmi_hailo_send_host_current_limit_a2p *params)
+{
+	return hailo_ops->send_host_current_limit(ph, params);
 }
 
 static int scmi_hailo_send_swupdate_ind(void)

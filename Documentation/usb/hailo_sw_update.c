@@ -385,13 +385,6 @@ static int find_hailo_device(hailo_device_t *dev)
                         continue;
                     }
 
-                    // Reset USB connection to clear any stale state from previous sessions
-                    ret = libusb_reset_device(dev->handle);
-                    if (ret != 0) {
-                        fprintf(stderr, "Warning: USB device reset failed: %s\n", libusb_error_name(ret));
-                        // Continue anyway - reset failure is not critical
-                    }
-
                     printf("Successfully opened Hailo SWU load device\n");
                     libusb_free_config_descriptor(config);
                     libusb_free_device_list(device_list, 1);
@@ -615,8 +608,19 @@ static void gadget_swu_ctrl__get_execution_status__print(hailo_device_t *dev)
 
 static int gadget_swu__set_config(hailo_device_t *dev, int config_num)
 {
-	int ret;
+	int ret, current_config_num;;
 	const char *mode_name = (config_num == 1) ? "RFS" : "SWU";
+
+    ret = libusb_get_configuration(dev->handle, &current_config_num);
+    if (ret < 0) {
+        fprintf(stderr, "✗ Failed to get current USB configuration: %s\n", libusb_error_name(ret));
+        return 1;
+    }
+
+    if (current_config_num == config_num) {
+        printf("✓ USB configuration %d (%s mode) already active, no change needed\n", config_num, mode_name);
+        return 0;
+    }
 
 	printf("Setting gadget configuration %d (%s mode)...\n", config_num, mode_name);
     

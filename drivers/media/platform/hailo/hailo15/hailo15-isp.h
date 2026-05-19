@@ -293,7 +293,6 @@ struct hailo15_isp_device {
 	int mcm_waiting;
 	int output_ready;
 	struct mutex ready_lock;
-	struct tasklet_struct fe_tasklet;
 	spinlock_t stream_state_lock;
 	struct workqueue_struct* isp_mis_wq;
 	struct workqueue_struct* miv2_mis_wq;
@@ -316,6 +315,7 @@ struct hailo15_isp_device {
 	struct hailo15_reqbufs prev_reqbufs;
 	enum isp_mcm_mode mcm_mode_priming;
 	enum fast_toggle_state fast_toggle_state;
+	bool hdr_compression_enabled;
 };
 
 
@@ -324,18 +324,19 @@ void hailo15_isp_pad_handle_init(struct hailo15_isp_device *isp_dev);
 int isp_hal_set_pad_stream(struct hailo15_isp_device *isp_dev,
 			   uint32_t pad_index, int status);
 void hailo15_isp_buffer_done(struct hailo15_isp_device *, int grp_id);
+bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format);
 void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev);
 int hailo15_isp_is_path_enabled(struct hailo15_isp_device *, int);
 void hailo15_isp_reset_hw(struct hailo15_isp_device*);
 int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,
 				     int pad,
 				     struct v4l2_mbus_framefmt *format);
-int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev, int pad);
-int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int pad);
+int hailo15_isp_post_event_start_stream(struct hailo15_isp_device *isp_dev, int pad, bool is_fast_toggle);
+int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int pad, bool is_fast_toggle);
 int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 				      int pad, uint32_t num_buffers);
 int hailo15_isp_post_event_fast_toggle(struct hailo15_isp_device *isp_dev, int pad);
-int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status);
+int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status, bool is_fast_toggle);
 int hailo15_isp_s_ctrl_event(struct hailo15_isp_device *isp_dev, int pad,
 			     struct v4l2_ctrl *ctrl);
 int hailo15_isp_g_ctrl_event(struct hailo15_isp_device *isp_dev, int pad,
@@ -343,7 +344,6 @@ int hailo15_isp_g_ctrl_event(struct hailo15_isp_device *isp_dev, int pad,
 irqreturn_t isp_irq_process(struct hailo15_isp_device *isp_dev);
 irqreturn_t hailo15_process_irq_stats_events(struct hailo15_isp_device *isp_dev,
     int event_id, uint32_t mis);
-void mcm_fe_irq_tasklet(unsigned long);
 void hailo15_isp_handle_frame_rx(struct work_struct*);
 void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work);
 
