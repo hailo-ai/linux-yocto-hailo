@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DTS overlay: IMX662 sensor 1 on H15L SBC (CSI1, i2c bus 2, addr 0x10).
+ *
+ * Targets sensor_1 (camera-sensor@1a on i2c@106000) — added by hailo15l-sbc.dts
+ * — and retargets it to an IMX662 at I2C address 0x10 with a 37.125 MHz clock.
+ * Reset GPIO (gpio0[8]) and CSI2RX1 wiring come from the base DTS.
+ *
+ * The clock label is imx_662_sensor_clk_1 (distinct from the sensor 0 overlay's
+ * imx_662_sensor_clk) so the two overlays can be applied independently.
+ */
+/dts-v1/;
+/plugin/;
+
+/* 37.125 MHz input clock for IMX662 sensor 1 */
+&{/} {
+	imx_662_sensor_clk_1: imx_662_sensor_clk_1 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <37125000>;
+	};
+};
+
+/* Override sensor_1 (camera-sensor@1a on i2c_2) for IMX662 at I2C address 0x10 */
+&sensor_1 {
+	status = "okay";
+	compatible = "sony,imx662";
+	reg = <0x10>;
+	clocks = <&imx_662_sensor_clk_1>;
+	clock-names = "inclk";
+	clock-frequency = <37125000>;
+};
+
+&sensor_out_csi2rx1 {
+	data-lanes = <1 2>;
+	link-frequencies = /bits/ 64 <297000000 445500000 594000000>;
+};

@@ -3,7 +3,7 @@
  * xrp_firmware: firmware manipulation for the XRP
  *
  * Copyright (c) 2015 - 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include "xrp_firmware.h"
@@ -176,11 +176,11 @@ static int xrp_firmware_find_symbol(struct xvp *xvp, const char *name,
         if (shdr->sh_type == SHT_SYMTAB) {
             sh_symtab = shdr;
             if (sh_symtab->sh_link < ehdr->e_shnum) {
-                const Elf32_Shdr *shdr = shdr_data +
+                const Elf32_Shdr *strtab_shdr = shdr_data +
                     sh_symtab->sh_link * ehdr->e_shentsize;
 
-                if (shdr->sh_type == SHT_STRTAB)
-                    sh_strtab = shdr;
+                if (strtab_shdr->sh_type == SHT_STRTAB)
+                    sh_strtab = strtab_shdr;
             }
             break;
         }
@@ -377,7 +377,7 @@ int xrp_load_firmware(struct xvp *xvp)
 
 int xrp_init_firmware(struct xvp *xvp)
 {
-    int ret;
+    int ret = 0;
 
     if (!xvp->firmware) {
         // passing NULL buffer will cause a new buffer of the correct size to be allocated

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include "xrp_hw.h"
@@ -145,6 +145,7 @@ static int dsp_poweron(struct xvp *xvp)
     ret = clk_set_rate(xvp->dsp_clock, pll_rate);
     if (ret) {
         dev_err(xvp->dev, "Error in clock set rate (%d)\n", ret);
+        clk_disable_unprepare(xvp->dsp_clock);
         goto exit;
     }
 
@@ -165,7 +166,7 @@ static void dsp_poweroff(struct xvp *xvp)
 
 bool xrp_is_cmd_complete(struct xvp *xvp, struct xrp_comm *xrp_comm)
 {
-    struct xrp_dsp_cmd __iomem *cmd = xrp_comm->comm;
+    struct xrp_dsp_cmd *cmd = xrp_comm->comm;
     u32 flags;
 
     flags = xrp_comm_read32(&cmd->flags);
@@ -199,9 +200,9 @@ static void rx_callback(struct mbox_client *cl, void *mssg)
     xrp_irq_handler(0, xvp);
 }
 
-static long init_memories(struct platform_device *pdev, struct xvp *xvp)
+static int init_memories(struct platform_device *pdev, struct xvp *xvp)
 {
-    long ret;
+    int ret;
     int i;
     int fw_mem_idx;
     struct resource res;
@@ -346,7 +347,7 @@ void xrp_send_device_irq(struct xvp *xvp)
 void xrp_memcpy_tohw(void __iomem *dst, const void *src, size_t sz)
 {
     // writing to dsp memory is allowed in 32-bit quantities only
-    BUG_ON(!IS_ALIGNED((unsigned long)dst, 4));
+    BUG_ON(!IS_ALIGNED((__force unsigned long)dst, 4));
     BUG_ON(!IS_ALIGNED((unsigned long)src, 4));
     BUG_ON(!IS_ALIGNED(sz, 4));
 
@@ -359,7 +360,7 @@ void xrp_memset_hw(void __iomem *to, int c, size_t sz)
     u32 __iomem *dst = to;
     const u32 __iomem *end = dst + (sz / 4);
 
-    BUG_ON(!IS_ALIGNED((unsigned long)dst, 4));
+    BUG_ON(!IS_ALIGNED((__force unsigned long)dst, 4));
     BUG_ON(!IS_ALIGNED(sz, 4));
 
     while (dst < end) {
@@ -367,15 +368,15 @@ void xrp_memset_hw(void __iomem *to, int c, size_t sz)
     }
 }
 
-long xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp)
+int xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp)
 {
     struct resource *mem;
-    long ret;
+    int ret;
 
     mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     if (!mem) {
         ret = -ENODEV;
-        dev_err(&pdev->dev, "get resource for memory 0 failed: %ld\n", ret);
+        dev_err(&pdev->dev, "get resource for memory 0 failed: %d\n", ret);
         goto err;
     }
     xvp->dsp_config_phys = mem->start;
@@ -401,7 +402,7 @@ long xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp)
 
     ret = init_memories(pdev, xvp);
     if (ret) {
-        dev_err(&pdev->dev, "init_memories() failed: %ld\n", ret);
+        dev_err(&pdev->dev, "init_memories() failed: %d\n", ret);
         goto err;
     }
 

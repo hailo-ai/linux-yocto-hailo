@@ -89,7 +89,7 @@ static int hailo12l_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 	char const *const *groups;
 	unsigned num_groups;
 	unsigned func_select;
-	unsigned grp_select;
+	int grp_select;
 	unsigned num_pins = 0;
 	const unsigned *pins = NULL;
 	/*
@@ -126,7 +126,7 @@ static int hailo12l_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 		if (grp_select < 0) {
 			dev_err(pinctrl->dev,"invalid group %s in map table\n",
 				grp);
-			return ret;
+			return grp_select;
 		}
 		pctrl_dev->desc->pctlops->get_group_pins(pctrl_dev, grp_select,
 							 &pins, &num_pins);
@@ -219,7 +219,7 @@ static uint32_t hailo12l_get_pads_pinmux_mode(struct hailo12l_pinctrl *pinctrl,
 					     unsigned int mux_index,
 					     uint32_t pad_type)
 {
-	uint32_t value;
+	uint32_t value = 0;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&pinctrl->register_lock, flags);
