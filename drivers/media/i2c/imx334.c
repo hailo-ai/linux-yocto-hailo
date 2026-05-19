@@ -357,7 +357,7 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
 	.link_freq_idx = 0,
-	.pclk = link_freq[0],
+	.pclk = IMX334_LINK_FREQ,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -376,7 +376,7 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
 	.link_freq_idx = 0,
-	.pclk = link_freq[0],
+	.pclk = IMX334_LINK_FREQ,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -395,7 +395,7 @@ static const struct imx334_mode supported_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = IMX334_MAX_VBLANK_4K,
 	.link_freq_idx = 0,
-	.pclk = link_freq[0],
+	.pclk = IMX334_LINK_FREQ,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.reg_list = {
 		.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -433,7 +433,7 @@ static inline struct imx334 *to_imx334(struct v4l2_subdev *subdev)
 static int imx334_read_reg(struct imx334 *imx334, u16 reg, u32 len, u32 *val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx334->sd);
-	struct i2c_msg msgs[2] = {0};
+	struct i2c_msg msgs[2] = { { 0 } };
 	u8 addr_buf[2] = {0};
 	u8 data_buf[4] = {0};
 	int ret;

@@ -68,6 +68,14 @@ struct pm_config {
 
     struct err_status_reg vision_subsys_err_int_reg;
     uint8_t vc_width;
+
+    /* Optional: VS_CFG.RIGHT_LANE_CSI_SEL — selects which CSI receiver
+     * gets the shared right-side D-PHY lanes. Present on H15L only.
+     */
+    struct {
+        int exist;
+        uint16_t offset;
+    } vs_cfg_right_lane;
 };
 
 static const struct pm_config hailo15_pm_config = {
@@ -109,6 +117,7 @@ static const struct pm_config hailo15_pm_config = {
 	}
 	},
     .vc_width = 2,
+    .vs_cfg_right_lane = { .exist = 0, .offset = 0 },
 };
 
 static const struct pm_config hailo15l_pm_config = {
@@ -164,6 +173,7 @@ static const struct pm_config hailo15l_pm_config = {
 	}
     },
     .vc_width = 4,
+    .vs_cfg_right_lane = { .exist = 1, .offset = 0x128 },
 };
 
 static const struct of_device_id hailo_pixel_mux_of_table[] = {
@@ -1107,6 +1117,36 @@ static int pixel_mux_remove(struct platform_device *pdev)
 
 	return 0;
 }
+
+/*
+ * Public helper for sister drivers (hailo15-dphy) to drive cross-IP
+ * pixel-mux registers as part of shared-DPHY 2-clock-lane bring-up.
+ */
+int hailo15_pixel_mux_route_right_lane(struct device *dev,
+				       unsigned int csi_idx)
+{
+	struct platform_device *pdev;
+	struct pixel_mux_priv *priv;
+
+	if (!dev)
+		return -EINVAL;
+	pdev = to_platform_device(dev);
+	if (!pdev)
+		return -EINVAL;
+	priv = platform_get_drvdata(pdev);
+	if (!priv)
+		return -EPROBE_DEFER;
+	if (!priv->base || !priv->pm_cfg)
+		return -EINVAL;
+	if (!priv->pm_cfg->vs_cfg_right_lane.exist)
+		return -EOPNOTSUPP;
+	if (csi_idx > 1)
+		return -EINVAL;
+
+	writel(csi_idx, priv->base + priv->pm_cfg->vs_cfg_right_lane.offset);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(hailo15_pixel_mux_route_right_lane);
 
 static struct platform_driver pixel_mux_driver = {
 	.probe	= pixel_mux_probe,

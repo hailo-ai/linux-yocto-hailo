@@ -266,7 +266,7 @@ static int driver_probe(struct platform_device *pdev)
 		return ret;
 	ret = clk_prepare_enable(priv->dsi_p_clk);
 	if (ret)
-		return ret;
+		goto err_disable_dsi_sys_clk;
 	ret = drm_simple_display_pipe_init(drm, &priv->pipe, &hailo_pipe_funcs,
 					   hailo_supported_formats,
 					   ARRAY_SIZE(hailo_supported_formats),
@@ -275,14 +275,14 @@ static int driver_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev,
 			"drm_simple_display_pipe_init return err\n");
-		return ret;
+		goto err_disable_clks;
 	}
 
 	ret = drm_simple_display_pipe_attach_bridge(&priv->pipe, bridge);
 	if (ret) {
 		dev_err(&pdev->dev,
 			"drm_simple_display_pipe_attach_bridge return err\n");
-		return ret;
+		goto err_disable_clks;
 	}
 
 	drm_mode_config_reset(drm);
@@ -292,12 +292,18 @@ static int driver_probe(struct platform_device *pdev)
 	ret = drm_dev_register(drm, 0);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register drm device\n");
-		return ret;
+		goto err_disable_clks;
 	}
 
 	drm_fbdev_generic_setup(drm, SUPPORTED_BYTES_PER_PIXEL * 8);
 
 	return 0;
+
+err_disable_clks:
+	clk_disable_unprepare(priv->dsi_p_clk);
+err_disable_dsi_sys_clk:
+	clk_disable_unprepare(priv->dsi_sys_clk);
+	return ret;
 }
 
 // This function is called before the devm_ resources are released

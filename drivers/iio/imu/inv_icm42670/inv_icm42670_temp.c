@@ -12,6 +12,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/iio/iio.h>
+#include <asm/unaligned.h>
 
 #include "inv_icm42670.h"
 #include "inv_icm42670_temp.h"
@@ -19,7 +20,6 @@
 static int inv_icm42670_temp_read(struct inv_icm42670_state *st, int16_t *temp)
 {
 	struct device *dev = regmap_get_device(st->map);
-	__be16 *raw;
 	int ret;
 
 	pm_runtime_get_sync(dev);
@@ -29,12 +29,11 @@ static int inv_icm42670_temp_read(struct inv_icm42670_state *st, int16_t *temp)
 	if (ret)
 		goto exit;
 
-	raw = (__be16 *)&st->buffer[0];
-	ret = regmap_bulk_read(st->map, INV_ICM42670_TEMP_DATA1, raw, sizeof(*raw));
+	ret = regmap_bulk_read(st->map, INV_ICM42670_TEMP_DATA1, st->buffer, 2);
 	if (ret)
 		goto exit;
 
-	*temp = (int16_t)be16_to_cpup(raw);
+	*temp = (int16_t)get_unaligned_be16(st->buffer);
 	if (*temp == INV_ICM42670_DATA_INVALID)
 		ret = -EINVAL;
 

@@ -11,6 +11,9 @@
 #define VI_IRCL_RESET_ISP 0xffffffff
 #define VI_IRCL_RESET_ISP_CLEAR 0
 #define ISP_ACQ_PROP 0x00000404
+#define ISP_ACQ_PROP_HDR_EN_MASK BIT(31)
+#define ISP_ACQ_PROP_PINMAP_MASK (BIT(17) | BIT(18) | BIT(19))
+#define ISP_ACQ_PROP_SDR_PINMAP_MASK BIT(18)                          /* mode 2 */
 #define ISP_IMSC 0x000005bc
 #define ISP_MCM_CTRL 0x00001200
 #define MIV2_MP_YCBCR_FRAME_END_MASK BIT(0)
@@ -33,6 +36,40 @@
 #define MIV2_MIS1 0x000016d4
 #define MIV2_MIS2 0x000016f0
 #define MIV2_MIS3 0x000056d8
+#define ISP_STITCHING_IMSC 0x000033e4
+#define ISP_STITCHING_MIS 0x000033ec
+#define ISP_STITCHING_ICR 0x000033f0
+/* Error bits in stitching MIS (bits 0-2):
+ *   bit 0: stitching_imsc_exp_err1   - HDR short exp time error L
+ *   bit 1: stitching_imsc_exp_err2   - HDR very short exp time error L
+ *   bit 2: stitching_imsc_fifo_empty - HDR FIFO empty L
+ * Bits 3-5: exp-stat L/S/VS; bits 6-8: hist L/S/VS. */
+#define ISP_STITCHING_MIS_ERR_MASK 0x07
+#define ISP_STITCHING_MIS_EXP_STAT_S_RDY  BIT(4)
+#define ISP_STITCHING_MIS_EXP_STAT_VS_RDY BIT(5)
+
+#define ISP_HDR_EXP_STATISTICS_BASE 0x00003C14
+#define ISP_HDR_EXP_STATISTICS_MAX  75
+#define ISP_HDR_EXP_STATISTICS_2DOL 50
+#define ISP_HDR_EXP_STATISTICS_3DOL 75
+
+/* HDR exposure measurement: 5x5 per-exposure luma means over a configurable
+ * window. */
+#define ISP_HDR_EXP_CONF     0x00003C00
+#define ISP_HDR_EXP_H_OFFSET 0x00003C04
+#define ISP_HDR_EXP_V_OFFSET 0x00003C08
+#define ISP_HDR_EXP_H_SIZE   0x00003C0C
+#define ISP_HDR_EXP_V_SIZE   0x00003C10
+#define ISP_HDR_EXP_CONF_START      BIT(0)
+#define ISP_HDR_EXP_CONF_SRC_SEL    BIT(2)
+#define ISP_HDR_EXP_CONF_MEAS_MODE  BIT(31)
+/* isp_stitching_imsc bits 3,4,5: per-exposure stat ready (L/S/VS). */
+#define ISP_STITCHING_IMSC_EXP_STAT_MASK 0x38
+/* Register field masks */
+#define ISP_HDR_EXP_H_OFFSET_MASK 0x00001FFFU
+#define ISP_HDR_EXP_V_OFFSET_MASK 0x00001FFFU
+#define ISP_HDR_EXP_H_SIZE_MASK   0x000007FFU
+#define ISP_HDR_EXP_V_SIZE_MASK   0x000007FEU
 #define MIV2_MP_Y_BASE_AD_INIT 0x00001324
 #define MIV2_SP2_Y_BASE_AD_INIT 0x000014f8
 #define MIV2_MP_CB_BASE_AD_INIT 0x1340
@@ -42,7 +79,17 @@
 #define MIV2_SP2_RAW_FRAME_END BIT(5)
 
 #define FE_CTRL 0x3D60
+#define FE_IMSC 0x3D6C
+#define FE_RIS 0x3D7C
 #define FE_ICR 0x3D78
+#define FE_ADDR_INTERVENE 0x3D80
+#define FE_DMA_START_BIT BIT(16)
+
+/* FE MIS/IMSC/ICR bit definitions */
+#define FE_INT_CFG_END BIT(0)
+#define FE_INT_ISP_VAL_INTERVENE BIT(1)
+#define FE_INT_ADDR_INTERVENE BIT(2)
+#define FE_INT_ALL (FE_INT_CFG_END | FE_INT_ISP_VAL_INTERVENE | FE_INT_ADDR_INTERVENE)
 
 #define MCM_RETIMING0 0x1284
 #define MCM_RETIMING1 0x1288

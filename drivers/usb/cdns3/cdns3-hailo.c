@@ -2,7 +2,7 @@
 /*
  * cdns3-hailo.c - Hailo specific Glue layer for Cadence USB Controller
  *
- * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include <linux/bits.h>
@@ -465,7 +465,11 @@ static int cdns_hailo_update_timer_registers(struct platform_device *pdev, const
 	const char *clock_name;
 	int i;
 
-	if (!pdev || !timers_type) {
+	if (!pdev) {
+		pr_err("cdns_hailo: NULL pdev in timer register update\n");
+		return -EINVAL;
+	}
+	if (!timers_type) {
 		dev_err(&pdev->dev, "Invalid parameters for timer register update\n");
 		return -EINVAL;
 	}
@@ -554,24 +558,24 @@ static int cdns_hailo_gadget_init_quirk(struct usb_gadget *gadget)
 	uint32_t reg_val = 0;
 
 	if (!gadget) {
-		dev_err(pdev->dev, "%s: gadget pointer is NULL\n", __func__);
+		pr_err("%s: gadget pointer is NULL\n", __func__);
 		return -EINVAL;
 	}
 
 	if (!gadget->name || strcmp(gadget->name, "cdnsp-gadget") != 0) {
-		dev_dbg(pdev->dev, "%s: not a cdnsp-gadget (name=%s), skipping\n", 
+		dev_dbg(&gadget->dev, "%s: not a cdnsp-gadget (name=%s), skipping\n",
 			 __func__, gadget->name ? gadget->name : "NULL");
 		return 0;
-	}	
+	}
 
 	pdev = gadget_to_cdnsp(gadget);
 	if (!pdev) {
-		dev_err(pdev->dev, "%s: failed to get cdnsp_device from gadget\n", __func__);
+		dev_err(&gadget->dev, "%s: failed to get cdnsp_device from gadget\n", __func__);
 		return -ENODEV;
 	}
 
 	if (!pdev->dev) {
-		dev_err(pdev->dev, "%s: cdnsp_device has no associated device\n", __func__);
+		dev_err(&gadget->dev, "%s: cdnsp_device has no associated device\n", __func__);
 		return -ENODEV;
 	}
 
@@ -700,6 +704,7 @@ static void cdns_usb3_dr_mode_get(struct platform_device *pdev, int *dr_mode)
 	for_each_child_of_node(node, child) {
 		if (of_device_is_compatible(child, "cdnsp,usb3")) {
 			if (of_property_read_string(child, "dr_mode", &dr_mode_str)) {
+				of_node_put(child);
 				break;
 			}
 
@@ -711,6 +716,7 @@ static void cdns_usb3_dr_mode_get(struct platform_device *pdev, int *dr_mode)
 				*dr_mode = USB_DR_MODE_OTG;
 			}
 			dev_info(&pdev->dev, "node(%s) dr_mode is set to %s(%d)\n", child->name, dr_mode_str, *dr_mode);
+			of_node_put(child);
 			break;
 		}
 	}
@@ -746,25 +752,30 @@ static struct resource* cdns_usb3_ioresource_mem_get(struct platform_device *pde
 			index = of_property_match_string(child, "reg-names", resource_name);
 			if (index < 0) {
 				dev_err(&pdev->dev, "node(%s) resource '%s' not found in reg-names\n", child->name, resource_name);
+				of_node_put(child);
 				return ERR_PTR(-ENOENT);
 			}
-			
+
 			/* Allocate resource structure */
 			dev_res = kzalloc(sizeof(*dev_res), GFP_KERNEL);
-			if (!dev_res)
+			if (!dev_res) {
+				of_node_put(child);
 				return ERR_PTR(-ENOMEM);
-			
+			}
+
 			/* Get the resource by index */
 			ret = of_address_to_resource(child, index, dev_res);
 			if (ret) {
 				dev_err(&pdev->dev, "node(%s) Failed to get resource '%s' at index %d: %d\n", child->name, resource_name, index, ret);
 				kfree(dev_res);
+				of_node_put(child);
 				return ERR_PTR(ret);
 			}
-			
+
 			dev_info(&pdev->dev, "node(%s) Found %s register resource: start=0x%08x, size=0x%08x\n", child->name, resource_name,
 				(u32)dev_res->start, (u32)resource_size(dev_res));
-			
+
+			of_node_put(child);
 			return dev_res;
 		}
 	}
@@ -899,27 +910,29 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 
 	ret = devm_clk_bulk_get(dev, data->num_core_clks, data->core_clks);
 	if (ret)
-		return ret;
+		goto err_disable_pclk;
 
 	if (data->dr_mode == USB_DR_MODE_PERIPHERAL) {
 		cdns_dev_res = cdns_usb3_ioresource_mem_get(pdev, USB_DR_MODE_PERIPHERAL);
 		if (IS_ERR(cdns_dev_res)) {
-			return PTR_ERR(cdns_dev_res);
+			ret = PTR_ERR(cdns_dev_res);
+			goto err_disable_pclk;
 		}
-		
+
 		data->cdns_dev_regs = devm_ioremap(&pdev->dev, cdns_dev_res->start, resource_size(cdns_dev_res));
 		if (!data->cdns_dev_regs) {
 			dev_err(&pdev->dev, "can't map IOMEM resource for peripheral mode\n");
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto err_disable_pclk;
 		}
 
 		ret = cdns_gadget_config_phase_quirk(pdev);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to apply gadget quirks: %d\n", ret);
-			return ret;
+			goto err_disable_pclk;
 		}
 	}
-	
+
 	// note: must be called before the core clocks are enabled
 	cdns_hailo_init(data);
 
@@ -927,7 +940,7 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 
 	ret = clk_bulk_prepare_enable(data->num_core_clks, data->core_clks);
 	if (ret)
-		return ret;
+		goto err_disable_pclk;
 
 	ret = of_platform_populate(node, NULL, cdns_hailo_auxdata, dev);
 	if (ret) {
@@ -935,13 +948,14 @@ static int cdns_hailo_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-#ifdef CDNS_TIMERS_DEBUG	
+#ifdef CDNS_TIMERS_DEBUG
 	cdns_hailo_validate_timer_registers(pdev);
 #endif
 
 	return ret;
 err:
 	clk_bulk_disable_unprepare(data->num_core_clks, data->core_clks);
+err_disable_pclk:
 	clk_disable_unprepare(data->pclk);
 	return ret;
 }
@@ -995,7 +1009,11 @@ static int cdns_hailo_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	return clk_bulk_prepare_enable(data->num_core_clks, data->core_clks);
+	ret = clk_bulk_prepare_enable(data->num_core_clks, data->core_clks);
+	if (ret)
+		clk_disable_unprepare(data->pclk);
+
+	return ret;
 }
 
 static int cdns_hailo_suspend(struct device *dev)

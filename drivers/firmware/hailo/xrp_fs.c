@@ -61,6 +61,5 @@ void xrp_remove_known_file(struct file *filp)
         }
     }
     spin_unlock(&xrp_known_files_lock);
-    if (pf)
-        kfree(pf);
+    kfree(pf);
 }

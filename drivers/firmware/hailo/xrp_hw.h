@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #ifndef XRP_HW_H
@@ -41,11 +41,11 @@ void xrp_memset_hw(void __iomem *to, int c, size_t sz);
 
 bool xrp_is_cmd_complete(struct xvp *xvp, struct xrp_comm *xrp_comm);
 
-long xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp);
+int xrp_init_hw_common(struct platform_device *pdev, struct xvp *xvp);
 
-long xrp_init_hw_hailo15(struct platform_device *pdev, struct xvp *xvp);
+int xrp_init_hw_hailo15(struct platform_device *pdev, struct xvp *xvp);
 
-long xrp_init_hw_hailo15l(struct platform_device *pdev, struct xvp *xvp);
+int xrp_init_hw_hailo15l(struct platform_device *pdev, struct xvp *xvp);
 
 bool is_valid_fw_addr(struct xvp *xvp, phys_addr_t addr);
 
