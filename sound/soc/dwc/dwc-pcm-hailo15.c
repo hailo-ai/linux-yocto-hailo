@@ -411,7 +411,7 @@ unsigned int dw_pcm_hailo15_scu_rx_blk(struct dw_i2s_dev *dev,
 /*!
  * @brief Hailo15 PCM playback function that prepares block of samples for SCU.
  */
-unsigned int dw_pcm_hailo_scu_tx_blk(struct dw_i2s_dev *dev,
+static unsigned int dw_pcm_hailo_scu_tx_blk(struct dw_i2s_dev *dev,
                                        struct snd_pcm_runtime *runtime,
                                        unsigned int tx_ptr,
                                        bool *period_elapsed)
@@ -449,7 +449,7 @@ unsigned int dw_pcm_hailo_scu_tx_blk(struct dw_i2s_dev *dev,
 /*!
  * @brief Hailo15 PCM Record function that read block of samples from SCU.
  */
-unsigned int dw_pcm_hailo_scu_rx_blk(struct dw_i2s_dev *dev,
+static unsigned int dw_pcm_hailo_scu_rx_blk(struct dw_i2s_dev *dev,
                                        struct snd_pcm_runtime *runtime,
                                        unsigned int rx_ptr,
                                        bool *period_elapsed)

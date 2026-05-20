@@ -3,7 +3,7 @@
  * XRP: Linux device driver for Xtensa Remote Processing
  *
  * Copyright (c) 2015 - 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include <linux/version.h>
@@ -143,7 +143,7 @@ static long xrp_ioctl_free(struct file *filp, struct xrp_ioctl_alloc __user *p)
     if (copy_from_user(&xrp_ioctl_alloc, p, sizeof(*p)))
         return -EFAULT;
 
-    start = xrp_ioctl_alloc.addr;
+    start = untagged_addr(xrp_ioctl_alloc.addr);
     dev_dbg(
         xvp->dev, "%s: Request for freeing vaddr: 0x%08lx\n", __func__, start);
 
@@ -375,9 +375,9 @@ static int compare_queue_priority(const void *a, const void *b)
         return pa->priority < pb->priority ? -1 : 1;
 }
 
-static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
+static int xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
 {
-    long ret;
+    int ret;
     char nodename[sizeof("dsp") + 3 * sizeof(int)];
     char log_nodename[sizeof("dsp_log") + 3 * sizeof(int)];
     int nodeid;
@@ -461,7 +461,7 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
         dev_dbg(xvp->dev,
             "no firmware-name property, not loading firmware");
     } else if (ret < 0) {
-        dev_err(xvp->dev, "invalid firmware name (%ld)", ret);
+        dev_err(xvp->dev, "invalid firmware name (%d)", ret);
         goto err_free_pool;
     }
 
@@ -497,8 +497,8 @@ static long xrp_init_common(struct platform_device *pdev, struct xvp *xvp)
 		goto err_free_dev;
 
     xvp->state = DSP_STATE_CLOSED;
-    
-    return PTR_ERR(xvp);
+
+    return 0;
 
 err_free_dev:
     misc_deregister(&xvp->miscdev);
@@ -514,15 +514,15 @@ err_unshare:
 err_free:
     kfree(mapping);
 err:
-    dev_err(&pdev->dev, "%s: ret = %ld\n", __func__, ret);
+    dev_err(&pdev->dev, "%s: ret = %d\n", __func__, ret);
     return ret;
 }
 
-typedef long xrp_init_function(struct platform_device *pdev, struct xvp *xvp);
+typedef int xrp_init_function(struct platform_device *pdev, struct xvp *xvp);
 
-static long xrp_init_hailo15(struct platform_device *pdev, struct xvp *xvp)
+static int xrp_init_hailo15(struct platform_device *pdev, struct xvp *xvp)
 {
-    long ret;
+    int ret;
 
     ret = xrp_init_hw_hailo15(pdev, xvp);
     if (ret < 0)
@@ -531,9 +531,9 @@ static long xrp_init_hailo15(struct platform_device *pdev, struct xvp *xvp)
     return xrp_init_common(pdev, xvp);
 }
 
-static long xrp_init_hailo15l(struct platform_device *pdev, struct xvp *xvp)
+static int xrp_init_hailo15l(struct platform_device *pdev, struct xvp *xvp)
 {
-    long ret;
+    int ret;
 
     ret = xrp_init_hw_hailo15l(pdev, xvp);
     if (ret < 0)
@@ -580,7 +580,7 @@ MODULE_DEVICE_TABLE(of, xrp_of_match);
 
 static int xrp_probe(struct platform_device *pdev)
 {
-    long ret;
+    int ret;
     xrp_init_function *init;
     const struct of_device_id *match;
     struct xvp *xvp;
@@ -600,8 +600,7 @@ static int xrp_probe(struct platform_device *pdev)
 
     init = match->data;
     ret = init(pdev, xvp);
-    if (IS_ERR_VALUE(ret)) {
-        devm_kfree(&pdev->dev, xvp);
+    if (ret < 0) {
         return ret;
     }
 

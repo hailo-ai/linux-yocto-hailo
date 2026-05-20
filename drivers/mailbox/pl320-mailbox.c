@@ -330,10 +330,8 @@ static int pl320_mbox_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "Error receiving irq for device\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	if (of_property_read_u32(pdev->dev.of_node, "arm,dev-ch-idx", &mdev->device_channel_index)) {
 		dev_err(&pdev->dev, "Missing arm,dev-ch-idx\n");

@@ -89,7 +89,7 @@ $(LIBTHERMAL_TOOLS_A): $(LIBTHERMAL_TOOLS_IN)
 	$(QUIET_AR)$(RM) $@ && $(AR) rcs $@ $(LIBTHERMAL_TOOLS_IN)
 
 $(LIBTHERMAL_TOOLS_SO): $(LIBTHERMAL_TOOLS_IN)
-	$(QUIET_LINK)$(CC) --shared -Wl,-soname,libthermal_tools.so $^ -o $@
+	$(QUIET_LINK)$(CC) --shared -Wl,-soname,libthermal_tools.so.$(LIBTHERMAL_TOOLS_VERSION) $^ -o $@
 	@ln -sf $(@F) $(OUTPUT)libthermal_tools.so
 	@ln -sf $(@F) $(OUTPUT)libthermal_tools.so.$(LIBTHERMAL_TOOLS_VERSION)
 
