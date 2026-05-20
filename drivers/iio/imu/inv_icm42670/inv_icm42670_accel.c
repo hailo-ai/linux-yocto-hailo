@@ -13,6 +13,7 @@
 #include <linux/regmap.h>
 #include <linux/delay.h>
 #include <linux/math64.h>
+#include <asm/unaligned.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/kfifo_buf.h>
@@ -139,10 +140,7 @@ static int inv_icm42670_accel_update_scan_mode(struct iio_dev *indio_dev,
 out_unlock:
 	mutex_unlock(&st->lock);
 	/* sleep maximum required time */
-	if (sleep_accel > sleep_temp)
-		sleep = sleep_accel;
-	else
-		sleep = sleep_temp;
+	sleep = max(sleep_accel, sleep_temp);
 	if (sleep)
 		msleep(sleep);
 	return ret;
@@ -155,7 +153,6 @@ static int inv_icm42670_accel_read_sensor(struct inv_icm42670_state *st,
 	struct device *dev = regmap_get_device(st->map);
 	struct inv_icm42670_sensor_conf conf = INV_ICM42670_SENSOR_CONF_INIT;
 	unsigned int reg;
-	__be16 *data;
 	int ret;
 
 	if (chan->type != IIO_ACCEL)
@@ -185,12 +182,11 @@ static int inv_icm42670_accel_read_sensor(struct inv_icm42670_state *st,
 		goto exit;
 
 	/* read accel register data */
-	data = (__be16 *)&st->buffer[0];
-	ret = regmap_bulk_read(st->map, reg, data, sizeof(*data));
+	ret = regmap_bulk_read(st->map, reg, st->buffer, 2);
 	if (ret)
 		goto exit;
 
-	*val = (int16_t)be16_to_cpup(data);
+	*val = (int16_t)get_unaligned_be16(st->buffer);
 	if (*val == INV_ICM42670_DATA_INVALID)
 		ret = -EINVAL;
 exit:

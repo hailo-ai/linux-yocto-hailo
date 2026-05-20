@@ -98,7 +98,7 @@ static const struct v4l2_ctrl_config hailo15_isp_general_ctrls[] = {
         .name = "isp_general_3a_unix_epoch",
         .step = 1,
         .min = 0,
-        .max = 4294967295,
+        .max = 0xFFFFFFFFL,
         .dims = { 1 },
     }
 };

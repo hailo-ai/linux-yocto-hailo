@@ -139,17 +139,24 @@ static int __init wait_for_initrd_image(void)
 	else
 		printk(KERN_INFO "Waiting indefinitely for /initrd.image...\n");
 
-	/* Remove any existing /initrd.image to ensure we get a fresh upload (caused by initramfs::do_populate_rootfs()) */
+	/* Remove any existing files to ensure we get a fresh upload (caused by initramfs::do_populate_rootfs()) */
 	init_unlink("/initrd.image");
 
 	while (max_timeout == 0 || timeout < max_timeout) {
-		/* Check if initrd image file exists and has reasonable size */
+		/* Check if initrd image file exists, has reasonable size, and is readable.
+		 * The hailo_rfs gadget driver creates /initrd.image with write-only (0200)
+		 * permissions, then changes to 0644 only after the write is complete.
+		 * We check for read permission (S_IRUSR) to ensure we only see the
+		 * fully-written file.
+		 */
 		file = filp_open("/initrd.image", O_RDONLY, 0);
 		if (!IS_ERR(file)) {
-			ret = vfs_getattr(&file->f_path, &stat, STATX_SIZE, AT_STATX_SYNC_AS_STAT);
+			ret = vfs_getattr(&file->f_path, &stat,
+					  STATX_SIZE | STATX_MODE,
+					  AT_STATX_SYNC_AS_STAT);
 			filp_close(file, NULL);
-			
-			if (!ret && stat.size > 0) {
+
+			if (!ret && stat.size > 0 && (stat.mode & S_IRUSR)) {
 				printk(KERN_INFO "Found /initrd.image image (%llu bytes)\n", stat.size);
 				return 0;
 			}

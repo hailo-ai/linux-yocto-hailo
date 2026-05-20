@@ -43,7 +43,7 @@
 #define IMX662_2DOL_SMALL_GAP 2
 #define IMX662_2DOL_LARGE_GAP 5
 #define IMX662_2DOL_SHR0_RHS1_GAP   IMX662_2DOL_LARGE_GAP
-#define IMX662_2DOL_SHR0_FSC_GAP    IMX662_2DOL_SMALL_GAP
+#define IMX662_2DOL_SHR0_FSC_GAP    IMX662_MIN_SHR0_LENGTH
 #define IMX662_2DOL_SHR1_MIN_GAP    IMX662_2DOL_LARGE_GAP
 #define IMX662_2DOL_SHR1_RHS1_GAP   IMX662_2DOL_SMALL_GAP
 
@@ -63,9 +63,14 @@
 
 #define IMX662_LINK_FREQ_594M 594000000 /* 594 Mbps data rate */
 
-/* IMX662 Configuration - 4 lane, 12-bit, 37.125MHz, 30fps, 1920x1080 */
-#define IMX662_LANES 4
+/* IMX662 Configuration - 12-bit, 37.125MHz, 30fps, 1920x1080 */
 #define IMX662_BITS_PER_PIXEL 12
+
+#define IMX662_LANES_DEFAULT  4
+#define IMX662_LANES_2        2
+#define IMX662_REG_LANEMODE   0x3040
+#define IMX662_LANEMODE_2LANE 0x01
+#define IMX662_LANEMODE_4LANE 0x03
 #define IMX662_WIDTH 1920
 #define IMX662_HEIGHT 1080
 
@@ -89,6 +94,7 @@
 /* VMAX (Lines Per Frame) registers */
 #define IMX662_REG_LPFR 0x3028
 #define IMX662_VMAX_DEFAULT 1250
+#define IMX662_VMAX_15FPS 2500
 #define IMX662_VMAX_MAX 0xFFFFF   /* 20-bit max */
 
 #define IMX662_HMAX_DEFAULT 1980
@@ -127,6 +133,8 @@
 #define IMX662_CID_CUSTOM_RHS1 (IMX662_CID_BASE + 13)
 #define IMX662_CID_WDR_PRIMING (IMX662_CID_BASE + 14)
 #define IMX662_CID_CUSTOM_RHS1_PRIMING (IMX662_CID_BASE + 15)
+#define IMX662_CID_HCG_LEF  (IMX662_CID_BASE + 16)
+#define IMX662_CID_HCG_SEF1 (IMX662_CID_BASE + 17)
 
 /* Priming defaults */
 #define IMX662_CUSTOM_RHS1_PRIMING_MIN -1
@@ -230,7 +238,10 @@ struct imx662 {
 	struct v4l2_ctrl *hblank_ctrl;
 	struct v4l2_ctrl *test_pattern;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
 
 	/* Read-only timing readback controls */
 	struct v4l2_ctrl *rhs1_ctrl;
@@ -249,6 +260,9 @@ struct imx662 {
 	int custom_rhs1_priming_val;
 	struct v4l2_subdev_format curr_fmt;
 	enum fast_toggle_state fast_toggle_state;
+
+	/* Active MIPI data lane count parsed from DT endpoint (2 or 4) */
+	u32 lanes;
 };
 
 /*
@@ -545,7 +559,7 @@ static const struct imx662_mode supported_sdr_modes[] = {
 		.height = IMX662_HEIGHT,
 		.link_freq_idx = 0,  /* 594 Mbps */
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
-		.lanes = IMX662_LANES,
+		.lanes = IMX662_LANES_DEFAULT,
 		.bpp = IMX662_BITS_PER_PIXEL,
 		.pclk = IMX662_LINK_FREQ_594M,
 		.vblank = IMX662_VMAX_DEFAULT - IMX662_HEIGHT,
@@ -562,7 +576,33 @@ static const struct imx662_mode supported_sdr_modes[] = {
 			.denominator = 30,
 			.numerator = 1,
 		},
-	}
+	},
+	/* 1920x1080 @ 15fps SDR — VMAX-only scaling per IMX662 SRM Rev5.0.
+	 * Reuses the 30fps reg list; VBLANK ctrl writes LPFR=2500 at stream start.
+	 */
+	{
+		.width = IMX662_WIDTH,
+		.height = IMX662_HEIGHT,
+		.link_freq_idx = 0,
+		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
+		.lanes = IMX662_LANES_DEFAULT,
+		.bpp = IMX662_BITS_PER_PIXEL,
+		.pclk = IMX662_LINK_FREQ_594M,
+		.vblank = IMX662_VMAX_15FPS - IMX662_HEIGHT,
+		.vblank_min = 4,
+		.vblank_max = IMX662_VMAX_MAX - IMX662_HEIGHT,
+		.dol = 1,
+		.rhs1 = 0,
+		.rhs2 = 0,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(imx662_linear_1920x1080_mipi_regs),
+			.regs = imx662_linear_1920x1080_mipi_regs,
+		},
+		.frame_interval = {
+			.denominator = 15,
+			.numerator = 1,
+		},
+	},
 };
 
 static const struct imx662_mode supported_hdr_modes[] = {
@@ -572,7 +612,7 @@ static const struct imx662_mode supported_hdr_modes[] = {
 		.height = IMX662_HEIGHT,
 		.link_freq_idx = 0,  /* 594 Mbps */
 		.code = MEDIA_BUS_FMT_SRGGB12_2X12,
-		.lanes = IMX662_LANES,
+		.lanes = IMX662_LANES_DEFAULT,
 		.bpp = IMX662_BITS_PER_PIXEL,
 		.pclk = IMX662_LINK_FREQ_594M,
 		.vblank = IMX662_VMAX_DEFAULT - IMX662_HEIGHT,
@@ -611,7 +651,7 @@ static inline struct imx662 *to_imx662(struct v4l2_subdev *subdev)
 static int imx662_read_reg(struct imx662 *imx662, u16 reg, u32 len, u32 *val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx662->sd);
-	struct i2c_msg msgs[2] = { 0 };
+	struct i2c_msg msgs[2] = { { 0 } };
 	u8 addr_buf[2] = { 0 };
 	u8 data_buf[4] = { 0 };
 	int ret;
@@ -697,7 +737,12 @@ static int imx662_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx662 *sensor = to_imx662(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	/* 1) Hold XCLR low for >= 500 ns (use 1 µs margin) */
 	if (sensor->reset_gpio)
@@ -718,12 +763,14 @@ static int imx662_power_on(struct device *dev)
 		/* attempt to leave XCLR low for safety */
 		if (sensor->reset_gpio)
 			gpiod_set_value_cansleep(sensor->reset_gpio, 0);
+		i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 		return ret;
 	}
 
 	/* 4) Wait >= 20 µs for internal stabilization */
 	usleep_range(20, 25);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 }
 
@@ -731,6 +778,11 @@ static int imx662_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx662 *sensor = to_imx662(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	/* 1) Disable master clock first (stop INCK) */
 	clk_disable_unprepare(sensor->inclk);
@@ -738,6 +790,8 @@ static int imx662_power_off(struct device *dev)
 	/* 2) Assert XCLR low (make sure input is 0V before OVDD falls) */
 	if (sensor->reset_gpio)
 		gpiod_set_value_cansleep(sensor->reset_gpio, 0);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -757,6 +811,22 @@ static int imx662_start_streaming(struct imx662 *imx662)
 	if (ret) {
 		dev_err(imx662->dev, "Failed to write mode registers: %d\n", ret);
 		return ret;
+	}
+
+	/* Override LANEMODE if DT declared 2-lane (boards where the SoC only
+	 * routes 2 data lanes to the CSI bridge, e.g. H15L SBC CSI1). The
+	 * mode register tables hardcode 4-lane (0x03); patch back to 0x01
+	 * for 2-lane configs.
+	 */
+	if (imx662->lanes == IMX662_LANES_2) {
+		ret = imx662_write_reg(imx662, IMX662_REG_LANEMODE,
+				       IMX662_REG_VALUE_08BIT,
+				       IMX662_LANEMODE_2LANE);
+		if (ret) {
+			dev_err(imx662->dev,
+				"Failed to set 2-lane LANEMODE: %d\n", ret);
+			return ret;
+		}
 	}
 
 	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
@@ -860,16 +930,97 @@ static int imx662_g_frame_interval(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static void imx662_set_mode(struct imx662 *imx662, const struct imx662_mode *mode);
+static int imx662_update_exp_vblank_controls(struct imx662 *imx662);
+static void imx662_set_exp_activity(struct imx662 *imx662);
+
 static int imx662_s_frame_interval(struct v4l2_subdev *sd,
 					struct v4l2_subdev_frame_interval *fi)
 {
 	struct imx662 *imx662 = to_imx662(sd);
+	const struct imx662_mode *modes;
+	const struct imx662_mode *match = NULL;
+	const struct imx662_mode *prev_mode;
+	size_t mode_count;
+	size_t i;
+	int ret;
+	int revert_ret;
 
 	mutex_lock(&imx662->mutex);
-	/* Only 30fps supported for now */
+
+	dev_dbg(imx662->dev, "s_frame_interval: requested %u/%u (fps=%u)\n",
+		fi->interval.numerator, fi->interval.denominator,
+		fi->interval.numerator ? (fi->interval.denominator / fi->interval.numerator) : 0);
+
+	if (imx662->streaming) {
+		fi->interval = imx662->cur_mode->frame_interval;
+		mutex_unlock(&imx662->mutex);
+		return -EBUSY;
+	}
+
+	if (fi->interval.numerator == 0 || fi->interval.denominator == 0) {
+		fi->interval = imx662->cur_mode->frame_interval;
+		mutex_unlock(&imx662->mutex);
+		return -EINVAL;
+	}
+
+	if (imx662->hdr_enabled) {
+		modes = supported_hdr_modes;
+		mode_count = ARRAY_SIZE(supported_hdr_modes);
+	} else {
+		modes = supported_sdr_modes;
+		mode_count = ARRAY_SIZE(supported_sdr_modes);
+	}
+
+	/* Cross-product equality for rational comparison: match if
+	 *   mode.num * fi.den == mode.den * fi.num
+	 * so equivalent rationals (e.g. 1/30 ≡ 2/60) all match.
+	 * Mirrors the spirit of imx715_find_nearest_frame_interval_mode().
+	 */
+	for (i = 0; i < mode_count; i++) {
+		u64 lhs = (u64)modes[i].frame_interval.numerator * fi->interval.denominator;
+		u64 rhs = (u64)modes[i].frame_interval.denominator * fi->interval.numerator;
+
+		if (lhs == rhs) {
+			match = &modes[i];
+			break;
+		}
+	}
+
+	if (!match) {
+		fi->interval = imx662->cur_mode->frame_interval;
+		mutex_unlock(&imx662->mutex);
+		return -EINVAL;
+	}
+
+	if (match != imx662->cur_mode) {
+		/* Mirror the HDR-toggle pattern (see imx662_set_ctrl WDR path):
+		 * change cur_mode, refresh exposure + vblank ctrl ranges, revert
+		 * on failure so userspace observes a consistent state.
+		 */
+		prev_mode = imx662->cur_mode;
+		imx662_set_mode(imx662, match);
+
+		ret = imx662_update_exp_vblank_controls(imx662);
+		if (ret) {
+			dev_warn(imx662->dev,
+				 "Failed to update exp/vblank controls for %ufps, reverting\n",
+				 fi->interval.denominator);
+			imx662_set_mode(imx662, prev_mode);
+			revert_ret = imx662_update_exp_vblank_controls(imx662);
+			if (revert_ret)
+				dev_err(imx662->dev,
+					"Failed to revert to previous mode\n");
+			fi->interval = imx662->cur_mode->frame_interval;
+			mutex_unlock(&imx662->mutex);
+			return ret;
+		}
+
+		imx662_set_exp_activity(imx662);
+	}
+
 	fi->interval = imx662->cur_mode->frame_interval;
 	mutex_unlock(&imx662->mutex);
-
 	return 0;
 }
 
@@ -986,16 +1137,19 @@ static void imx662_calculate_exposure_limits(struct imx662 *imx662, struct imx66
 
 	/* LEF (SHR0) limits */
 	limits->shr0_min = imx662->hdr_enabled ? rhs1 + IMX662_2DOL_SHR0_RHS1_GAP : IMX662_2DOL_SHR0_FSC_GAP;
-	limits->shr0_max = NON_NEGATIVE(limits->max_lpfr - IMX662_2DOL_SHR0_FSC_GAP);
+	limits->shr0_max = NON_NEGATIVE((int)limits->max_lpfr - IMX662_2DOL_SHR0_FSC_GAP);
 	limits->exp_lef_min = IMX662_2DOL_SHR0_FSC_GAP;
-	limits->exp_lef_max = NON_NEGATIVE(limits->max_lpfr - limits->shr0_min);
+	limits->exp_lef_max = NON_NEGATIVE((int)limits->max_lpfr - (int)limits->shr0_min);
 	shr0 = _get_mode_reg_val_by_address(&imx662->cur_mode->reg_list, IMX662_SHR0_LOW, 3);
 	limits->exp_lef_default = MAX_VAL(limits->exp_lef_min, NON_NEGATIVE((int)limits->lpfr - (int)shr0));
 
+	if (imx662->cur_mode->dol < 2)
+		return;
+
 	limits->shr1_min = IMX662_2DOL_SHR1_MIN_GAP;
 	limits->shr1_max = NON_NEGATIVE(rhs1 - IMX662_2DOL_SHR1_RHS1_GAP);
-	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - limits->shr1_max);
-	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - limits->shr1_min);
+	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - (int)limits->shr1_max);
+	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - (int)limits->shr1_min);
 	shr1 = MAX_VAL(limits->shr1_min, _get_mode_reg_val_by_address(&imx662->cur_mode->reg_list, IMX662_SHR1_LOW, 3));
 	limits->exp_sef1_default = MAX_VAL(limits->exp_sef1_min, NON_NEGATIVE((int)rhs1 - (int)shr1));
 }
@@ -1029,7 +1183,7 @@ static int imx662_update_exp_gain(struct imx662 *imx662, u32 exposure, u32 gain,
 		}
 
 		lpfr = imx662->vblank + imx662->cur_mode->height;
-		shutter = NON_NEGATIVE(imx662->cur_mode->dol * (int)lpfr - (int)exposure);
+		shutter = NON_NEGATIVE((int)imx662->cur_mode->dol * (int)lpfr - (int)exposure);
 		break;
 	case SEF1:
 		lpfr = imx662->vblank + imx662->cur_mode->height;
@@ -1094,6 +1248,16 @@ static int imx662_set_hcg_mode(struct imx662 *imx662, u32 hcg)
 	return 0;
 }
 
+static int imx662_set_hcg_lef(struct imx662 *imx662, u32 hcg)
+{
+	return imx662_write_reg(imx662, IMX662_REG_HCG, 1, hcg);
+}
+
+static int imx662_set_hcg_sef1(struct imx662 *imx662, u32 hcg)
+{
+	return imx662_write_reg(imx662, IMX662_REG_HCG_SEF1, 1, hcg);
+}
+
 static void imx662_set_mode(struct imx662 *imx662, const struct imx662_mode *mode)
 {
 	int ret;
@@ -1128,6 +1292,7 @@ static void imx662_set_exp_activity(struct imx662 *imx662)
 
 	v4l2_ctrl_activate(imx662->sef1.again_ctrl, sef1);
 	v4l2_ctrl_activate(imx662->sef1.exp_ctrl, sef1);
+	v4l2_ctrl_activate(imx662->hcg_sef1_ctrl, sef1);
 }
 
 static int imx662_update_exp_vblank_controls(struct imx662 *imx662)
@@ -1264,12 +1429,38 @@ static int imx662_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case IMX662_CID_HCG:
+		/* Global HCG: sync per-exposure cached values unconditionally,
+		 * write registers only if sensor is powered on */
+		/* Controls are independent (no cluster) so direct cur.val update is safe */
+		imx662->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx662->cur_mode->dol >= 2)
+			imx662->hcg_sef1_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(&client->dev))
 			return 0;
 
-		dev_dbg(&client->dev, "Setting HCG to %u\n", ctrl->val);
+		dev_dbg(&client->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx662_set_hcg_mode(imx662, ctrl->val);
+		if (ret)
+			dev_err(&client->dev, "Failed to set HCG mode: %d\n", ret);
+		pm_runtime_put(&client->dev);
+		break;
 
+	case IMX662_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(&client->dev))
+			return 0;
+		dev_dbg(&client->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx662_set_hcg_lef(imx662, ctrl->val);
+		pm_runtime_put(&client->dev);
+		break;
+
+	case IMX662_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(&client->dev))
+			return 0;
+		dev_dbg(&client->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx662_set_hcg_sef1(imx662, ctrl->val);
 		pm_runtime_put(&client->dev);
 		break;
 
@@ -1370,7 +1561,7 @@ static int imx662_get_ctrl(struct v4l2_ctrl *ctrl)
 			return -EBUSY;
 		}
 
-		ret = imx662_read_reg(imx662, reg, len, &ctrl->val);
+		ret = imx662_read_reg(imx662, reg, len, (u32 *)&ctrl->val);
 		if (ret)
 			dev_err(imx662->dev, "Failed to read register 0x%x", reg);
 	}
@@ -1618,14 +1809,20 @@ static int imx662_parse_hw_config(struct imx662 *sensor)
 	if (ret)
 		return ret;
 
-	/* Validate lane count */
-	if (ep_cfg.bus.mipi_csi2.num_data_lanes != IMX662_LANES) {
+	/* Validate lane count: accept 2 (e.g. H15L SBC CSI1, silicon-shared
+	 * lanes) or 4 (default). The mode register init tables hardcode
+	 * LANEMODE for 4 lanes; if 2-lane, imx662_start_streaming() patches
+	 * register 0x3040 to IMX662_LANEMODE_2LANE after the table is written.
+	 */
+	if (ep_cfg.bus.mipi_csi2.num_data_lanes != IMX662_LANES_DEFAULT &&
+	    ep_cfg.bus.mipi_csi2.num_data_lanes != IMX662_LANES_2) {
 		dev_err(sensor->dev,
-			"unsupported lane count %u\n",
+			"unsupported lane count %u (expected 2 or 4)\n",
 			ep_cfg.bus.mipi_csi2.num_data_lanes);
 		ret = -EINVAL;
 		goto out_free;
 	}
+	sensor->lanes = ep_cfg.bus.mipi_csi2.num_data_lanes;
 
 	/* Validate link frequencies */
 	if (!ep_cfg.nr_of_link_frequencies) {
@@ -1737,7 +1934,7 @@ static int imx662_init_controls(struct imx662 *imx662)
 			.ops = &imx662_ctrl_ops,
 			.id = IMX662_CID_HCG,
 			.type = V4L2_CTRL_TYPE_BOOLEAN,
-			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 			.name = "hcg",
 			.step = IMX662_HCG_STEP,
 			.min = IMX662_HCG_MIN,
@@ -1746,6 +1943,40 @@ static int imx662_init_controls(struct imx662 *imx662)
 		};
 		imx662->hcg_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_cfg, NULL);
 	}
+
+	/* Per-exposure HCG LEF control */
+	{
+		struct v4l2_ctrl_config hcg_lef_cfg = {
+			.ops = &imx662_ctrl_ops,
+			.id = IMX662_CID_HCG_LEF,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.name = "hcg_lef",
+			.step = IMX662_HCG_STEP,
+			.min = IMX662_HCG_MIN,
+			.max = IMX662_HCG_MAX,
+			.def = IMX662_HCG_DEFAULT,
+		};
+		imx662->hcg_lef_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_lef_cfg, NULL);
+	}
+
+	/* Per-exposure HCG SEF1 control */
+	{
+		struct v4l2_ctrl_config hcg_sef1_cfg = {
+			.ops = &imx662_ctrl_ops,
+			.id = IMX662_CID_HCG_SEF1,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.flags = V4L2_CTRL_FLAG_UPDATE,
+			.name = "hcg_sef1",
+			.step = IMX662_HCG_STEP,
+			.min = IMX662_HCG_MIN,
+			.max = IMX662_HCG_MAX,
+			.def = IMX662_HCG_DEFAULT,
+		};
+		imx662->hcg_sef1_ctrl = v4l2_ctrl_new_custom(ctrl_hdlr, &hcg_sef1_cfg, NULL);
+	}
+
+
 
 	/* Custom RHS1 stub */
 	{

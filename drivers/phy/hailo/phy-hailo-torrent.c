@@ -2,7 +2,7 @@
 /**
  * Wrapper driver for Cadence Torrent Multi-Protocol PHY used in Hailo-15 SoC for Pcie and USB3
  *
- * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include <linux/bits.h>
@@ -126,7 +126,7 @@ static inline void hailo_torrent_usb_config_writel(struct hailo_torrent *data, u
 	writel(value, data->usb_config + offset);
 }
 
-static void pcie_pma_lane_full_rate_clk_divider_cfg(struct hailo_torrent *data, int lane, u32 divider)
+static int pcie_pma_lane_full_rate_clk_divider_cfg(struct hailo_torrent *data, int lane, u32 divider)
 {
 	u32 offset, mask, shift, value;
 
@@ -151,12 +151,17 @@ static void pcie_pma_lane_full_rate_clk_divider_cfg(struct hailo_torrent *data, 
 		mask = PMA_FULLRT_DIV_LN_3_MASK;
 		shift = PMA_FULLRT_DIV_LN_3_SHIFT;
 		break;
+	default:
+		pr_err("phy-hailo-torrent: invalid pma lane %d\n", lane);
+		return -EINVAL;
 	}
 
 	value = hailo_torrent_pcie_config_readl(data, offset);
 	value &= ~mask;
 	value |= divider << shift;
 	hailo_torrent_pcie_config_writel(data, offset, value);
+
+	return 0;
 }
 
 static void pcie_phy_link_lanes_cfg(struct hailo_torrent *data)
@@ -296,15 +301,21 @@ static void hailo15_usb_pcie_pipe_mux_cfg(struct hailo_torrent *data)
 
 
 
-void hailo_torrent_init(struct hailo_torrent *data)
+int hailo_torrent_init(struct hailo_torrent *data)
 {
+	int ret;
+
 	if (data->usb_lane != NO_USB_LANE) {
-		pcie_pma_lane_full_rate_clk_divider_cfg(data, data->usb_lane, data->usb_lane_pma_pll_full_rate_divider);
+		ret = pcie_pma_lane_full_rate_clk_divider_cfg(data, data->usb_lane, data->usb_lane_pma_pll_full_rate_divider);
+		if (ret)
+			return ret;
 	}
 	pcie_phy_link_lanes_cfg(data);
 	pcie_phy_bypass_reset_setup(data);
 	pcie_phy_lanes_mode_cfg(data);
 	data->usb_pcie_pipe_mux_cfg(data);
+
+	return 0;
 }
 
 static const struct of_dev_auxdata hailo_torrent_auxdata[] = {
@@ -432,13 +443,17 @@ static int hailo_torrent_probe(struct platform_device *pdev)
 
 	ret = clk_prepare_enable(data->pcie_aclk);
 	if (ret)
-		return ret;
+		goto err_disable_usb_pclk;
 
 	ret = clk_prepare_enable(data->pcie_pclk);
 	if (ret)
-		return ret;
+		goto err_disable_pcie_aclk_usb_pclk;
 
-	hailo_torrent_init(data);
+	ret = hailo_torrent_init(data);
+	if (ret) {
+		dev_err(dev, "failed to initialize torrent phy: %d\n", ret);
+		goto err_disable_pcie_clks_and_usb;
+	}
 
 	clk_disable_unprepare(data->usb_pclk);
 
@@ -450,13 +465,21 @@ static int hailo_torrent_probe(struct platform_device *pdev)
 	ret = of_platform_populate(node, NULL, hailo_torrent_auxdata, dev);
 	if (ret) {
 		dev_err(dev, "failed to create children: %d\n", ret);
-		goto err;
+		goto err_disable_pcie_clks;
 	}
 
 	return ret;
-err:
+
+err_disable_pcie_clks:
 	clk_disable_unprepare(data->pcie_pclk);
 	clk_disable_unprepare(data->pcie_aclk);
+	return ret;
+err_disable_pcie_clks_and_usb:
+	clk_disable_unprepare(data->pcie_pclk);
+err_disable_pcie_aclk_usb_pclk:
+	clk_disable_unprepare(data->pcie_aclk);
+err_disable_usb_pclk:
+	clk_disable_unprepare(data->usb_pclk);
 	return ret;
 }
 
@@ -488,7 +511,11 @@ static int hailo_torrent_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	return clk_prepare_enable(data->pcie_aclk);
+	ret = clk_prepare_enable(data->pcie_aclk);
+	if (ret)
+		clk_disable_unprepare(data->pcie_pclk);
+
+	return ret;
 }
 
 static int hailo_torrent_suspend(struct device *dev)
