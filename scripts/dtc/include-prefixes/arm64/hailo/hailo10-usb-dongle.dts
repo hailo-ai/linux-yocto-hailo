@@ -39,8 +39,9 @@
         ports {
             #address-cells = <1>;
             #size-cells = <0>;
-            port@0 {
-                reg = <0>;
+            status = "disabled";
+            port@1 {
+                reg = <1>;
                 usb_c_connector_ss_ep: endpoint {
                     remote-endpoint = <&hd3ss3220_in_ep>;
                 };
@@ -77,7 +78,7 @@
         reg = <0x50>;
     };
 
-    hd3ss3220@47 {
+    hd3ss3220: hd3ss3220@47 {
         status = "disabled";
         compatible = "ti,hd3ss3220";
         reg = <0x47>;
@@ -96,7 +97,7 @@
             port@1 {
                 reg = <1>;
                 hd3ss3220_out_ep: endpoint {
-                    remote-endpoint = <&cdns_usb3_connector_switch>;
+                    remote-endpoint = <&cdns_usb3_ss_ep>;
                 };
             };
         };
@@ -152,25 +153,29 @@
 };
 
 &cdns_torrent_phy {
-    torrent_phy_pcie: phy@0 {
-        reg = <0>;
-        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_0>, <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_1>;
-        #phy-cells = <0>;
-        cdns,phy-type = <PHY_TYPE_PCIE>;
-        cdns,num-lanes = <2>;
-    };
     torrent_phy_usb3: phy@3 {
         reg = <3>;
         resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_3>;
         #phy-cells = <0>;
         cdns,phy-type = <PHY_TYPE_USB3>;
         cdns,num-lanes = <1>;
-        cdns,ssc-mode = <TORRENT_SERDES_NO_SSC>;
+        cdns,ssc-mode = <TORRENT_SERDES_INTERNAL_SSC>;
+    };
+    torrent_phy_pcie: phy@0 {
+        status = "disabled";
+        reg = <0>;
+        resets = <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_0>, <&scmi_reset HAILO15_SCMI_RESET_IDX_PCIE_PHY_LANE_1>;
+        #phy-cells = <0>;
+        cdns,phy-type = <PHY_TYPE_PCIE>;
+        cdns,num-lanes = <2>;
+        cdns,ssc-mode = <TORRENT_SERDES_INTERNAL_SSC>;
     };
 };
 
 &hailo_usb3 {
-    no-usb2-phy-avdd-core-power; // Indicate that AVDD core power is not connected to USB2 PHY 
+    usb2-is-inactive;
+    no-usb2-phy-avdd-core-power; // Indicate that AVDD core power is not connected to USB2 PHY
+    usbreset-as-system-reboot; // Indicates usbreset cmd or host reboot will trigger device reboot
     status = "okay";
 };
 
@@ -178,15 +183,15 @@
     dr_mode = "peripheral"; // Force USB controller to always be in device mode
     phys = <&torrent_phy_usb3>;
     phy-names = "cdns3,usb3-phy";
-    maximum-speed = "super-speed"; // known HW bug - MER-3829, not reaching super-speed-plus. Fixed in H15L.
-    
+    maximum-speed = "super-speed-plus";
+
     ports {
         status = "disabled";
         #address-cells = <1>;
         #size-cells = <0>;
         port@0 {
             reg = <0>;
-            cdns_usb3_connector_switch: endpoint {
+            cdns_usb3_ss_ep: endpoint {
                 remote-endpoint = <&hd3ss3220_out_ep>;
             };
         };
