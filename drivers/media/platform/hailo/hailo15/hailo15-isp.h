@@ -16,7 +16,6 @@
 #include "hailo15-events.h"
 #include "hailo15-isp-hw-defs.h"
 #include "common.h"
-#include "fe/fe_dev.h"
 
 #define HAILO15_ISP_NAME "hailo-isp"
 
@@ -35,6 +34,11 @@ struct isp_mcm_buf {
 	uint32_t num_planes;
 	uint64_t addr[3];
 	uint32_t size[3];
+};
+
+struct hdr_comp_ctrl {
+	uint32_t compression_enabled;
+	uint32_t decompression_enabled;
 };
 
 enum hailo15_sink_pads {
@@ -59,6 +63,7 @@ static inline int HAILO15_VID_GRP_TO_ISP_SINK_PAD(int grp_id)
 	case HAILO15_VID_GRP_SX_CSI0_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI0_ISP_SP:
 	case HAILO15_VID_GRP_MCM_RAW_WR:
+	case HAILO15_VID_GRP_MCM_IN: // currently MCM-IN path is only in use for vdid 0 and sink pad S0.
 		return HAILO15_ISP_SINK_PAD_S0;
 	case HAILO15_VID_GRP_SX_CSI1_ISP_MP:
 	case HAILO15_VID_GRP_SX_CSI1_ISP_SP:
@@ -134,6 +139,7 @@ struct hailo15_isp_irq_status {
 	uint32_t isp_miv2_mis;
 	uint32_t isp_miv2_mis1;
 	uint32_t isp_fe;
+	uint32_t isp_stitching_mis;
 };
 
 struct hailo15_isp_irq_status_event {
@@ -267,6 +273,13 @@ struct hailo15_isp_device {
 	struct hailo15_af_kevent *af_kevent;
 	struct workqueue_struct *af_wq;
 	struct vvcam_fe_dev* fe_dev;
+	bool stitcher_stats_enable;
+	uint8_t stitcher_stats_buf[ISP_HDR_EXP_STATISTICS_MAX];
+	uint32_t stitcher_stats_n;
+	uint32_t stitcher_ready_mask;
+	struct mutex stitcher_stats_lock;
+	struct work_struct stitcher_stats_work;
+	struct workqueue_struct *stitcher_stats_wq;
 	int mcm_mode;
 	struct v4l2_subdev_format input_fmt[HAILO15_ISP_SINK_PAD_MAX];
 	struct list_head mcm_queue;
@@ -307,7 +320,7 @@ struct hailo15_isp_device {
 	atomic_t streaming_started[HAILO15_ISP_SINK_PAD_MAX];
 	atomic_t first_rdma_done;
 	atomic_t full_queue_count[HAILO15_ISP_SINK_PAD_MAX]; /* count of buffers in each sensor's full queue */
-	bool tuning_state;
+	u8 tuning_state;
 	bool hdr_enabled;
 	wait_queue_head_t buf_done_wait_q;
 	atomic_t buf_done_ready;
@@ -316,6 +329,7 @@ struct hailo15_isp_device {
 	enum isp_mcm_mode mcm_mode_priming;
 	enum fast_toggle_state fast_toggle_state;
 	bool hdr_compression_enabled;
+	bool hdr_decompression_enabled;
 };
 
 
@@ -325,7 +339,8 @@ int isp_hal_set_pad_stream(struct hailo15_isp_device *isp_dev,
 			   uint32_t pad_index, int status);
 void hailo15_isp_buffer_done(struct hailo15_isp_device *, int grp_id);
 bool hailo15_isp_is_format_hdr(struct v4l2_subdev_format *format);
-void hailo15_config_isp_wrapper(struct hailo15_isp_device *isp_dev);
+void hailo15_config_isp_wrapper_interrupts(struct hailo15_isp_device *isp_dev);
+void hailo15_config_isp_wrapper_datapath(struct hailo15_isp_device *isp_dev);
 int hailo15_isp_is_path_enabled(struct hailo15_isp_device *, int);
 void hailo15_isp_reset_hw(struct hailo15_isp_device*);
 int hailo15_isp_post_event_set_fmt(struct hailo15_isp_device *isp_dev,
@@ -346,5 +361,9 @@ irqreturn_t hailo15_process_irq_stats_events(struct hailo15_isp_device *isp_dev,
     int event_id, uint32_t mis);
 void hailo15_isp_handle_frame_rx(struct work_struct*);
 void hailo15_isp_handle_mcm_raw_frame_rx(struct work_struct *work);
+void hailo15_isp_stitcher_stats_work(struct work_struct *work);
+int hailo15_isp_stitcher_hw_enable(struct hailo15_isp_device *isp_dev,
+				    uint32_t width, uint32_t height);
+int hailo15_isp_stitcher_hw_disable(struct hailo15_isp_device *isp_dev);
 
 #endif

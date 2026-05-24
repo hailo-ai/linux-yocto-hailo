@@ -281,14 +281,14 @@ static int dwcmshc_hailo15_set_clock_divider_bypass(struct sdhci_host *host, boo
 	struct device *dev = mmc_dev(host->mmc);
 	int ret = 0;
 
-	if ((is_bypass) & (!priv->is_clk_divider_bypass)) {
+	if ((is_bypass) && (!priv->is_clk_divider_bypass)) {
 		ret = clk_prepare_enable(priv->div_clk_bypass);
     		if (ret) {
 			dev_err(dev, "clk_divider bypass enable failed: ret[%d]\n", ret);
 			return ret;
 		}
 		priv->is_clk_divider_bypass = true;
-	} else if ((!is_bypass) & (priv->is_clk_divider_bypass)) {
+	} else if ((!is_bypass) && (priv->is_clk_divider_bypass)) {
 		clk_disable_unprepare(priv->div_clk_bypass);
 		priv->is_clk_divider_bypass = false;
 	}
@@ -1040,6 +1040,8 @@ static int dwcmshc_probe(struct platform_device *pdev)
 			goto err_clk;
 	}
 	if (is_hailo_sdhci) {
+		struct clk *card_clk;
+
 		hailo_priv = devm_kzalloc(dev, sizeof(struct hailo_priv), GFP_KERNEL);
 		if (!hailo_priv) {
 			dev_err(dev, "Error: devm_kzalloc fail for hailo_priv \n");
@@ -1049,14 +1051,22 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		
 		priv->priv = hailo_priv;
 		hailo_priv->is_hailo15l = is_hailo15l;
-		hailo_priv->card_clk = devm_clk_get(dev, "card_clk");
-		if (!IS_ERR(hailo_priv->card_clk))
-			clk_prepare_enable(hailo_priv->card_clk);
+		card_clk = devm_clk_get_optional(dev, "card_clk");
+		if (IS_ERR(card_clk)) {
+			err = PTR_ERR(card_clk);
+			goto err_clk;
+		}
+		if (card_clk) {
+			err = clk_prepare_enable(card_clk);
+			if (err)
+				goto err_clk;
+			hailo_priv->card_clk = card_clk; /* save only after enable succeeded */
+		}
 
 		err = dwcmshc_hailo_init(host, priv);
 		if (err) {
 			dev_err_probe(dev, err, "dwcmshc_hailo_init failed ret[%d]\n", err);
-			return err;
+			goto err_clk;
 		}
 		host->mmc_host_ops.execute_tuning = hailo15_dwcmshc_execute_tuning;
 	}
@@ -1077,6 +1087,8 @@ static int dwcmshc_probe(struct platform_device *pdev)
 	return 0;
 
 err_clk:
+	if (hailo_priv && hailo_priv->card_clk)
+		clk_disable_unprepare(hailo_priv->card_clk);
 	clk_disable_unprepare(pltfm_host->clk);
 	clk_disable_unprepare(priv->bus_clk);
 	if (rk_priv)

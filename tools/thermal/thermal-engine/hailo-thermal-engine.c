@@ -9,6 +9,7 @@
  */
 
 #include "hailo-thermal-engine.h"
+#include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -33,6 +34,36 @@
 #include <thermal.h>
 #include "thermal-tools.h"
 
+/* write to trace marker */
+static int trace_marker_fd = -1;
+
+static void trace_marker_init(void)
+{
+	/* Try debugfs-based tracefs (older kernels), then standalone tracefs */
+	trace_marker_fd = open("/sys/kernel/debug/tracing/trace_marker",
+			       O_WRONLY | O_CLOEXEC);
+}
+
+static void trace_marker_close(void)
+{
+	if (trace_marker_fd >= 0) {
+		close(trace_marker_fd);
+		trace_marker_fd = -1;
+	}
+}
+
+static void trace_marker_counter(const char *name, int value)
+{
+	char buf[128];
+	int len;
+
+	if (trace_marker_fd < 0)
+		return;
+
+	len = snprintf(buf, sizeof(buf), "C|%d|%s|%d", getpid(), name, value);
+	(void)write(trace_marker_fd, buf, len);
+}
+
 struct options {
 	int loglevel;
 	int logopt;
@@ -48,7 +79,45 @@ struct thermal_data {
 struct hailo_thermal_ctx {
 	struct hailo_thermal_data *hailo_td;
 	sem_t *sem;
+	/* Track which trips are currently active (crossed up) per zone.
+	 * Used to emit only the highest active trip,
+	 * avoiding sawtooth when multiple trips fire in one update cycle. */
+	bool throttle_active[MAX_NUM_OF_TZ][MAX_NUM_OF_TZ_TRIPS];
 } ctx;
+
+/*
+ * Find the highest active trip for a zone.
+ * Returns the trip index, or -1 if no trips are active.
+ */
+static int get_highest_active_throttle(int tz_id)
+{
+	int i;
+
+	for (i = MAX_NUM_OF_TZ_TRIPS - 1; i >= 0; i--) {
+		if (ctx.throttle_active[tz_id][i])
+			return i;
+	}
+	return -1;
+}
+
+/*
+ * Emit the current thermal state to trace_marker.
+ * The "Throttling State" counter value is highest_active_throttle + 1, so:
+ *   0 = no throttle active (full performance)
+ *   1 = throttle 0 active
+ *   2 = throttle 1 active
+ *   ... etc.
+ */
+static void emit_throttle_state(int tz_id, int temp)
+{
+	char name[64];
+	int highest = get_highest_active_throttle(tz_id);
+
+	snprintf(name, sizeof(name), "Throttling State (Sensor %d)", tz_id);
+	trace_marker_counter(name, highest + 1);
+	snprintf(name, sizeof(name), "Event Temperature mC (Sensor %d)", tz_id);
+	trace_marker_counter(name, temp);
+}
 
 /*! 
  * @brief Get monotonic time in msec
@@ -209,10 +278,12 @@ void hailo_thermal_init(char *file_path, char *sem_path, struct thermal_data *td
 		exit(EXIT_FAILURE);
 	}
 	hailo_thermal_data_init(ctx.hailo_td, td);
+	trace_marker_init();
 }
 
 void hailo_thermal_uninit(void)
 {
+	trace_marker_close();
 	hailo_thermal_data_unmmap(ctx.hailo_td);
 	sem_close(ctx.sem);
 	sem_unlink(HAILO_THERMAL_ENGINE_SEM_PATH);
@@ -312,7 +383,10 @@ static int trip_high(int tz_id, int trip_id, int temp, void *arg)
 	hailo_thermal_data_dump(ctx.hailo_td);
 
 	sem_post(ctx.sem);
-		
+
+	ctx.throttle_active[tz_id][trip_id] = true;
+	emit_throttle_state(tz_id, temp);
+
 	return 0;
 }
 
@@ -339,6 +413,9 @@ static int trip_low(int tz_id, int trip_id, int temp, void *arg)
 	hailo_thermal_data_dump(ctx.hailo_td);
 
 	sem_post(ctx.sem);
+
+	ctx.throttle_active[tz_id][trip_id] = false;
+	emit_throttle_state(tz_id, temp);
 
 	return 0;
 }

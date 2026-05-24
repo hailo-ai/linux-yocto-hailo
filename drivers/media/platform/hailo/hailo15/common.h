@@ -21,12 +21,13 @@
 #define VIDEO_GET_VSM_IOC               _IOWR('D', BASE_VIDIOC_PRIVATE + 1, struct hailo15_get_vsm_params)
 // HAILO15_INTERNAL_GET_P2A_REGS used to occupy offset 2, but this ioctl is kernel-internal -> moved to type='K' ioctls
 #define VIDEO_WAIT_FOR_STREAM_START	_IO('D', BASE_VIDIOC_PRIVATE + 3)
-#define VIDEO_TUNING_STATE              _IOWR('D', BASE_VIDIOC_PRIVATE + 4, bool)
-#define VIDEO_HDR_TIME_STAMP_MODE_SET    _IOW('D', BASE_VIDIOC_PRIVATE + 5, bool)
-#define VIDEO_HDR_TIME_STAMP_MODE_GET    _IOR('D', BASE_VIDIOC_PRIVATE + 6, bool)
+#define VIDEO_TUNING_STATE              _IOWR('D', BASE_VIDIOC_PRIVATE + 4, __u8)
+#define VIDEO_HDR_TIME_STAMP_MODE_SET    _IOW('D', BASE_VIDIOC_PRIVATE + 5, __u8)
+#define VIDEO_HDR_TIME_STAMP_MODE_GET    _IOR('D', BASE_VIDIOC_PRIVATE + 6, __u8)
 #define VIDEO_PIPELINE_STATE_GET         _IOR('D', BASE_VIDIOC_PRIVATE + 7, int)
 #define VIDEO_FAST_TOGGLE                _IOR('D', BASE_VIDIOC_PRIVATE + 8, int)
 #define VIDEO_FAST_TOGGLE_PRIMING        _IOR('D', BASE_VIDIOC_PRIVATE + 9, int)
+#define VIDEO_EVENT_COMPLETE             _IO('D', BASE_VIDIOC_PRIVATE + 10)
 
 // ISP (type = 'I') ioctls
 #define ISPIOC_V4L2_READ_REG            _IOWR('I', BASE_VIDIOC_PRIVATE + 0, struct isp_reg_data)
@@ -42,9 +43,10 @@
 #define ISPIOC_V4L2_SET_INPUT_FORMAT    _IOWR('I', BASE_VIDIOC_PRIVATE + 9, struct v4l2_subdev_format)
 #define ISPIOC_V4L2_SET_MCM_MODE        _IOWR('I', BASE_VIDIOC_PRIVATE + 10, uint32_t)
 #define ISPIOC_V4L2_GET_NULL_ADDR       _IOR('I', BASE_VIDIOC_PRIVATE + 11, uint32_t)
-#define ISPIOC_V4L2_SET_ENABLE_SP2_ERR  _IOWR('I', BASE_VIDIOC_PRIVATE + 12, bool)
+#define ISPIOC_V4L2_SET_ENABLE_SP2_ERR  _IOWR('I', BASE_VIDIOC_PRIVATE + 12, __u8)
 #define ISPIOC_V4L2_SET_MCM_MODE_PRIMING _IOWR('I', BASE_VIDIOC_PRIVATE + 13, uint32_t)
-#define ISPIOC_V4L2_SET_HDR_COMPRESSION  _IOWR('I', BASE_VIDIOC_PRIVATE + 14, uint32_t)
+#define ISPIOC_V4L2_SET_HDR_COMPRESSION  _IOWR('I', BASE_VIDIOC_PRIVATE + 14, struct hdr_comp_ctrl)
+#define ISPIOC_V4L2_EVENT_COMPLETE       _IO('I', BASE_VIDIOC_PRIVATE + 15)
 
 // V4L2 (type = 'V') ioctls
 #define HAILO15_PAD_REQBUFS             _IOWR('V', BASE_VIDIOC_PRIVATE + 9, struct hailo15_reqbufs)
@@ -66,7 +68,7 @@
 #define HAILO15_PAD_STAT_DONE           _IOWR('V', BASE_VIDIOC_PRIVATE + 23, struct hailo15_pad_stat)
 
 
-#define HAILO15_TUNING           		_IOWR('V', BASE_VIDIOC_PRIVATE + 24, bool)
+#define HAILO15_TUNING           		_IOWR('V', BASE_VIDIOC_PRIVATE + 24, __u8)
 
 // Kernel internal ioctl (core ioctl to v4l2_subdev)s (type = 'K'))
 #define HAILO15_INTERNAL_GET_P2A_REGS               	_IOR('K', BASE_VIDIOC_PRIVATE + 0, struct hailo15_p2a_buffer_regs_addr)
@@ -568,6 +570,8 @@ struct hailo15_event_resource {
 	uint64_t phy_addr;
 	void *virt_addr;
 	uint32_t size;
+	wait_queue_head_t wait_q;
+	uint8_t kernel_seq;
 };
 
 struct hailo15_subdev_list {

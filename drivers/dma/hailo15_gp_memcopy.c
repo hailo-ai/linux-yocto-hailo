@@ -30,7 +30,7 @@ static void dma_memcpy_put_pages(phys_addr_t phys, unsigned long n_pages)
 		put_page(page + i);
 }
 
-bool dma_memcpy_cacheable(unsigned long pfn, unsigned long n_pages)
+static bool dma_memcpy_cacheable(unsigned long pfn, unsigned long n_pages)
 {
 	unsigned long i;
 	for (i = 0; i < n_pages; ++i)
@@ -180,7 +180,7 @@ static long dma_memcpy_virt_to_phys(struct device *dev, unsigned long size,
 /* Handle a callback and indicate the DMA transfer is completed
  * 
  */
-void hailo15_gp_memcopy_tarnsfer_completed(void *param)
+static void hailo15_gp_memcopy_tarnsfer_completed(void *param)
 {
 	struct completion *cmp = (struct completion *)param;
 	complete(cmp);
@@ -413,13 +413,13 @@ static long gp_dma_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		/* Perform the DMA transfer on the specified channel blocking til it completes
 	 	*/
 		if (copy_from_user(&copy_info,
-				   (struct dma_copy_info *)arg,
+				   (void __user *)arg,
 				   sizeof(copy_info))) {
 			pr_err("copy_from_user Fail for GP_DMA_XFER\n");
 			return -EINVAL;
 		}
 		copy_info.status = transfer_memcpy(copy_info);
-		if (copy_to_user((struct dma_copy_info *)arg,
+		if (copy_to_user((void __user *)arg,
 				 &copy_info, sizeof(copy_info))) {
 			pr_err("copy_to_user Fail for GP_DMA_XFER \n");
 			return -EINVAL;

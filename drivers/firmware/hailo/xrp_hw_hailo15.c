@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include "xrp_hw.h"
@@ -108,7 +108,7 @@ static const struct xrp_hw_ops hw_ops = {
     .xrp_release_dsp = xrp_release_dsp_hailo15,
 };
 
-long xrp_init_hw_hailo15(struct platform_device *pdev, struct xvp *xvp)
+int xrp_init_hw_hailo15(struct platform_device *pdev, struct xvp *xvp)
 {
     dev_dbg(&pdev->dev, "%s\n", __func__);
     xvp->hw_ops = &hw_ops;

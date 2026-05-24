@@ -256,8 +256,7 @@ static long xrp_private_alloc(struct xrp_allocation_pool *pool,
         if (!cur)
             return -ENOMEM;
     }
-    if (new)
-        kfree(new);
+    kfree(new);
 
     pr_debug("returning: %pap x %x\n", &aligned_start, size);
     cur->start = aligned_start;

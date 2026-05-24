@@ -405,7 +405,7 @@ static int __add_cma_heap(struct cma *cma, void *data)
 
 static int add_hailo_cma_heaps(void)
 {
-	int ret;
+	int ret = 0;
 	struct cma *hailo_cma;
 	struct reserved_mem *rmem;
 	struct device_node *np;
@@ -422,6 +422,7 @@ static int add_hailo_cma_heaps(void)
 		}
 		rmem = of_reserved_mem_lookup(np);
 		if (!rmem) {
+			of_node_put(np);
 			return -ENODEV;
 		}
 		hailo_cma = (struct cma *)rmem->priv;

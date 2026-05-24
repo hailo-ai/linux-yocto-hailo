@@ -42,7 +42,7 @@ enum local_mem_ranges {
 
 struct xrp_comm {
     struct mutex lock;
-    void __iomem *comm;
+    void *comm;
     struct completion completion;
     u32 priority;
 };
@@ -62,11 +62,11 @@ struct mem_range {
 };
 
 union mem_ranges {
-    __attribute__((__packed__)) struct {
+    struct {
         struct mem_range ddr[DDR_MEM_RANGES_COUNT];
         struct mem_range local[LOCAL_MEM_RANGES_COUNT];
     };
-    struct mem_range all[0];
+    struct mem_range all[DDR_MEM_RANGES_COUNT + LOCAL_MEM_RANGES_COUNT];
 };
 
 struct comm_buffer {

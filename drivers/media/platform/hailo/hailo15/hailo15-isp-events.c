@@ -19,9 +19,7 @@
 #include "hailo15-isp.h"
 #include "hailo15-isp-events.h"
 
-#define MAX_WAIT_ITERATIONS 200000
-#define WAIT_MICRO_SEC_BOTTOM_RANGE 5
-#define WAIT_MICRO_SEC_TOP_RANGE 10
+#define EVENT_WAIT_TIMEOUT_MS 2000
 
 static int hailo15_isp_event_subscribed(struct video_device *vdev,
 					  uint32_t type, uint32_t id)
@@ -53,19 +51,38 @@ static int hailo15_isp_event_wait_complete(
 	uint8_t complete_idx)
 {
 	struct hailo15_isp_event_pkg *event_shm;
-	int i = 0;
+	int ret;
 
 	event_shm = event_resource->virt_addr;
-	for (i = 0; i < MAX_WAIT_ITERATIONS; i++) {
-		usleep_range(WAIT_MICRO_SEC_BOTTOM_RANGE,
-				 WAIT_MICRO_SEC_TOP_RANGE);
-		if (event_shm->complete == complete_idx)
-			return 0;
-	}
 
-	event_shm->complete++;
-	pr_warn("%s - return EAGAIN\n", __func__);
+	/* Fast path: daemon may have already completed before we check */
+	if ((int8_t)(event_shm->complete - complete_idx) >= 0)
+		return 0;
+
+	/* Sleep until daemon wakes us via ISPIOC_V4L2_EVENT_COMPLETE ioctl,
+	 * or until timeout. The condition re-checks shared memory.
+	 * Use >= (via signed modular arithmetic) so that belated acks
+	 * for previously timed-out events don't cause false matches. */
+	ret = wait_event_timeout(event_resource->wait_q,
+		(int8_t)(event_shm->complete - complete_idx) >= 0,
+		msecs_to_jiffies(EVENT_WAIT_TIMEOUT_MS));
+
+	if (ret > 0)
+		return 0;	/* woken by daemon, condition met */
+	pr_warn("%s - return EAGAIN (timeout after %d ms)\n",
+		__func__, EVENT_WAIT_TIMEOUT_MS);
 	return -EAGAIN;
+}
+
+void hailo15_isp_event_reset_seq(struct hailo15_event_resource *event_resource)
+{
+	struct hailo15_isp_event_pkg *event_shm = event_resource->virt_addr;
+
+	mutex_lock(&event_resource->event_lock);
+	event_resource->kernel_seq = 0;
+	if (event_shm)
+		event_shm->complete = 0;
+	mutex_unlock(&event_resource->event_lock);
 }
 
 int hailo15_isp_post_event(struct video_device *vdev,
@@ -78,7 +95,6 @@ int hailo15_isp_post_event(struct video_device *vdev,
 	struct hailo15_isp_event_pkg *event_shm;
 	struct hailo15_isp_ctrl *isp_ctrl = NULL;
 	struct v4l2_ctrl *ctrl = NULL;
-	uint8_t cur_complete;
 	struct hailo15_isp_device *isp_dev = \
 		container_of(event_resource, struct hailo15_isp_device, event_resource);
 	int ret = 0;
@@ -107,7 +123,6 @@ int hailo15_isp_post_event(struct video_device *vdev,
 
 		mutex_lock(&event_resource->event_lock);
 		event_shm->result = 0;
-		cur_complete = event_shm->complete;
 
 		if (data) {
 			if (data_size == 0 || data_size > HAILO15_EVENT_RESOURCE_DATA_SIZE) {
@@ -115,8 +130,9 @@ int hailo15_isp_post_event(struct video_device *vdev,
 				mutex_unlock(&event_resource->event_lock);
 				return -EINVAL;
 			} else {
+				uint8_t saved_complete = event_shm->complete;
 				memset(event_shm, 0, event_resource->size);
-				event_shm->complete = cur_complete;
+				event_shm->complete = saved_complete;
 
 				if ((event_meta.event_id == HAILO15_DAEMON_ISP_EVENT_S_CTRL ||
 					 event_meta.event_id == HAILO15_DAEMON_ISP_EVENT_G_CTRL)) {
@@ -132,9 +148,10 @@ int hailo15_isp_post_event(struct video_device *vdev,
 			}
 		}
 
+		event_resource->kernel_seq++;
 		v4l2_event_queue(vdev, &event);
 		ret = hailo15_isp_event_wait_complete(event_resource,
-							(uint8_t)(cur_complete + 1));
+							event_resource->kernel_seq);
 		if (ret) {
 			pr_err("%s: post event id: %d timeout\n", __func__, event_meta.event_id);
 		} else {
@@ -143,9 +160,7 @@ int hailo15_isp_post_event(struct video_device *vdev,
 				ret == 0) {
 				BUG_ON(!isp_ctrl);
 				BUG_ON(!ctrl);
-				memcpy(ctrl->p_new.p_u8,
-					   event_shm->data + sizeof(*isp_ctrl),
-					   isp_ctrl->size);
+				memcpy(ctrl->p_new.p_u8, isp_ctrl->data, isp_ctrl->size);
 			}
 		}
 

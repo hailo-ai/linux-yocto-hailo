@@ -51,6 +51,12 @@
 
         csi2rx1: csi-bridge@7c015000 {
             power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_CSI_RX0>;
+            phys = <&dphy_rx>;
+            phy-names = "dphy";
+        };
+
+        rxwrapper1: rxwrapper1@7c014000 {
+            power-domains = <&scmi_devpd HAILO15_SCMI_POWER_DOMAIN_IDX_CSI_RX0>;
         };
 
         dphy_rx: dphy@7c013000 {
@@ -69,6 +75,10 @@
         };
 
         rxwrapper0: rxwrapper0@7c010000 {
+            compatible = "hailo,hailo15l-rxwrapper";
+        };
+
+        rxwrapper1: rxwrapper1@7c014000 {
             compatible = "hailo,hailo15l-rxwrapper";
         };
     };

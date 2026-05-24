@@ -22,5 +22,7 @@ int hailo15_video_post_event(struct video_device *vdev,
 				 struct hailo15_event_resource *event_resource,
 				 int pad, void *data, size_t data_size);
 
+void hailo15_video_event_reset_seq(struct hailo15_event_resource *event_resource);
+
 
 #endif /* __HAILO15_VIDEO_EVENTS_H__ */

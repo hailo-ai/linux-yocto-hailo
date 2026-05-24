@@ -156,7 +156,7 @@ static const struct v4l2_ctrl_config hailo15_isp_2dnr_ctrls[] = {
 		.max = 127,
 	},
 	{
-		/* float 0.1 ~ 12.0*/
+		/* float 0.1 ~ 32.0 */
 		.ops = &hailo15_isp_2dnr_ctrl_ops,
 		.id = HAILO15_ISP_CID_2DNR_SIGMA,
 		.type = V4L2_CTRL_TYPE_INTEGER,
@@ -165,7 +165,7 @@ static const struct v4l2_ctrl_config hailo15_isp_2dnr_ctrls[] = {
 		.name = "isp_2dnr_sigma",
 		.step = 1,
 		.min = 10,
-		.max = 10000,
+		.max = 3200,
 		.def = 10,
 	},
 };
