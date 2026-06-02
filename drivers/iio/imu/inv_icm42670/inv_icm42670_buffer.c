@@ -13,6 +13,7 @@
 #include <linux/regmap.h>
 #include <linux/delay.h>
 #include <linux/iio/iio.h>
+#include <asm/unaligned.h>
 #include <linux/iio/buffer.h>
 
 #include "inv_icm42670.h"
@@ -135,10 +136,7 @@ void inv_icm42670_buffer_update_fifo_period(struct inv_icm42670_state *st)
 	else
 		period_accel = U32_MAX;
 
-	if (period_gyro <= period_accel)
-		period = period_gyro;
-	else
-		period = period_accel;
+	period = min(period_gyro, period_accel);
 
 	st->fifo.period = period;
 }
@@ -264,10 +262,7 @@ int inv_icm42670_buffer_update_watermark(struct inv_icm42670_state *st)
 		else
 			latency = latency_accel - (latency_gyro % latency_accel);
 		/* use the shortest period */
-		if (period_gyro <= period_accel)
-			period = period_gyro;
-		else
-			period = period_accel;
+		period = min(period_gyro, period_accel);
 		/* all this works because periods are multiple of each others */
 		watermark = latency / period;
 		if (watermark < 1)
@@ -462,10 +457,7 @@ out_unlock:
 	mutex_unlock(&st->lock);
 
 	/* sleep maximum required time */
-	if (sleep_sensor > sleep_temp)
-		sleep = sleep_sensor;
-	else
-		sleep = sleep_temp;
+	sleep = max(sleep_sensor, sleep_temp);
 	if (sleep)
 		msleep(sleep);
 
@@ -486,7 +478,6 @@ int inv_icm42670_buffer_fifo_read(struct inv_icm42670_state *st,
 				  unsigned int max)
 {
 	size_t max_count;
-	__be16 *raw_fifo_count;
 	ssize_t i, size;
 	const void *accel, *gyro, *timestamp;
 	const int8_t *temp;
@@ -506,12 +497,11 @@ int inv_icm42670_buffer_fifo_read(struct inv_icm42670_state *st,
 		max_count = max * inv_icm42670_get_packet_size(st);
 
 	/* read FIFO count value */
-	raw_fifo_count = (__be16 *)st->buffer;
 	ret = regmap_bulk_read(st->map, INV_ICM42670_FIFO_COUNTH,
-			       raw_fifo_count, sizeof(*raw_fifo_count));
+			       st->buffer, 2);
 	if (ret)
 		return ret;
-	st->fifo.count = be16_to_cpup(raw_fifo_count);
+	st->fifo.count = get_unaligned_be16(st->buffer);
 
 	/* check and clamp FIFO count value */
 	if (st->fifo.count == 0)

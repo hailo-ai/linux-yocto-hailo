@@ -18,10 +18,10 @@
 
 #define TIMEOUT_US 1000000 /* 1 sec */
 
-int inv_icm42670_switch_on_mclk(struct i2c_client *i2c)
+static int inv_icm42670_switch_on_mclk(struct i2c_client *i2c)
 {
 	int status = 0;
-	uint8_t data;
+	int data;
 	const struct device *dev = &i2c->dev;
 	struct inv_icm42670_state *st;
 
@@ -76,10 +76,10 @@ int inv_icm42670_switch_on_mclk(struct i2c_client *i2c)
 	return status;
 }
 
-int inv_icm42670_switch_off_mclk(struct i2c_client *i2c)
+static int inv_icm42670_switch_off_mclk(struct i2c_client *i2c)
 {
 	int status = 0;
-	uint8_t data;
+	int data;
 	const struct device *dev = &i2c->dev;
 	struct inv_icm42670_state *st;
 
@@ -205,6 +205,7 @@ static int inv_icm42670_regmap_bus_smbus_i2c_write(void *context,
 	case MREG3:
 		return inv_icm42670_write_mclk_reg(i2c, regaddr, count, val);
 	default:
+		break;
 	}
 
 	return -EFAULT;
@@ -222,7 +223,7 @@ static int inv_icm42670_regmap_i2c_smbus_i2c_read(void *context,
 	uint8_t *val = &((uint8_t *)val_buf)[0];
 	enum inv_icm42670_bank bank = (enum inv_icm42670_bank)(regaddr >> 8);
 	uint8_t len = val_size;
-	size_t ret = 0;
+	int ret = 0;
 
 	if (reg_size != 2 || val_size < 1)
 		return -EINVAL;

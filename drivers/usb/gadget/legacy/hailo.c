@@ -45,10 +45,10 @@
     dedicated descriptors, vendor requests, and mode-specific behavior.
 */
 
-#define DRIVER_DESC "ASUSTek Computer, Inc. Hailo Composite USB Gadget"
+#define DRIVER_DESC "UGen300 USB Loader"
 
 #define HAILO_VENDOR_ID     0x0B05  /* ASUSTek Computer, Inc. */
-#define HAILO_PRODUCT_ID    0x1D6F  /* Hailo AI Gadget */
+#define HAILO_PRODUCT_ID    0x1D6F  /* Hailo USB loader */
 #define HAILO_DEVICE_BCD    0x0100  /* Device release number */
 
 /* USB String Descriptor Indices */

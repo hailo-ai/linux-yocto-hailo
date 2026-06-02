@@ -1278,7 +1278,7 @@ static int cqspi_mem_process(struct spi_mem *mem, const struct spi_mem_op *op)
  * @cqspi: 	Pointer to quad spi controller (struct cqspi_st)
  * @enable: true (Enable legacy mode operation), false (Disbale legacy mode operation).
  */
-int cqspi_legacy_mode_ctrl(struct cqspi_st *cqspi, bool enable)
+static int cqspi_legacy_mode_ctrl(struct cqspi_st *cqspi, bool enable)
 {
 	u32 ctrl_reg, new_ctrl_reg;
 
@@ -1720,7 +1720,7 @@ exit:
 	return ret;
 }
 
-int cqspi_prepare_message(struct spi_master *master, struct spi_message *message)
+static int cqspi_prepare_message(struct spi_master *master, struct spi_message *message)
 {
 	struct cqspi_st *cqspi = spi_master_get_devdata(master);
 	struct cqspi_flash_pdata *f_pdata;

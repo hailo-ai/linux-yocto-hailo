@@ -6,9 +6,7 @@
  *
  * Protocol:
  *   1. Send HAILO_REQ__SWU_LOAD control request with file size (or 0 for large files)
- *   2. Stream SWU data via bulk OUT endpoint in 8KB chunks
- *   3. Send HAILO_REQ__SWU_FINISH control request to signal completion
- *   4. Verify status via HAILO_REQ__SWU_GET_STATUS
+ *   2. Stream SWU data via bulk OUT endpoint in 64KB chunks
  *
  * The kernel driver streams the data directly to /initrd.image for 
  * subsequent loading via initrd mechanism.
@@ -92,7 +90,6 @@ static const char *exit_code_to_string(int exit_code)
                                            *   - invalid:xxxx  Invalid state or error */
 #define HAILO_REQ__SWU_GET_INFO     0x11  /* Get SWU model information */
 #define HAILO_REQ__SWU_LOAD         0x12  /* Load SWU image command */
-#define HAILO_REQ__SWU_FINISH       0x13  /* Finish SWU loading */
 #define HAILO_REQ__SWU_CTRL         0x15  /* SWU control operations */
 #define HAILO_REQ__SWU_SYS_REBOOT   0x16  /* Request system reboot */
 
@@ -428,9 +425,6 @@ static int vendor_request(hailo_device_t *dev,
 	    break;
     case HAILO_REQ__SWU_LOAD:
 	    req_name = "LOAD_SWU";
-	    break;
-    case HAILO_REQ__SWU_FINISH:
-	    req_name = "FINISH_SWU";
 	    break;
     case HAILO_REQ__SWU_CTRL:
 	    req_name = "SWU_CTRL";
@@ -943,62 +937,6 @@ static int wait_for_swu_execution_completion(hailo_device_t *dev, int timeout_se
     return -ETIMEDOUT; // Timeout
 }
 
-static int gadget_swu__finish_image_upload(hailo_device_t *dev)
-{
-    int verify_ret = -1;
-    int attempts = 0;
-    int ret;
-    unsigned char status[64] = {0};
-    const int max_attempts = 15; // Up to 30 seconds total
-
-    printf("Finishing SWU image upload command\n");
-    ret = vendor_request(dev, HAILO_REQ__SWU_FINISH, 0, 0, NULL, 0, USB_DIR_OUT);
-    if (ret < 0) {
-        fprintf(stderr, "✗ FINISH_SWU request failed: unable to signal upload completion\n");
-        return ret;
-    }
-    
-    printf("✓ FINISH_SWU request completed successfully\n");
-    printf("Waiting for device to write uploaded SWU image to file...\n");
-        
-    // Wait longer for device to process large files - writing to flash can be slow
-    // Retry status check with increasing delays for up to 30 seconds total
-    
-    for (attempts = 0; attempts < max_attempts; attempts++) {
-        // Check for device disconnection before delay and status check
-        if (check_device_disconnection("finish upload status check")) {
-            return -1;
-        }
-        
-        // Progressive delay: 10msec, 1s, 2s, 2s, 2s, ... (capped at 2s per attempt)
-        int delay_usec = (attempts == 0) ? 10000 : (attempts == 1) ? 1000000 : 2000000;
-        usleep(delay_usec);
-        
-        // Process USB events during delay
-        if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
-            struct timeval timeout = {0, 0}; // Non-blocking
-            libusb_handle_events_timeout(dev->ctx, &timeout);
-        }
-        
-        verify_ret = vendor_request(dev, HAILO_REQ__SWU_GET_STATUS, 0, 0, status, sizeof(status), USB_DIR_IN);
-        if (verify_ret >= 0) {  // Success means any non-negative return (bytes transferred)
-            printf("✓ Device status after upload: %s\n", (char *)status);
-            break;
-        } else if (verbose) {
-            printf("Status check attempt %d/%d failed (device may be busy writing file)...\n", attempts + 1, max_attempts);
-        }
-    }
-    
-    if (verify_ret < 0) {
-        printf("⚠ Could not retrieve final device status (device may still be processing)\n");
-        printf("  This is normal for large files - the upload likely succeeded\n");
-        // Don't treat this as a failure - the FINISH_SWU request succeeded
-    }
-    
-    // Return success (0) since FINISH_SWU completed successfully
-    return 0;
-}
-
 static int upload_image_file(hailo_device_t *dev, const char *filename)
 {
     FILE *file;
@@ -1194,17 +1132,6 @@ static int start_sw_update(hailo_device_t *dev, const char *filename)
     if (upload_image_file(dev, filename) < 0) {
         return -1;
     }
-
-    // Critical delay: Ensure all bulk transfers are fully processed before calling FINISH_SWU
-    printf("Ensuring all transfers are processed...\n");
-    usleep(250000);  // 250ms delay to let USB pipeline clear
-
-    // Finish upload
-    if (gadget_swu__finish_image_upload(dev) < 0) {
-        return -1;
-    }
-
-    usleep(500000);  // Wait 500ms for device to process completion
 
     // Wait for the actual swupdate process to complete (if requested)
     if (wait_for_completion) {

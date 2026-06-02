@@ -553,17 +553,23 @@ static void hailo_rfs_load_file_work_fn(struct work_struct *work)
         break;
         
     case FILE_OP_WRITE:
-        /* Open file and write complete vmalloc buffer - called after all chunks received */
+        /* Open file and write complete vmalloc buffer - called after all chunks received.
+         * File is created with write-only permissions (0200). After the write completes,
+         * permissions are changed to 0644 so wait_for_initrd_image() can detect readability.
+         */
         if (rfs->rfs_vmalloc_buf && rfs->rfs_image_received > 0) {
-            /* Open file for writing */
             const char *filename = "/initrd.image";
-            rfs->rfs_file = filp_open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+
+            /* Create file with write-only permission - wait_for_initrd_image() checks
+             * for read permission before accepting the file.
+             */
+            rfs->rfs_file = filp_open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0200);
             if (IS_ERR(rfs->rfs_file)) {
                 pr_err("hailo_rfs: failed to open %s: %ld\n", filename, PTR_ERR(rfs->rfs_file));
-                rfs->rfs_file = NULL;
                 rfs->rfs_file_result = PTR_ERR(rfs->rfs_file);
+                rfs->rfs_file = NULL;
             } else {
-                /* Write complete vmalloc buffer to file */
+                /* Write complete vmalloc buffer */
                 loff_t pos = 0;
                 ssize_t written = kernel_write(rfs->rfs_file, rfs->rfs_vmalloc_buf, rfs->rfs_image_received, &pos);
                 if (written == rfs->rfs_image_received) {
@@ -573,8 +579,21 @@ static void hailo_rfs_load_file_work_fn(struct work_struct *work)
                     pr_err("hailo_rfs: failed to write RFS image: %zd/%zu\n", written, rfs->rfs_image_received);
                     rfs->rfs_file_result = -EIO;
                 }
-                
-                /* Close file immediately after writing */
+
+                /* After successful write, set read permissions so wait_for_initrd_image()
+                 * can detect the file is ready.
+                 */
+                if (rfs->rfs_file_result == 0) {
+                    struct iattr newattrs;
+                    struct inode *inode = file_inode(rfs->rfs_file);
+
+                    inode_lock(inode);
+                    newattrs.ia_valid = ATTR_MODE;
+                    newattrs.ia_mode = 0644;
+                    notify_change(&init_user_ns, rfs->rfs_file->f_path.dentry, &newattrs, NULL);
+                    inode_unlock(inode);
+                }
+
                 filp_close(rfs->rfs_file, NULL);
                 rfs->rfs_file = NULL;
                 pr_info("hailo_rfs: closed %s after writing RFS image\n", filename);
@@ -583,8 +602,8 @@ static void hailo_rfs_load_file_work_fn(struct work_struct *work)
             pr_err("hailo_rfs: write operation with no vmalloc buffer\n");
             rfs->rfs_file_result = -EINVAL;
         }
-        
-        /* Free vmalloc buffer after successful write */
+
+        /* Free vmalloc buffer after write */
         hailo_rfs_image_buf_free(rfs);
         break;
     case FILE_OP_FREE_VMALLOC:

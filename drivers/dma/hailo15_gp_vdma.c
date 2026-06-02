@@ -2,7 +2,7 @@
 /*
  * Linux device driver for GP DMA Controller
  *
- * Copyright (c) 2019 - 2024 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 #include <linux/of_platform.h>
 #include <linux/bitops.h>
@@ -29,8 +29,8 @@
 #define HAILO15_VDMA_CHANNEL_DEPTH 16
 #define MAX_DESC_COUNT (1 << HAILO15_VDMA_CHANNEL_DEPTH)
 
-#define VDMA_DESC_ADDRESS_BITS_16_TO_31__MASK (0x00000000FFFF0000)
-#define VDMA_DESC_ADDRESS_BITS_32_TO_63__MASK (0xFFFFFFFF00000000)
+#define VDMA_DESC_ADDRESS_BITS_16_TO_31__MASK (0x00000000FFFF0000ULL)
+#define VDMA_DESC_ADDRESS_BITS_32_TO_63__MASK (0xFFFFFFFF00000000ULL)
 #define VDMA_DESC_ADDRESS_BITS_16_TO_31__SHIFT (16)
 #define VDMA_DESC_ADDRESS_BITS_32_TO_63__SHIFT (32)
 #define VDMA_DESC_ADDRESS_BITS_16_TO_31__GET(address)                          \
@@ -39,6 +39,49 @@
 #define VDMA_DESC_ADDRESS_BITS_32_TO_63__GET(address)                          \
 	(((uint64_t)(address)&VDMA_DESC_ADDRESS_BITS_32_TO_63__MASK) >>        \
 	 VDMA_DESC_ADDRESS_BITS_32_TO_63__SHIFT)
+
+static inline u32 __vdma_field_read(const volatile void __iomem *addr, u32 mask, u32 shift)
+{
+	return (readl(addr) & mask) >> shift;
+}
+
+static inline void __vdma_field_modify(volatile void __iomem *addr, u32 mask, u32 shift,
+				     u32 value)
+{
+	writel((readl(addr) & ~mask) | (((u32)value << shift) & mask), addr);
+}
+
+static inline void __vdma_field_set(volatile void __iomem *addr, u32 mask)
+{
+	writel(readl(addr) | mask, addr);
+}
+
+static inline void __vdma_field_clr(volatile void __iomem *addr, u32 mask)
+{
+	writel(readl(addr) & ~mask, addr);
+}
+
+#define VDMA_FIELD_READ(addr_, fieldprefix) \
+	__vdma_field_read((addr_), \
+			  DRAM_DMA_IP_CONFIG__##fieldprefix##__MASK, \
+			  DRAM_DMA_IP_CONFIG__##fieldprefix##__SHIFT)
+
+#define VDMA_FIELD_MODIFY(addr_, fieldprefix, value) \
+	__vdma_field_modify((addr_), \
+			    DRAM_DMA_IP_CONFIG__##fieldprefix##__MASK, \
+			    DRAM_DMA_IP_CONFIG__##fieldprefix##__SHIFT, \
+			    (value))
+
+#define VDMA_FIELD_SET(addr_, fieldprefix) \
+	__vdma_field_set((addr_), DRAM_DMA_IP_CONFIG__##fieldprefix##__MASK)
+
+#define VDMA_FIELD_CLR(addr_, fieldprefix) \
+	__vdma_field_clr((addr_), DRAM_DMA_IP_CONFIG__##fieldprefix##__MASK)
+
+#define VDMA_ENGINE_FIELD_READ(addr_, fieldprefix) \
+	__vdma_field_read((addr_), \
+			  DRAM_DMA_SW_ENGINE_CONFIG__##fieldprefix##__MASK, \
+			  DRAM_DMA_SW_ENGINE_CONFIG__##fieldprefix##__SHIFT)
 
 static const struct of_device_id hailo15_gp_vdma_of_ids[] = {
 	{
@@ -79,10 +122,10 @@ static void hailo15_gp_vdma_start_channel(struct hailo15_gp_vdma_chan *chan)
 	addr_h = VDMA_DESC_ADDRESS_BITS_32_TO_63__GET(
 		chan->src_desc_list.dma_address);
 
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG2__SRCDESC_ADDRESS_LOW__MODIFY(
-		chan->regs->channel_src_cfg2, addr_l);
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG3__SRCDESC_ADDRESS_HIGH__MODIFY(
-		chan->regs->channel_src_cfg3, addr_h);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg2,
+			  CHANNEL_SRC_CFG2__SRCDESC_ADDRESS_LOW, addr_l);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg3,
+			  CHANNEL_SRC_CFG3__SRCDESC_ADDRESS_HIGH, addr_h);
 
 	// set the destination address
 	addr_l = VDMA_DESC_ADDRESS_BITS_16_TO_31__GET(
@@ -90,33 +133,31 @@ static void hailo15_gp_vdma_start_channel(struct hailo15_gp_vdma_chan *chan)
 	addr_h = VDMA_DESC_ADDRESS_BITS_32_TO_63__GET(
 		chan->dest_desc_list.dma_address);
 
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG2__DESTDESC_ADDRESS_LOW__MODIFY(
-		chan->regs->channel_dst_cfg2, addr_l);
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG3__DESTDESC_ADDRESS_HIGH__MODIFY(
-		chan->regs->channel_dst_cfg3, addr_h);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg2,
+			  CHANNEL_DST_CFG2__DESTDESC_ADDRESS_LOW, addr_l);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg3,
+			  CHANNEL_DST_CFG3__DESTDESC_ADDRESS_HIGH, addr_h);
 
 	// Start
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__START_ABORT__SET(
-		chan->regs->channel_dst_cfg0);
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__SET(
-		chan->regs->channel_src_cfg0);
+	VDMA_FIELD_SET(&chan->regs->channel_dst_cfg0, CHANNEL_DST_CFG0__START_ABORT);
+	VDMA_FIELD_SET(&chan->regs->channel_src_cfg0, CHANNEL_SRC_CFG0__START_ABORT);
 
 	// set the SRCDESCNUM_AVAILABLE DESTDESCNUM_AVAILABLE
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__SRCDESCNUM_AVAILABLE__MODIFY(
-		chan->regs->channel_src_cfg0, chan->src_desc_list.desc_count);
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__DESTDESCNUM_AVAILABLE__MODIFY(
-		chan->regs->channel_dst_cfg0, chan->dest_desc_list.desc_count);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg0,
+			  CHANNEL_SRC_CFG0__SRCDESCNUM_AVAILABLE,
+			  chan->src_desc_list.desc_count);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg0,
+			  CHANNEL_DST_CFG0__DESTDESCNUM_AVAILABLE,
+			  chan->dest_desc_list.desc_count);
 }
 
 static void hailo15_gp_vdma_stop_channel(struct hailo15_gp_vdma_chan *chan)
 {
 	// Abort
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
-		chan->regs->channel_src_cfg0);
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
-		chan->regs->channel_dst_cfg0);
+	VDMA_FIELD_CLR(&chan->regs->channel_src_cfg0, CHANNEL_SRC_CFG0__START_ABORT);
+	VDMA_FIELD_CLR(&chan->regs->channel_dst_cfg0, CHANNEL_SRC_CFG0__START_ABORT);
 }
-void hailo15_gp_vdma_desc_list_release(
+static void hailo15_gp_vdma_desc_list_release(
 	struct device *dev, struct hailo_descriptors_list_buffer *descriptors)
 {
 	if (descriptors->kernel_address) {
@@ -128,7 +169,7 @@ void hailo15_gp_vdma_desc_list_release(
 	}
 }
 
-void hailo_vdma_program_descriptor(struct hailo15_gp_vdma_descriptor *descriptor,
+static void hailo_vdma_program_descriptor(struct hailo15_gp_vdma_descriptor *descriptor,
 				   uint64_t dma_address, size_t page_size,
 				   uint8_t data_id, bool is_last)
 {
@@ -201,16 +242,16 @@ hailo15_gp_vdma_prep_memcpy(struct dma_chan *dchan, dma_addr_t dma_dst,
 	bool is_last = false;
 
 	if (!dchan) {
-		dev_err(chan->dev, "No valid channel\n");
+		pr_err("hailo15_gp_vdma: No valid channel\n");
 		return NULL;
 	}
+
+	chan = to_hailo15_gp_vdma_chan(dchan);
 
 	if (!len) {
 		dev_err(chan->dev, "No copy len\n");
 		return NULL;
 	}
-
-	chan = to_hailo15_gp_vdma_chan(dchan);
 
 	chan->idle = false;
 
@@ -344,8 +385,10 @@ static void hailo15_gp_vdma_check_for_errors(struct hailo15_gp_vdma_chan *chan)
 	uint32_t num_available = 0, num_ongoing = 0;
 	uint32_t src_error = 0, dest_error = 0;
 	/* Check no indications that a source or destination error occurred */
-	dest_error = DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG2__WRITE_DATA_ERROR__READ(chan->regs->channel_src_cfg2);
-	src_error = DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG2__WRITE_DATA_ERROR__READ(chan->regs->channel_dst_cfg2);
+	dest_error = VDMA_FIELD_READ(&chan->regs->channel_src_cfg2,
+				     CHANNEL_SRC_CFG2__WRITE_DATA_ERROR);
+	src_error = VDMA_FIELD_READ(&chan->regs->channel_dst_cfg2,
+				    CHANNEL_DST_CFG2__WRITE_DATA_ERROR);
 	if (dest_error || src_error) {
 		chan->error = true;
 		dev_err(chan->dev,
@@ -355,26 +398,22 @@ static void hailo15_gp_vdma_check_for_errors(struct hailo15_gp_vdma_chan *chan)
 	
 	/* once transaction ended num processed and num availble 
 	   should be zero for both source and destination  */
-	num_available =
-		DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__SRCDESCNUM_AVAILABLE__READ(
-			chan->regs->channel_src_cfg0);
-	
-	num_ongoing =
-		DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG1__SRCDESCNUM_ONGOING__READ(
-			chan->regs->channel_src_cfg1);
+	num_available = VDMA_FIELD_READ(&chan->regs->channel_src_cfg0,
+					CHANNEL_SRC_CFG0__SRCDESCNUM_AVAILABLE);
+
+	num_ongoing = VDMA_FIELD_READ(&chan->regs->channel_src_cfg1,
+				      CHANNEL_SRC_CFG1__SRCDESCNUM_ONGOING);
 	
 	if (num_available != num_ongoing){
 		chan->error = true;
 		dev_err(chan->dev, "Error, channel%d src desc missmatch, excpected: %d got: %d \n", chan->id, num_available, num_ongoing);
 	}
 	
-	num_available =
-		DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__DESTDESCNUM_AVAILABLE__READ(
-			chan->regs->channel_dst_cfg0);
+	num_available = VDMA_FIELD_READ(&chan->regs->channel_dst_cfg0,
+					CHANNEL_DST_CFG0__DESTDESCNUM_AVAILABLE);
 
-	num_ongoing =
-		DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG1__DESTDESCNUM_ONGOING__READ(
-			chan->regs->channel_dst_cfg1);
+	num_ongoing = VDMA_FIELD_READ(&chan->regs->channel_dst_cfg1,
+				      CHANNEL_DST_CFG1__DESTDESCNUM_ONGOING);
 
 	if (num_available != num_ongoing) {
 		chan->error = true;
@@ -400,16 +439,16 @@ static irqreturn_t hailo15_gp_vdma_irqhandler(int irq, void *data)
 	irqreturn_t return_value = IRQ_NONE;
 	hailo15_engine_config_regs __iomem *engine_registers = hdev->regs;
 	uint32_t i = 0;
-	channels_bitmap =
-		DRAM_DMA_SW_ENGINE_CONFIG__ENGINE_AP_INTR_STATUS__VAL__READ(
-			engine_registers->engine_ap_intr_status[hdev->irq_id]);
+	channels_bitmap = VDMA_ENGINE_FIELD_READ(
+		&engine_registers->engine_ap_intr_status[hdev->irq_id],
+		ENGINE_AP_INTR_STATUS__VAL);
 	dev_dbg(hdev->dev, "SW DMA GOT IRQ: %d channel_bitmap %u \n", irq,
 		channels_bitmap);
 
 	for (i = 0; i < MAX_CHANNELS_PER_DEVICE; i++) {
 		if (channels_bitmap & BIT(i)) {
-			engine_registers->engine_ap_intr_w1c[hdev->irq_id] =
-				BIT(i);
+			writel(BIT(i),
+			       &engine_registers->engine_ap_intr_w1c[hdev->irq_id]);
 			if (hdev->chan[i]) {
 				hailo15_gp_vdma_channel_handler(hdev->chan[i]);
 			}
@@ -427,8 +466,10 @@ hailo15_gp_vdma_channel_irq_mask_enable(struct hailo15_gp_vdma_device *hdev,
 					int chan_id)
 {
 	hailo15_engine_config_regs __iomem *engine_registers = hdev->regs;
+	volatile void __iomem *intr_mask = &engine_registers->engine_ap_intr_mask[hdev->irq_id];
+
 	// Setup the irq mask
-	engine_registers->engine_ap_intr_mask[hdev->irq_id] |= BIT(chan_id);
+	writel(readl(intr_mask) | BIT(chan_id), intr_mask);
 }
 
 static void hailo15_gp_vdma_channel_init(struct hailo15_gp_vdma_chan *chan)
@@ -436,27 +477,25 @@ static void hailo15_gp_vdma_channel_init(struct hailo15_gp_vdma_chan *chan)
 	chan->idle = true;	
 
 	/* Setting depth will affect the max desc that is 2^DEPTH */
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__SRC_DEPTH__MODIFY(
-		chan->regs->channel_src_cfg0, HAILO15_VDMA_CHANNEL_DEPTH);
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG0__DEST_DEPTH__MODIFY(
-		chan->regs->channel_dst_cfg0, HAILO15_VDMA_CHANNEL_DEPTH);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg0,
+			  CHANNEL_SRC_CFG0__SRC_DEPTH, HAILO15_VDMA_CHANNEL_DEPTH);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg0,
+			  CHANNEL_DST_CFG0__DEST_DEPTH, HAILO15_VDMA_CHANNEL_DEPTH);
 
 	// set addr_h and addr_l to 0 for src and dst
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG2__SRCDESC_ADDRESS_LOW__MODIFY(
-		chan->regs->channel_src_cfg2, 0);
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG3__SRCDESC_ADDRESS_HIGH__MODIFY(
-		chan->regs->channel_src_cfg3, 0);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg2,
+			  CHANNEL_SRC_CFG2__SRCDESC_ADDRESS_LOW, 0);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_src_cfg3,
+			  CHANNEL_SRC_CFG3__SRCDESC_ADDRESS_HIGH, 0);
 
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG2__DESTDESC_ADDRESS_LOW__MODIFY(
-		chan->regs->channel_dst_cfg2, 0);
-	DRAM_DMA_IP_CONFIG__CHANNEL_DST_CFG3__DESTDESC_ADDRESS_HIGH__MODIFY(
-		chan->regs->channel_dst_cfg3, 0);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg2,
+			  CHANNEL_DST_CFG2__DESTDESC_ADDRESS_LOW, 0);
+	VDMA_FIELD_MODIFY(&chan->regs->channel_dst_cfg3,
+			  CHANNEL_DST_CFG3__DESTDESC_ADDRESS_HIGH, 0);
 
 	/* Reset the channel */
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
-		chan->regs->channel_src_cfg0);
-	DRAM_DMA_IP_CONFIG__CHANNEL_SRC_CFG0__START_ABORT__CLR(
-		chan->regs->channel_dst_cfg0);
+	VDMA_FIELD_CLR(&chan->regs->channel_src_cfg0, CHANNEL_SRC_CFG0__START_ABORT);
+	VDMA_FIELD_CLR(&chan->regs->channel_dst_cfg0, CHANNEL_SRC_CFG0__START_ABORT);
 	
 }
 
@@ -617,12 +656,13 @@ static int hailo15_gp_vdma_probe(struct platform_device *pdev)
 		goto out_free;
 	}
 	
-	hdev->irq_id = GP_DMA_AP_INT_0_IRQ_ID; 
+	hdev->irq_id = GP_DMA_AP_INT_0_IRQ_ID;
 	hdev->irq = irq_of_parse_and_map(pdev->dev.of_node, hdev->irq_id);
 	if (hdev->irq < 0) {
 		dev_err(&pdev->dev, "Error receiving irq for %pOF. err %d\n",
 			pdev->dev.of_node, hdev->irq);
-		return hdev->irq;
+		err = hdev->irq;
+		goto out_free;
 	}
 
 	dma_cap_set(DMA_MEMCPY, hdev->common.cap_mask);

@@ -30,6 +30,7 @@
 #include <linux/media-bus-format.h>
 #include <media/v4l2-fwnode.h>
 #include "hailo15-media.h"
+#include "hailo15-rxwrapper.h"
 #include "common.h"
 
 #define HAILO_RXWRAPPER_NAME "hailo-rxwrapper"
@@ -362,7 +363,7 @@ struct hailo15_rxwrapper_priv {
 	const struct rxwrapper_config *rxwrapper_cfg;
 	uint64_t vision_ss_null_addr;
 	void *private_data[HAILO15_VID_GRP_MAX];
-	int id; /* rxwrapper id: 0/1/... */
+	u32 id; /* rxwrapper id: 0/1/... */
 	int irq;
 	int num_exposures;
 	u64 frame_count;
@@ -987,7 +988,7 @@ static inline uint32_t hailo15_get_used_pipes(
 static void hailo15_rxwrapper_disable_p2a(struct v4l2_subdev *sd, struct hailo15_rxwrapper_priv *hailo15_rxwrapper)
 {
 	int i, pipe, real_pipe;
-	int csi = hailo15_rxwrapper->id;
+	u32 csi = hailo15_rxwrapper->id;
 
 	real_pipe = hailo15_grp_id_to_pipe_id(sd->grp_id);
 
@@ -1017,7 +1018,7 @@ static void hailo15_rxwrapper_disable_p2a(struct v4l2_subdev *sd, struct hailo15
 static int hailo15_rxwrapper_set_stream_p2a(struct v4l2_subdev *sd, int enable, struct hailo15_rxwrapper_priv *hailo15_rxwrapper, struct v4l2_subdev *remote_src_subdev)
 {
 	int i, pipe, real_pipe, ret = 0;
-	int csi = hailo15_rxwrapper->id;
+	u32 csi = hailo15_rxwrapper->id;
 
 	/* Case Pixel2Axi */
 	real_pipe = hailo15_grp_id_to_pipe_id(sd->grp_id);
@@ -2008,7 +2009,7 @@ static irqreturn_t hailo15_rxwrapper_irq_handler(int irq, void *arg)
 	bool first_hdr_frame = false;
 
 	/* NOTE: each rxwrapper handles its own CSI */
-	int csi = hailo15_rxwrapper->id;
+	u32 csi = hailo15_rxwrapper->id;
 
 	/* The interrupt status for current CSI channel */
 	int_status = hailo15_buffer_ready_int_status(hailo15_rxwrapper);
@@ -2377,10 +2378,7 @@ static int hailo15_rxwrapper_remove(struct platform_device *pdev)
 		platform_get_drvdata(pdev);
 	struct hailo15_dma_ctx *ctx =
 		v4l2_get_subdevdata(&hailo15_rxwrapper->sd);
-	struct v4l2_subdev *subdev;
-	struct media_pad *pad;
 
-	mutex_destroy(&hailo15_rxwrapper->lock);
 	hailo15_media_entity_clean(&hailo15_rxwrapper->sd.entity);
 	v4l2_device_unregister_subdev(&hailo15_rxwrapper->sd);
 	hailo15_irq_work_queue_release(hailo15_rxwrapper);
@@ -2393,12 +2391,8 @@ static int hailo15_rxwrapper_remove(struct platform_device *pdev)
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	pad = &hailo15_rxwrapper->pads[RXWRAPPER_SINK_PAD_0];
-	if (pad)
-		pad = media_entity_remote_pad(pad);
-	subdev = media_entity_to_v4l2_subdev(pad->entity);
+	mutex_destroy(&hailo15_rxwrapper->lock);
 
-	kfree(hailo15_rxwrapper);
 	hailo15_rxwrapper_dma_ctx_clean_all(ctx);
 	kfree(ctx);
 	return 0;
@@ -2420,6 +2414,124 @@ static void trace_hailo15_driver_error(const char* driver_name, uint32_t err, ch
 	va_end(args);
 	trace_hailo15_driver_error_raw(driver_name, err, error_msg);
 }
+
+
+/*
+ * Public helpers exposed to sister drivers (hailo15-dphy) for shared-DPHY
+ * 2-clock-lane bring-up. Operate on the rxwrapper's CSI IP_CTRL register
+ * via the existing per-SoC offset table.
+ */
+#define HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SHIFT     0
+#define HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_WIDTH     3
+#define HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SINGLE    0
+#define HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_DUAL      2
+#define HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_SHIFT    17
+#define HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_WIDTH    1
+
+static struct hailo15_rxwrapper_priv *
+hailo15_rxwrapper_priv_from_dev(struct device *dev)
+{
+	struct platform_device *pdev;
+
+	if (!dev)
+		return NULL;
+	pdev = to_platform_device(dev);
+	if (!pdev)
+		return NULL;
+	return platform_get_drvdata(pdev);
+}
+
+bool hailo15_rxwrapper_is_dual_link_active(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv =
+		hailo15_rxwrapper_priv_from_dev(dev);
+	u32 offset, ipconfig, lane_rstb;
+
+	if (!priv || !priv->base || !priv->rxwrapper_cfg)
+		return false;
+
+	offset = priv->rxwrapper_cfg->rxwrapper_csi_ip_ctrl_offset;
+	ipconfig = hailo15_rxwrapper_read_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_WIDTH);
+	lane_rstb = hailo15_rxwrapper_read_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_WIDTH);
+
+	return ipconfig == HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_DUAL && lane_rstb;
+}
+EXPORT_SYMBOL_GPL(hailo15_rxwrapper_is_dual_link_active);
+
+int hailo15_rxwrapper_dual_link_assert_cmn_reset(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv =
+		hailo15_rxwrapper_priv_from_dev(dev);
+	u32 offset;
+	int ret;
+
+	/* priv NULL = sister driver still mid-probe (drvdata set late);
+	 * defer so the caller (dphy) retries instead of failing fatally.
+	 */
+	if (!priv)
+		return -EPROBE_DEFER;
+	if (!priv->base || !priv->rxwrapper_cfg)
+		return -EINVAL;
+
+	offset = priv->rxwrapper_cfg->rxwrapper_csi_ip_ctrl_offset;
+	ret = hailo15_rxwrapper_write_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_WIDTH, 0);
+	if (ret)
+		return ret;
+	return hailo15_rxwrapper_write_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_WIDTH,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_DUAL);
+}
+EXPORT_SYMBOL_GPL(hailo15_rxwrapper_dual_link_assert_cmn_reset);
+
+int hailo15_rxwrapper_dual_link_release_cmn_reset(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv =
+		hailo15_rxwrapper_priv_from_dev(dev);
+	u32 offset;
+
+	if (!priv)
+		return -EPROBE_DEFER;
+	if (!priv->base || !priv->rxwrapper_cfg)
+		return -EINVAL;
+
+	offset = priv->rxwrapper_cfg->rxwrapper_csi_ip_ctrl_offset;
+	return hailo15_rxwrapper_write_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_WIDTH, 1);
+}
+EXPORT_SYMBOL_GPL(hailo15_rxwrapper_dual_link_release_cmn_reset);
+
+int hailo15_rxwrapper_restore_single_link(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv =
+		hailo15_rxwrapper_priv_from_dev(dev);
+	u32 offset;
+	int ret;
+
+	if (!priv)
+		return -EPROBE_DEFER;
+	if (!priv->base || !priv->rxwrapper_cfg)
+		return -EINVAL;
+
+	offset = priv->rxwrapper_cfg->rxwrapper_csi_ip_ctrl_offset;
+	ret = hailo15_rxwrapper_write_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_WIDTH,
+		HAILO15_RXW_IP_CTRL_IPCONFIG_CMN_SINGLE);
+	if (ret)
+		return ret;
+	return hailo15_rxwrapper_write_field(priv, offset,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_SHIFT,
+		HAILO15_RXW_IP_CTRL_LANE_RSTB_CMN_WIDTH, 1);
+}
+EXPORT_SYMBOL_GPL(hailo15_rxwrapper_restore_single_link);
 
 
 static struct platform_driver hailo15_rxwrapper_driver = {

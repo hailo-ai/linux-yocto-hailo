@@ -87,7 +87,7 @@ struct hailo_soc {
 	bool host_current_limit_sent_flag;
 };
 
-#define H15__SCU_BOOT_BIT_MASK (3)
+#define H15__SCU_BOOT_BIT_MASK (7)
 
 static const char *hailo15_boot_options[] = {
     [BOOT_SOURCE_BOOTSTRAP] = "BOOTSTRAP",
@@ -754,12 +754,15 @@ static int hailo_soc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
-	if (!soc_dev_attr)
-		return -ENOMEM;
+	if (!soc_dev_attr) {
+		ret = -ENOMEM;
+		goto err_free_hailo_soc;
+	}
 
 	if (of_property_read_string(np, "compatible", &compat) != 0) {
 		dev_err(&pdev->dev, "Failed to get device compatible\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_free_attr;
 	}
 
 	hailo_soc->host_current_limit_sent_flag = false;
@@ -775,7 +778,8 @@ static int hailo_soc_probe(struct platform_device *pdev)
 		soc_dev_attr->machine = "Hailo-12L";
 	else {
 		dev_err(&pdev->dev, "Invalid compatible\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_free_attr;
 	}
 
 	soc_dev_attr->custom_attr_group = hailo_groups[0];
@@ -783,44 +787,44 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	ret = hailo_soc_fill_fuse_and_chip_serial_files(&hailo_soc->fuse_file, &hailo_soc->chip_serial_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to fill fuse info and chip serial number\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_soc_fill_mbist_status_file(&hailo_soc->mbist_status_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to mbist status\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_soc_fill_identification_attributes_file(&hailo_soc->identification_attributes_file);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to fill identification attributes\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_soc_fill_sku_ids(hailo_soc, compat);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to fill product id\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_soc_validate_product_id(hailo_soc, soc_dev_attr->machine);
 	if (ret) {
 		dev_err(&pdev->dev, "Machine %s does not support product id %u\n",
 			soc_dev_attr->machine, hailo_soc->product_id);
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_ops->get_boot_info(&hailo_soc->boot_info);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to get boot info\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	ret = hailo_ops->send_components_version(&hailo_soc->components_version);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to get fw versions\n");
-		return ret;
+		goto err_free_attr;
 	}
 
 	dev_info(&pdev->dev, "scu version %d.%d.%d, uboot version %d.%d.%d, linux version %d.%d.%d\n",
@@ -830,9 +834,10 @@ static int hailo_soc_probe(struct platform_device *pdev)
 
 	soc_dev = soc_device_register(soc_dev_attr);
 	if (IS_ERR(soc_dev)) {
-		kfree(soc_dev_attr);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto err_free_attr;
 	}
+	/* soc_dev_attr is owned by soc_dev from this point on. */
 
 	dev = soc_device_to_device(soc_dev);
 
@@ -840,21 +845,21 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	ret = sysfs_create_group(&dev->kobj, &hailo_boot_info_group);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create boot_info group\n");
-		return ret;
+		goto err_unregister_soc;
 	}
 
 	// Create attribute group "hailo_versions" under hailo soc device
 	ret = sysfs_create_group(&dev->kobj, &hailo_versions_group);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create hailo_versions group\n");
-		return ret;
+		goto err_remove_boot_info_group;
 	}
 
 	// Create attribute group "hailo_throttling_mode" under hailo soc device
 	ret = sysfs_create_group(&dev->kobj, &hailo_throttling_mode_group);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create hailo_throttling_mode group\n");
-		return ret;
+		goto err_remove_versions_group;
 	}
 	hailo_soc->soc_dev = soc_dev;
 	dev_set_drvdata(dev, hailo_soc);
@@ -869,6 +874,19 @@ static int hailo_soc_probe(struct platform_device *pdev)
         }
     }
 	return 0;
+
+err_remove_versions_group:
+	sysfs_remove_group(&dev->kobj, &hailo_versions_group);
+err_remove_boot_info_group:
+	sysfs_remove_group(&dev->kobj, &hailo_boot_info_group);
+err_unregister_soc:
+	soc_device_unregister(soc_dev);
+	goto err_free_hailo_soc;
+err_free_attr:
+	kfree(soc_dev_attr);
+err_free_hailo_soc:
+	kfree(hailo_soc);
+	return ret;
 }
 
 static int hailo_soc_remove(struct platform_device *pdev)

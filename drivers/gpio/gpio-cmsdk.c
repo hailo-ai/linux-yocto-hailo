@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  *
  * Driver for the ARM CoreLink CMSDK GPIO
  *
@@ -62,11 +62,11 @@ typedef struct GPIO_MANAGER_CONFIG_regs_s  {
 
 struct cmsdk_gpio {
 	raw_spinlock_t lock;
-	void __iomem *base;
+	GPIO_BLOCK_regs_s __iomem *base;
 
 	/* Our GPIO instances share the same config registers.
 	   Please access these registers with caution. */
-	void __iomem *config;
+	GPIO_MANAGER_CONFIG_t __iomem *config;
 
 	struct gpio_chip gc;
 	struct irq_chip irq_chip;
@@ -80,40 +80,36 @@ static void cmsdk_irq_ack(struct irq_data *data) {
 static void cmsdk_irq_mask(struct irq_data *data) {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(data);
 	struct cmsdk_gpio *gpio = gc->private;
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)gpio->base);
+	volatile void __iomem *INTENCLR = &gpio->base->INTENCLR;
 	int pin = data->hwirq;
 	uint32_t mask = BIT(pin);
 
-	CMSDK_GPIO_REGS->INTENCLR |= mask;
+	writel(readl(INTENCLR) | mask, INTENCLR);
 }
 
 static void cmsdk_irq_unmask(struct irq_data *data) {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(data);
 	struct cmsdk_gpio *gpio = gc->private;
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)gpio->base);
+	volatile void __iomem *INTENSET = &gpio->base->INTENSET;
 	int pin = data->hwirq;
 	uint32_t mask = BIT(pin);
 
-	CMSDK_GPIO_REGS->INTENSET |= mask;
+	writel(readl(INTENSET) | mask, INTENSET);
 }
 
-static inline void cmsdk_reverse_polarity(GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS, int pin) {
+static inline void cmsdk_reverse_polarity(struct cmsdk_gpio *cmsdk_gpio, int pin) {
 	uint32_t mask = BIT(pin);
-	uint32_t polarity = readl(&CMSDK_GPIO_REGS->INTPOLSET);
+	uint32_t polarity = readl(&cmsdk_gpio->base->INTPOLSET);
 
 	if (mask & polarity)
-		writew(mask, &CMSDK_GPIO_REGS->INTPOLCLR);
+		writew(mask, &cmsdk_gpio->base->INTPOLCLR);
 	else
-		writew(mask, &CMSDK_GPIO_REGS->INTPOLSET);
+		writew(mask, &cmsdk_gpio->base->INTPOLSET);
 }
 
 static int cmsdk_irq_set_type(struct irq_data *data, unsigned int type) {
 	struct irq_chip_generic *icg = irq_data_get_irq_chip_data(data);
 	struct cmsdk_gpio *gpio = icg->private;
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)gpio->base);
 	int pin = irqd_to_hwirq(data);
 	uint32_t mask = BIT(pin);
 
@@ -128,17 +124,17 @@ static int cmsdk_irq_set_type(struct irq_data *data, unsigned int type) {
 
 	/* Set INTTYPE */
 	if (type == IRQ_TYPE_EDGE_RISING || type == IRQ_TYPE_EDGE_FALLING || type == IRQ_TYPE_EDGE_BOTH)
-		writew(mask, &CMSDK_GPIO_REGS->INTTYPESET);
+		writew(mask, &gpio->base->INTTYPESET);
 	else
-		writew(mask, &CMSDK_GPIO_REGS->INTTYPECLR);
+		writew(mask, &gpio->base->INTTYPECLR);
 
 	/* Set INTPOL */
 	if (type == IRQ_TYPE_EDGE_BOTH)
-		cmsdk_reverse_polarity(CMSDK_GPIO_REGS, pin);
+		cmsdk_reverse_polarity(gpio, pin);
 	else if (type == IRQ_TYPE_LEVEL_HIGH || type == IRQ_TYPE_EDGE_RISING)
-		writew(mask, &CMSDK_GPIO_REGS->INTPOLSET);
+		writew(mask, &gpio->base->INTPOLSET);
 	else
-		writew(mask, &CMSDK_GPIO_REGS->INTPOLCLR);
+		writew(mask, &gpio->base->INTPOLCLR);
 
 	return 0;
 }
@@ -146,27 +142,23 @@ static int cmsdk_irq_set_type(struct irq_data *data, unsigned int type) {
 static int cmsdk_gpio_get_value(struct gpio_chip *gc, unsigned int offset)
 {
 	struct cmsdk_gpio *cmsdk_gpio = gpiochip_get_data(gc);
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
 
-	return !!(readl(&CMSDK_GPIO_REGS->DATA) & BIT(offset));
+	return !!(readl(&cmsdk_gpio->base->DATA) & BIT(offset));
 }
 
 static void cmsdk_gpio_set_value_inner(struct cmsdk_gpio *cmsdk_gpio,
 				       unsigned int offset, int value)
 {
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
 	unsigned long flags;
 	unsigned int data_reg;
 
 	raw_spin_lock_irqsave(&cmsdk_gpio->lock, flags);
-	data_reg = readl(&CMSDK_GPIO_REGS->DATAOUT);
+	data_reg = readl(&cmsdk_gpio->base->DATAOUT);
 	if (value)
 		data_reg |= BIT(offset);
 	else
 		data_reg &= ~BIT(offset);
-	writel(data_reg, &CMSDK_GPIO_REGS->DATAOUT);
+	writel(data_reg, &cmsdk_gpio->base->DATAOUT);
 	raw_spin_unlock_irqrestore(&cmsdk_gpio->lock, flags);
 }
 
@@ -180,13 +172,11 @@ static void cmsdk_gpio_set_value(struct gpio_chip *gc, unsigned int offset,
 static int cmsdk_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
 {
 	struct cmsdk_gpio *cmsdk_gpio = gpiochip_get_data(gc);
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
 
 	/* By the Programmers model for OUTENCLR:
         Read back 0 - Indicate the signal direction as input.
         Read back 1 - Indicate the signal direction as output. */
-	if (readl(&CMSDK_GPIO_REGS->OUTENCLR) & BIT(offset))
+	if (readl(&cmsdk_gpio->base->OUTENCLR) & BIT(offset))
 		return GPIO_LINE_DIRECTION_OUT;
 
 	return GPIO_LINE_DIRECTION_IN;
@@ -195,8 +185,6 @@ static int cmsdk_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
 static int cmsdk_gpio_set_direction_input(struct cmsdk_gpio *cmsdk_gpio,
 					  unsigned int offset)
 {
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
 	unsigned long flags;
 	unsigned int gpio_ddr;
 
@@ -207,7 +195,7 @@ static int cmsdk_gpio_set_direction_input(struct cmsdk_gpio *cmsdk_gpio,
         Write 0 - No effect.
         Only asserted bit is affected with BIT macro, while the others remain unchanged. */
 	gpio_ddr = BIT(offset);
-	writel(gpio_ddr, &CMSDK_GPIO_REGS->OUTENCLR);
+	writel(gpio_ddr, &cmsdk_gpio->base->OUTENCLR);
 	raw_spin_unlock_irqrestore(&cmsdk_gpio->lock, flags);
 	return 0;
 }
@@ -215,8 +203,6 @@ static int cmsdk_gpio_set_direction_input(struct cmsdk_gpio *cmsdk_gpio,
 static int cmsdk_gpio_set_direction_output(struct cmsdk_gpio *cmsdk_gpio,
 					   unsigned int offset)
 {
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
 	unsigned long flags;
 	unsigned int gpio_ddr;
 
@@ -227,7 +213,7 @@ static int cmsdk_gpio_set_direction_output(struct cmsdk_gpio *cmsdk_gpio,
         Write 0 - No effect.
         Only asserted bit is affected with BIT macro, while the others remain unchanged. */
 	gpio_ddr = BIT(offset);
-	writel(gpio_ddr, &CMSDK_GPIO_REGS->OUTENSET);
+	writel(gpio_ddr, &cmsdk_gpio->base->OUTENSET);
 	raw_spin_unlock_irqrestore(&cmsdk_gpio->lock, flags);
 	return 0;
 }
@@ -316,8 +302,6 @@ static int cmsdk_gpio_to_irq(struct gpio_chip *gc, unsigned int pin)
 static irqreturn_t cmsdk_irq_handler(int irq __maybe_unused, void *dev_id)
 {
 	struct cmsdk_gpio *gpio = dev_id;
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS;
-	GPIO_MANAGER_CONFIG_t *GPIO_MANAGER_CONFIG_REGS;
 	unsigned long status;
 	int i;
 	int ret;
@@ -325,27 +309,24 @@ static irqreturn_t cmsdk_irq_handler(int irq __maybe_unused, void *dev_id)
 	if (gpio == NULL)
 		return IRQ_NONE;
 
-	CMSDK_GPIO_REGS = ((GPIO_BLOCK_regs_s *)gpio->base);
-	GPIO_MANAGER_CONFIG_REGS = ((GPIO_MANAGER_CONFIG_t *)gpio->config);
-
-	status = readw(&CMSDK_GPIO_REGS->INTSTATUS);
+	status = readw(&gpio->base->INTSTATUS);
 	if (!status)
 		return IRQ_NONE;
 
-	writew(status, &CMSDK_GPIO_REGS->INTCLEAR);
-	writel(status << gpio->gc.offset, &GPIO_MANAGER_CONFIG_REGS->gpio_int_w1c);
+	writew(status, &gpio->base->INTCLEAR);
+	writel(status << gpio->gc.offset, &gpio->config->gpio_int_w1c);
 
 	for_each_set_bit(i, &status, gpio->gc.ngpio) {
-		unsigned int irq;
+		unsigned int mapped_irq;
 		uint32_t type;
 
-		irq = irq_find_mapping(gpio->irq_domain, i);
-		type = irq_get_trigger_type(irq);
+		mapped_irq = irq_find_mapping(gpio->irq_domain, i);
+		type = irq_get_trigger_type(mapped_irq);
 
 		if (type == IRQ_TYPE_EDGE_BOTH)
-			cmsdk_reverse_polarity(CMSDK_GPIO_REGS, i);
+			cmsdk_reverse_polarity(gpio, i);
 
-		ret = generic_handle_irq(irq);
+		ret = generic_handle_irq(mapped_irq);
 	}
 
 	return IRQ_HANDLED;
@@ -353,26 +334,16 @@ static irqreturn_t cmsdk_irq_handler(int irq __maybe_unused, void *dev_id)
 
 static void disable_gpio_irqs(struct cmsdk_gpio *cmsdk_gpio)
 {
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
-	GPIO_MANAGER_CONFIG_t *GPIO_MANAGER_CONFIG_REGS =
-		((GPIO_MANAGER_CONFIG_t *)cmsdk_gpio->config);
-
-	writew(0xFFFF, &CMSDK_GPIO_REGS->INTCLEAR);
-	writel(0xFFFF << cmsdk_gpio->gc.offset, &GPIO_MANAGER_CONFIG_REGS->gpio_int_w1c);
-	writew(0xFFFF, &CMSDK_GPIO_REGS->INTENCLR);
+	writew(0xFFFF, &cmsdk_gpio->base->INTCLEAR);
+	writel(0xFFFF << cmsdk_gpio->gc.offset, &cmsdk_gpio->config->gpio_int_w1c);
+	writew(0xFFFF, &cmsdk_gpio->base->INTENCLR);
 }
 
 static void enable_gpio_irqs(struct cmsdk_gpio *cmsdk_gpio)
 {
-	GPIO_BLOCK_regs_s *CMSDK_GPIO_REGS =
-		((GPIO_BLOCK_regs_s *)cmsdk_gpio->base);
-	GPIO_MANAGER_CONFIG_t *GPIO_MANAGER_CONFIG_REGS =
-		((GPIO_MANAGER_CONFIG_t *)cmsdk_gpio->config);
-
-	writew(0xFFFF, &CMSDK_GPIO_REGS->INTCLEAR);
+	writew(0xFFFF, &cmsdk_gpio->base->INTCLEAR);
 	/* Enable interrupts of both GPIOs */
-	writel(0xFFFFFFFF, &GPIO_MANAGER_CONFIG_REGS->gpio_int_mask);
+	writel(0xFFFFFFFF, &cmsdk_gpio->config->gpio_int_mask);
 }
 
 static int cmsdk_setup_irq(struct platform_device *pdev, struct cmsdk_gpio *cmsdk_gpio)
@@ -382,10 +353,8 @@ static int cmsdk_setup_irq(struct platform_device *pdev, struct cmsdk_gpio *cmsd
 	int irq, ret;
 
 	irq = platform_get_irq(pdev, 0);
-	if (!irq) {
-		dev_err(&pdev->dev, "Failed to get IRQ resource\n");
-		return -EINVAL;
-	}
+	if (irq < 0)
+		return irq;
 
 	cmsdk_gpio->irq_domain = irq_domain_add_linear(pdev->dev.of_node,
 						       cmsdk_gpio->gc.ngpio,
@@ -438,7 +407,9 @@ static int cmsdk_gpio_probe(struct platform_device *pdev)
 {
 	struct cmsdk_gpio *cmsdk_gpio;
 	struct resource *res;
-	int reg, ret;
+	void __iomem *iomem;
+	u32 reg;
+	int ret;
 
 	cmsdk_gpio = devm_kzalloc(&pdev->dev, sizeof(*cmsdk_gpio), GFP_KERNEL);
 	if (cmsdk_gpio == NULL)
@@ -451,9 +422,10 @@ static int cmsdk_gpio_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Error getting base resource\n");
 		return -ENODEV;
 	}
-	cmsdk_gpio->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(cmsdk_gpio->base))
-		return PTR_ERR(cmsdk_gpio->base);
+	iomem = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(iomem))
+		return PTR_ERR(iomem);
+	cmsdk_gpio->base = iomem;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	if (!res) {
@@ -461,17 +433,18 @@ static int cmsdk_gpio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	/* 
+	/*
 	 * We map a shared resource between all GPIO instances.
 	 * In order to avoid resource-already-in-use error,
 	 * we use devm_ioremap instead of devm_ioremap_resource.
 	 */
-	cmsdk_gpio->config = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (IS_ERR(cmsdk_gpio->config)) {
+	iomem = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (IS_ERR(iomem)) {
 		dev_err(&pdev->dev, "Error mapping config resource\n");
-		return PTR_ERR(cmsdk_gpio->config);
+		return PTR_ERR(iomem);
 	}
-	
+	cmsdk_gpio->config = iomem;
+
 	/* Disable interrupts */
 	disable_gpio_irqs(cmsdk_gpio);
 
