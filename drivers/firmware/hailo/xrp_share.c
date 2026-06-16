@@ -26,7 +26,7 @@
 #include <linux/module.h>
 #include <linux/dma-buf.h>
 
-bool user_sync_buffer  = false;
+static bool user_sync_buffer  = false;
 module_param(user_sync_buffer , bool, 0644);
 MODULE_PARM_DESC(user_sync_buffer,
     "If enabled, the driver won't sync the buffers before and after DSP access."
@@ -70,29 +70,9 @@ static bool is_single_lookup_buffer(uintptr_t buffer, size_t size)
     return (buffer & LOOKUP_MASK) + size <= LOOKUP_SIZE;
 }
 
-static long copy_from_x(void *dst, const void *src, size_t sz, bool user)
-{
-    if (user) {
-        return copy_from_user(dst, (void __user *)src, sz);
-    } else {
-        memcpy(dst, src, sz);
-        return 0;
-    }
-}
-
-static long copy_to_x(void *dst, const void *src, size_t sz, bool user)
-{
-    if (user) {
-        return copy_to_user((void __user *)dst, src, sz);
-    } else {
-        memcpy(dst, src, sz);
-        return 0;
-    }
-}
-
 static long _xrp_copy_user_phys(
     struct xvp *xvp, uintptr_t vaddr, unsigned long size, phys_addr_t paddr,
-    enum ioctl_buffer_flags flags, bool to_phys, bool user)
+    enum ioctl_buffer_flags flags, bool to_phys)
 {
     if (pfn_valid(__phys_to_pfn(paddr))) {
         struct page *page = pfn_to_page(__phys_to_pfn(paddr));
@@ -114,12 +94,9 @@ static long _xrp_copy_user_phys(
                 copy_sz = size - offs;
 
             if (to_phys)
-                rc = copy_from_x(p + page_offs,
-                         (void *)(vaddr + offs),
-                         copy_sz, user);
+		rc = copy_from_user(p + page_offs, (void __user *)(vaddr + offs), copy_sz);
             else
-                rc = copy_to_x((void *)(vaddr + offs),
-                           p + page_offs, copy_sz, user);
+		rc = copy_to_user((void __user *)(vaddr + offs), p + page_offs, copy_sz);
 
             page_offs = 0;
             offs += copy_sz;
@@ -141,11 +118,9 @@ static long _xrp_copy_user_phys(
             return -EINVAL;
         }
         if (to_phys)
-            rc = copy_from_x(__io_virt(p),
-                     (void *)vaddr, size, user);
+	    rc = copy_from_user(__io_virt(p), (void __user *)vaddr, size);
         else
-            rc = copy_to_x((void *)vaddr,
-                       __io_virt(p), size, user);
+	    rc = copy_to_user((void __user *)vaddr, __io_virt(p), size);
         iounmap(p);
         if (rc)
             return -EFAULT;
@@ -155,22 +130,21 @@ static long _xrp_copy_user_phys(
 
 static long xrp_copy_user_to_phys(
     struct xvp *xvp, uintptr_t vaddr, unsigned long size, phys_addr_t paddr,
-    enum ioctl_buffer_flags flags, bool user)
+    enum ioctl_buffer_flags flags)
 {
-    return _xrp_copy_user_phys(xvp, vaddr, size, paddr, flags, true, user);
+    return _xrp_copy_user_phys(xvp, vaddr, size, paddr, flags, true);
 }
 
 static long xrp_copy_user_from_phys(
     struct xvp *xvp, uintptr_t vaddr, unsigned long size, phys_addr_t paddr,
-    enum ioctl_buffer_flags flags, bool user)
+    enum ioctl_buffer_flags flags)
 {
-    return _xrp_copy_user_phys(xvp, vaddr, size, paddr, flags, false, user);
+    return _xrp_copy_user_phys(xvp, vaddr, size, paddr, flags, false);
 }
 
 static long xvp_copy_virt_to_phys(
     struct xvp *xvp, enum ioctl_buffer_flags flags, uintptr_t vaddr,
-    unsigned long size, phys_addr_t *paddr, struct xrp_alien_mapping *mapping,
-    bool user)
+    unsigned long size, phys_addr_t *paddr, struct xrp_alien_mapping *mapping)
 {
     phys_addr_t phys;
     uintptr_t align = clamp(vaddr & -vaddr, 16ul, PAGE_SIZE);
@@ -204,7 +178,7 @@ static long xvp_copy_virt_to_phys(
         if (flags & XRP_FLAG_READ) {
             if (xrp_copy_user_to_phys(xvp,
                           vaddr, size, phys,
-                          flags, user)) {
+                          flags)) {
                 xrp_allocation_put(allocation);
                 xrp_unlock_shared_allocations();
                 return -EFAULT;
@@ -255,7 +229,7 @@ static bool vma_needs_cache_ops(struct vm_area_struct *vma)
 
 static long xrp_writeback_alien_mapping(
     struct xvp *xvp, struct xrp_alien_mapping *alien_mapping,
-    enum ioctl_buffer_flags flags, bool user)
+    enum ioctl_buffer_flags flags)
 {
     struct page *page;
     size_t nr_pages;
@@ -284,7 +258,7 @@ static long xrp_writeback_alien_mapping(
                         alien_mapping->vaddr,
                         alien_mapping->size,
                         alien_mapping->paddr,
-                        flags, user))
+                        flags))
             ret = -EINVAL;
         break;
 
@@ -718,8 +692,7 @@ long xrp_share_block(
          */
         if (rc < 0) {
             alien_mapping = &mapping->alien_mapping;
-            rc = xvp_copy_virt_to_phys(xvp, flags, vaddr, size, &phys, 
-                alien_mapping, true);
+            rc = xvp_copy_virt_to_phys(xvp, flags, vaddr, size, &phys, alien_mapping);
             do_cache = false;
         }
 
@@ -862,8 +835,7 @@ static long xrp_unshare_alien(
     if (flags & XRP_FLAG_WRITE) {
         ret = xrp_writeback_alien_mapping(xvp,
                             &mapping->alien_mapping,
-                            flags,
-                            true);
+                            flags);
     }
     xrp_alien_mapping_destroy(&mapping->alien_mapping);
     

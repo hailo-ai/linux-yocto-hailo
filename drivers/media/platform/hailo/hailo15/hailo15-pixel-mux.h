@@ -1,6 +1,18 @@
 #ifndef __HAILO15_PIXEL_MUX_DRIVER__
 #define __HAILO15_PIXEL_MUX_DRIVER__
 
+struct device;
+
+/* Public API for sister drivers (e.g. hailo15-dphy) that need to drive
+ * pixel-mux registers as part of cross-IP bring-up sequences.
+ *
+ * Route the shared right-side D-PHY lanes (V6/V5 pads) to a CSI receiver.
+ * csi_idx==0 => CSI2RX0 (default), csi_idx==1 => CSI2RX1 (dual mode).
+ * Returns -EOPNOTSUPP on SoC variants that don't expose this register.
+ */
+int hailo15_pixel_mux_route_right_lane(struct device *dev,
+				       unsigned int csi_idx);
+
 
 #define P2A0_2_SW_DBG_P2A1_2_CSIRX0_ISP0_2_CSIRX0_ISP1_2_SW_DBG 0xc0e
 #define P2A0_DIS_P2A1_DIS_ISP0_2_CSIRX0_ISP1_2_CSIRX1 0x236

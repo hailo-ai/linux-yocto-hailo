@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Optional include for hailo15l-sbc Linux DT — alternate ETH PHY
+ * (TI DP83825I, RMII, 100 Mbps) in place of the default Microsemi
+ * VSC8531 (RGMII, 1 Gbps).
+ *
+ * Use only when DP83825I silicon is actually wired on the board.
+ * Include AFTER hailo15l-sbc.dts (i.e., after &eth and &vsc8531_0
+ * are defined) in your customer board .dts.
+ *
+ * The kernel CONFIG_DP83822_PHY symbol is enabled by default in the
+ * BSP's kmeta cfg fragment; no extra Kconfig action is required.
+ *
+ * The compatible string "ethernet-phy-ieee802.3-c22" is the standard
+ * DT-binding way to ask phylib to "auto-detect the PHY by reading the
+ * MDIO PHY ID register" and bind the matching driver. With
+ * CONFIG_DP83822_PHY=y, the TI driver binds for the DP83822 /
+ * DP83825I / DP83825x / DP83826x family.
+ */
+
+&eth {
+	phy-mode = "rmii";
+};
+
+&vsc8531_0 {
+	compatible = "ethernet-phy-ieee802.3-c22";
+	/delete-property/ vsc8531,vddmac;
+	/delete-property/ vsc8531,edge-slowdown;
+	/delete-property/ vsc8531,rx-clk-skew;
+	/delete-property/ vsc8531,tx-clk-skew;
+	/delete-property/ vsc8531,led-0-mode;
+	/delete-property/ vsc8531,led-1-mode;
+};

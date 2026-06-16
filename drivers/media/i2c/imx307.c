@@ -247,7 +247,7 @@ static inline struct imx307 *to_imx307(struct v4l2_subdev *subdev)
 static int imx307_read_reg(struct imx307 *imx307, u16 reg, u32 len, u32 *val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx307->sd);
-	struct i2c_msg msgs[2] = { 0 };
+	struct i2c_msg msgs[2] = { { 0 } };
 	u8 addr_buf[2] = { 0 };
 	u8 data_buf[4] = { 0 };
 	int ret;

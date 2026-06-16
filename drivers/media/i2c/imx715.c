@@ -88,14 +88,6 @@
 #define IMX715_WDR_STEP 1
 #define IMX715_WDR_DEFAULT 0
 
-/* Hcg control */
-#define IMX715_REG_HCG 0x3030
-#define IMX715_REG_HCG_SEF1 0x3031
-#define IMX715_REG_HCG_SEF2 0x3032
-#define IMX715_HCG_MIN 0
-#define IMX715_HCG_MAX 1
-#define IMX715_HCG_STEP 1
-#define IMX715_HCG_DEFAULT 0
 
 /* HDR custom rhs1 */
 #define IMX715_CUSTOM_RHS1_PRIMING_MIN -1
@@ -205,7 +197,7 @@ struct imx715_reg_list {
 	const struct imx715_reg *regs;
 };
 
-u32 _get_mode_reg_val_by_address(const struct imx715_reg_list *reg_list, u16 reg_address, int num_bytes) {
+static u32 _get_mode_reg_val_by_address(const struct imx715_reg_list *reg_list, u16 reg_address, int num_bytes) {
 	u32 left = 0;
 	u32 right = reg_list->num_of_regs - 1;
 	u32 val = 0;
@@ -309,7 +301,6 @@ struct imx715 {
 	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
-	struct v4l2_ctrl *hcg_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
 	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
@@ -329,8 +320,11 @@ struct imx715 {
 	enum fast_toggle_state fast_toggle_state;
 };
 
+#define IMX715_LINK_FREQ_720M  720000000LL
+#define IMX715_LINK_FREQ_1782M 1782000000LL
+
 static const s64 link_freq[] = {
-	720000000, 1782000000,
+	IMX715_LINK_FREQ_720M, IMX715_LINK_FREQ_1782M,
 };
 
 /* Sensor mode registers -- Tested OK */
@@ -738,7 +732,7 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = IMX715_SDR_4K_VBLANK_MAX,
 	.link_freq_idx = 1,
-	.pclk = link_freq[1],
+	.pclk = IMX715_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -758,7 +752,7 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = 132840,
 	.link_freq_idx = 1,
-	.pclk = link_freq[1],
+	.pclk = IMX715_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -778,7 +772,7 @@ static const struct imx715_mode supported_sdr_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = 132840,
 	.link_freq_idx = 1,
-	.pclk = link_freq[1],
+	.pclk = IMX715_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -803,7 +797,7 @@ static const struct imx715_mode supported_hdr_modes[] = {
     .vblank_max = 132840,
 	.rhs1 = IMX715_DEFAULT_2DOL_RHS1,
     .link_freq_idx = 1,
-    .pclk = link_freq[1],
+    .pclk = IMX715_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SGBRG12_2X12,
 	.dol = 2,
     .reg_list = {
@@ -823,7 +817,7 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = 132840,
 	.link_freq_idx = 0,
-	.pclk = link_freq[0],
+	.pclk = IMX715_LINK_FREQ_720M,
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -843,7 +837,7 @@ static const struct imx715_mode supported_hdr_modes[] = {
 	.vblank_min = 90,
 	.vblank_max = 132840,
 	.link_freq_idx = 1,
-	.pclk = link_freq[1],
+	.pclk = IMX715_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 	.dol = 3,
 	.reg_list = {
@@ -858,7 +852,7 @@ static const struct imx715_mode supported_hdr_modes[] = {
 
 };
 
-struct v4l2_ctrl_config imx715_custom_ctrls[] = {
+static struct v4l2_ctrl_config imx715_custom_ctrls[] = {
 	{
 		.ops = &imx715_ctrl_ops,
 		.id = IMX715_CID_ANALOGUE_GAIN_SHORT,
@@ -896,17 +890,6 @@ struct v4l2_ctrl_config imx715_custom_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_UPDATE,
 		.name = "exposure_very_short",
 		.step = IMX715_EXPOSURE_VERY_SHORT_STEP,
-	},
-	{
-	.ops = &imx715_ctrl_ops,
-		.id = IMX715_CID_HCG,
-		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.flags = V4L2_CTRL_FLAG_UPDATE,
-		.name = "hcg",
-		.step = IMX715_HCG_STEP,
-		.min = IMX715_HCG_MIN,
-		.max = IMX715_HCG_MAX,
-		.def = IMX715_HCG_DEFAULT,
 	},
 	{
 		.ops = &imx715_ctrl_ops,
@@ -1065,7 +1048,7 @@ static inline struct imx715 *to_imx715(struct v4l2_subdev *subdev)
 static int imx715_read_reg(struct imx715 *imx715, u16 reg, u32 len, u32 *val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx715->sd);
-	struct i2c_msg msgs[2] = { 0 };
+	struct i2c_msg msgs[2] = { { 0 } };
 	u8 addr_buf[2] = { 0 };
 	u8 data_buf[4] = { 0 };
 	int ret;
@@ -1147,46 +1130,6 @@ static int imx715_write_regs(struct imx715 *imx715,
 	return 0;
 }
 
-static int imx715_set_hcg_mode(struct imx715 *imx715, u32 hcg)
-{
-	int ret;
-
-	ret = imx715_write_reg(imx715, IMX715_REG_HOLD, 1, 1);
-	if (ret)
-		return ret;
-
-	ret = imx715_write_reg(imx715, IMX715_REG_HCG, 1, hcg);
-	if (ret) {
-		dev_err(imx715->dev, "Failed to write HCG register: %d\n", ret);
-		goto release_hold;
-	}
-
-	if (imx715->cur_mode->dol >= 2) {
-		ret = imx715_write_reg(imx715, IMX715_REG_HCG_SEF1, 1, hcg);
-		if (ret) {
-			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
-			dev_err(imx715->dev, "Failed to write HCG SEF1 register: %d\n", ret);
-			goto release_hold;
-		}
-	}
-
-	if (imx715->cur_mode->dol >= 3) {
-		ret = imx715_write_reg(imx715, IMX715_REG_HCG_SEF2, 1, hcg);
-		if (ret) {
-			imx715_write_reg(imx715, IMX715_REG_HCG, 1, !hcg);
-			imx715_write_reg(imx715, IMX715_REG_HCG_SEF1, 1, !hcg);
-			dev_err(imx715->dev, "Failed to write HCG SEF2 register: %d\n", ret);
-			goto release_hold;
-		}
-	}
-
-	dev_dbg(imx715->dev, "HCG mode set to %s, in mode with dol=%d\n",
-		hcg ? "enabled" : "disabled", imx715->cur_mode->dol);
-
-release_hold:
-	imx715_write_reg(imx715, IMX715_REG_HOLD, 1, 0);
-	return ret;
-}
 
 /**
  * imx715_update_exp_gain() - Set updated exposure and gain
@@ -1219,9 +1162,12 @@ static int imx715_update_exp_gain(struct imx715 *imx715, u32 exposure, u32 gain,
 					return -EINVAL;
 			}
 
-			// If the vblank is too small to fit the requested exposure, increase vblank
-			if (exposure > imx715->cur_mode->dol * (imx715->vblank + imx715->cur_mode->height) - gap) {
-				imx715->vblank = exposure - imx715->cur_mode->dol * (imx715->cur_mode->height) + gap;
+			// In SDR, increase vblank if needed to fit the requested exposure.
+			// In HDR, keep vblank fixed — AE must work within the existing
+			// VMAX using gain, matching the IMX678 HDR behavior.
+			if (imx715->cur_mode->dol == 1 &&
+			    exposure > (imx715->vblank + imx715->cur_mode->height) - gap) {
+				imx715->vblank = exposure - imx715->cur_mode->height + gap;
 				__v4l2_ctrl_s_ctrl(imx715->vblank_ctrl, imx715->vblank);
 			}
 
@@ -1336,7 +1282,7 @@ typedef struct ExposureLimits_t {
     u32 exp_sef2_default;
 } * ExposureLimits;
 
-void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
+static void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
 	const int rhs1 = imx715->cur_mode->rhs1 > 0 ? imx715->cur_mode->rhs1 : IMX715_DEFAULT_2DOL_RHS1;
 	const int rhs2 = imx715->cur_mode->rhs2 > 0 ? imx715->cur_mode->rhs2 : IMX715_DEFAULT_RHS2;
 	u32 shr0, shr1, shr2;
@@ -1355,20 +1301,19 @@ void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
 	case 3:
 		limits->shr0_min = imx715->cur_mode->rhs2 + IMX715_SHR0_RHS2_MIN_GAP;
 		break;
-	default:
-		limits->shr0_min = IMX715_MIN_SHR0;
-		break;
 	}
-	limits->shr0_max = NON_NEGATIVE(limits->max_lpfr - imx715->cur_mode->dol * IMX715_FSC_SHR0_MIN_GAP);
+	limits->shr0_max = NON_NEGATIVE((int)limits->max_lpfr - (int)imx715->cur_mode->dol * IMX715_FSC_SHR0_MIN_GAP);
 	limits->exp_lef_min = imx715->cur_mode->dol * IMX715_FSC_SHR0_MIN_GAP;
-	limits->exp_lef_max = NON_NEGATIVE(limits->max_lpfr - limits->shr0_min);
+	limits->exp_lef_max = NON_NEGATIVE((int)limits->max_lpfr - (int)limits->shr0_min);
 	shr0 = _get_mode_reg_val_by_address(&imx715->cur_mode->reg_list, limits->lef_reg, 3);
 	shr0 = shr0 > 0 ? shr0 : limits->shr0_min;
 	limits->exp_lef_default = MAX(limits->exp_lef_min, NON_NEGATIVE((int)limits->lpfr - (int)shr0));
 
+	if (imx715->cur_mode->dol < 2)
+		return;
+
 	limits->sef1_reg = IMX715_REG_SHUTTER_SHORT;
 	switch (imx715->cur_mode->dol) {
-		case 1:
 		case 2:
 			limits->shr1_min = IMX715_2DOL_MIN_SHR1;
 			limits->shr1_max = NON_NEGATIVE(rhs1 - IMX715_RHS1_SHR1_2DOL_MIN_GAP);
@@ -1377,22 +1322,21 @@ void calculate_exposure_limits(struct imx715* imx715, ExposureLimits limits) {
 			limits->shr1_min = IMX715_3DOL_MIN_SHR1;
 			limits->shr1_max = NON_NEGATIVE(rhs1 - IMX715_RHS1_SHR1_3DOL_MIN_GAP);
 			break;
-		default:
-			limits->shr1_min = IMX715_2DOL_MIN_SHR1;
-			limits->shr1_max = NON_NEGATIVE(rhs1 - IMX715_RHS1_SHR1_2DOL_MIN_GAP);
-			break;
 	}
-	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - limits->shr1_max);
-	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - limits->shr1_min);
+	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - (int)limits->shr1_max);
+	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - (int)limits->shr1_min);
 	shr1 = MAX(limits->shr1_min, _get_mode_reg_val_by_address(&imx715->cur_mode->reg_list, limits->sef1_reg, 3));
 	limits->exp_sef1_default = MAX(limits->exp_sef1_min, NON_NEGATIVE((int)rhs1 - (int)shr1));
+
+	if (imx715->cur_mode->dol < 3)
+		return;
 
 	// TODO - rhs2 and shr2 limits, 3dol mode wasn't ported yet.
 	limits->sef2_reg = IMX715_REG_SHUTTER_VERY_SHORT;
 	limits->shr2_min = rhs1 + IMX715_SHR2_RHS1_MIN_GAP;
 	limits->shr2_max = NON_NEGATIVE(rhs2 - IMX715_RHS2_SHR2_MIN_GAP);
-	limits->exp_sef2_min = NON_NEGATIVE(rhs2 - limits->shr2_max);
-	limits->exp_sef2_max = NON_NEGATIVE(rhs2 - limits->shr2_min);
+	limits->exp_sef2_min = NON_NEGATIVE(rhs2 - (int)limits->shr2_max);
+	limits->exp_sef2_max = NON_NEGATIVE(rhs2 - (int)limits->shr2_min);
 	shr2 = MAX(limits->shr2_min, _get_mode_reg_val_by_address(&imx715->cur_mode->reg_list, limits->sef2_reg, 3));
 	limits->exp_sef2_default = MAX(limits->exp_sef2_min, NON_NEGATIVE((int)rhs2 - (int)shr2));
 }
@@ -1651,7 +1595,7 @@ static int imx715_get_ctrl(struct v4l2_ctrl *ctrl)
 			return -EBUSY;
 		}
 
-		ret = imx715_read_reg(imx715, reg, len, &ctrl->val);
+		ret = imx715_read_reg(imx715, reg, len, (u32 *)&ctrl->val);
 		if (ret)
 			dev_err(imx715->dev, "Failed to read register %d", reg);
 	}
@@ -1754,19 +1698,6 @@ static int imx715_set_ctrl(struct v4l2_ctrl *ctrl)
 		pm_runtime_put(imx715->dev);
 
 		break;
-	case IMX715_CID_HCG:
-		/* Set controls only if sensor is in power on state */
-		if (!pm_runtime_get_if_in_use(imx715->dev))
-			return 0;
-
-		dev_dbg(imx715->dev, "Setting HCG to %u\n", ctrl->val);
-
-		ret = imx715_set_hcg_mode(imx715, ctrl->val);
-		if (ret) {
-			dev_err(imx715->dev, "Failed to set HCG mode: %d\n", ret);
-		}
-		pm_runtime_put(imx715->dev);
-    	break;
 	case IMX715_CID_WDR_PRIMING:
 		imx715->wdr_priming_val = ctrl->val;
 		ret = 0;
@@ -2238,11 +2169,13 @@ imx715_find_nearest_frame_interval_mode(struct imx715 *imx715,
 		 */
 		if (imx715->cur_mode) {
 			*mode = imx715->cur_mode;
-			dev_info(imx715->dev,
-				 "s_frame_interval: no mode matched curr_fmt, using cur_mode %ux%u %u/%u fps\n",
-				 imx715->cur_mode->width, imx715->cur_mode->height,
-				 imx715->cur_mode->frame_interval.denominator,
-				 imx715->cur_mode->frame_interval.numerator);
+			dev_dbg(imx715->dev,
+				"s_frame_interval: no mode matched curr_fmt %ux%u code=0x%x req_fps=%u/%u, using cur_mode %ux%u %u/%u fps\n",
+				framefmt->width, framefmt->height, framefmt->code,
+				fi->interval.denominator, fi->interval.numerator,
+				imx715->cur_mode->width, imx715->cur_mode->height,
+				imx715->cur_mode->frame_interval.denominator,
+				imx715->cur_mode->frame_interval.numerator);
 			return 0;
 		}
 		return -ENOTSUPP;
@@ -2529,7 +2462,12 @@ static int imx715_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx715 *imx715 = to_imx715(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx715->reset_gpio, 0);
 	gpiod_set_value_cansleep(imx715->reset_gpio, 1);
@@ -2545,10 +2483,12 @@ static int imx715_power_on(struct device *dev)
 
 	usleep_range(18000, 20000);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 
 error_reset:
 	gpiod_set_value_cansleep(imx715->reset_gpio, 0);
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return ret;
 }
@@ -2563,10 +2503,17 @@ static int imx715_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx715 *imx715 = to_imx715(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx715->reset_gpio, 0);
 
 	clk_disable_unprepare(imx715->inclk);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -2632,9 +2579,6 @@ static int imx715_init_controls(struct imx715 *imx715)
 	imx715_setup_custom_ctrl(imx715, &imx715->vmax_ctrl, IMX715_CID_VMAX);
 	imx715_setup_custom_ctrl(imx715, &imx715->hmax_ctrl, IMX715_CID_HMAX);
 
-	/* Initialize HCG control */
-	imx715_setup_custom_ctrl(imx715, &imx715->hcg_ctrl, IMX715_CID_HCG);
-
 	/* Custom RHS1 stub (not implemented for this sensor) */
 	imx715_setup_custom_ctrl_limits(imx715, &imx715->custom_rhs1_ctrl, IMX715_CID_CUSTOM_RHS1,
 		0, 65535, 0);
@@ -2696,7 +2640,10 @@ static int imx715_init_controls(struct imx715 *imx715)
 	}
 
 	imx715->sd.ctrl_handler = ctrl_hdlr;
-	
+
+	/* Set initial activity state for per-exposure controls */
+	imx715_set_exp_activity(imx715);
+
 	return 0;
 }
 

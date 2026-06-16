@@ -1,0 +1,27 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
+ */
+
+/dts-v1/;
+#include "hailo10-m2-base.dtsi"
+#include "hailo10-4gb-cma-config.dtsi"
+
+/ {
+    model = "Hailo - Hailo10 (board-sku-22)";
+
+    // Updated by u-boot at runtime or by u-boot-spl falcon mode.
+    memory {
+        device_type = "memory";
+        reg = <0x00000000 0x80000000 0x00000001 0x00000000>;
+    };
+};
+
+// make overlay per ddr size
+/ {
+    chosen {
+        bootargs = "console=ttyS1,115200n8 quiet loglevel=3 rootwait root=/dev/ram0 ramdisk_size=0x40000";
+        linux,initrd-start = <0x90000000>;
+        linux,initrd-end = <0xA0000000>;
+    };
+};

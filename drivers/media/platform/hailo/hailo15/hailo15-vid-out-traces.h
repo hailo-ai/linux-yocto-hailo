@@ -92,6 +92,73 @@ DEFINE_EVENT(hailo15_vidout_event_class, hailo15_vidout_start_streaming_error,
 	TP_ARGS(vid_node)
 );
 
+/* Diagnostic events emitted when QBUF or buffer_done exceeds a latency
+ * threshold. */
+TRACE_EVENT(hailo15_slow_qbuf,
+	TP_PROTO(struct hailo15_video_out_node *vid_node,
+		 unsigned int index, s64 elapsed_ms),
+	TP_ARGS(vid_node, index, elapsed_ms),
+	TP_STRUCT__entry(
+		__string(device_name, vid_node->video_dev->name)
+		__field(int, path)
+		__field(unsigned int, index)
+		__field(s64, elapsed_ms)
+	),
+	TP_fast_assign(
+		__assign_str(device_name, vid_node->video_dev->name);
+		__entry->path = vid_node->path;
+		__entry->index = index;
+		__entry->elapsed_ms = elapsed_ms;
+	),
+	TP_printk("dev=%s path=%d index=%u elapsed=%lld ms",
+		__get_str(device_name),
+		__entry->path,
+		__entry->index,
+		__entry->elapsed_ms
+	)
+);
+
+TRACE_EVENT(hailo15_slow_buffer_done,
+	TP_PROTO(struct hailo15_buffer *buf, int grp_id,
+		 s64 elapsed_ms, ktime_t now),
+	TP_ARGS(buf, grp_id, elapsed_ms, now),
+	TP_STRUCT__entry(
+		__field(int, grp_id)
+		__field(unsigned int, index)
+		__field(s64, elapsed_ms)
+		__field(u64, qbuf_start)
+		__field(u64, fe_switch_start)
+		__field(u64, fe_switch_end)
+		__field(u64, rdma_ready)
+		__field(u64, frame_end)
+		__field(u64, now)
+	),
+	TP_fast_assign(
+		__entry->grp_id = grp_id;
+		__entry->index = buf->vb.vb2_buf.index;
+		__entry->elapsed_ms = elapsed_ms;
+		__entry->qbuf_start = ktime_to_ns(buf->timing.qbuf_start);
+		__entry->fe_switch_start = ktime_to_ns(buf->timing.fe_switch_start);
+		__entry->fe_switch_end = ktime_to_ns(buf->timing.fe_switch_end);
+		__entry->rdma_ready = ktime_to_ns(buf->timing.rdma_ready);
+		__entry->frame_end = ktime_to_ns(buf->timing.frame_end);
+		__entry->now = ktime_to_ns(now);
+	),
+	TP_printk("grp_id=%d index=%u elapsed=%lld ms"
+		  " qbuf_start=%llu fe_switch_start=%llu fe_switch_end=%llu"
+		  " rdma_ready=%llu frame_end=%llu now=%llu",
+		__entry->grp_id,
+		__entry->index,
+		__entry->elapsed_ms,
+		__entry->qbuf_start,
+		__entry->fe_switch_start,
+		__entry->fe_switch_end,
+		__entry->rdma_ready,
+		__entry->frame_end,
+		__entry->now
+	)
+);
+
 #endif /* _TRACE_HAILO_H */
 #undef TRACE_INCLUDE_PATH
 #define TRACE_INCLUDE_PATH .

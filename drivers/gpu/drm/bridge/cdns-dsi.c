@@ -1275,13 +1275,13 @@ static int cdns_dsi_drm_probe(struct platform_device *pdev)
 
 	ret = clk_prepare_enable(dsi->dsi_sys_clk);
 	if (ret)
-		return ret;
+		goto err_disable_pclk;
 
 	val = readl(dsi->regs + ID_REG);
 	if (REV_VENDOR_ID(val) != 0xcad) {
 		dev_err(&pdev->dev, "invalid vendor id\n");
 		ret = -EINVAL;
-		goto err_disable_pclk;
+		goto err_disable_clks;
 	}
 
 	val = readl(dsi->regs + IP_CONF);
@@ -1309,7 +1309,7 @@ static int cdns_dsi_drm_probe(struct platform_device *pdev)
 	ret = devm_request_irq(&pdev->dev, irq, cdns_dsi_interrupt, 0,
 			       dev_name(&pdev->dev), dsi);
 	if (ret)
-		goto err_disable_pclk;
+		goto err_disable_clks;
 
 	pm_runtime_enable(&pdev->dev);
 	dsi->base.dev = &pdev->dev;
@@ -1327,6 +1327,8 @@ static int cdns_dsi_drm_probe(struct platform_device *pdev)
 err_disable_runtime_pm:
 	pm_runtime_disable(&pdev->dev);
 
+err_disable_clks:
+	clk_disable_unprepare(dsi->dsi_sys_clk);
 err_disable_pclk:
 	clk_disable_unprepare(dsi->dsi_p_clk);
 

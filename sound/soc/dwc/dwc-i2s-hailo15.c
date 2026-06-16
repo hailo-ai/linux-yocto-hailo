@@ -127,7 +127,7 @@ static int proc_cpu_irq_stats(struct seq_file *s, int cpu, struct per_cpu_stats 
 /*!
  * @brief dump driver stats.
  */
-int proc_stats(struct seq_file *s, void *v)
+static int proc_stats(struct seq_file *s, void *v)
 {
 	struct dw_i2s_dev *dev = PDE_DATA(file_inode(s->file));
 	struct hailo15_priv_data *data = (struct hailo15_priv_data *)dev->priv;
@@ -190,7 +190,7 @@ int proc_stats(struct seq_file *s, void *v)
 	return 0;
 }
 
-int proc_stats_fopen(struct inode *inode, struct file *file)
+static int proc_stats_fopen(struct inode *inode, struct file *file)
 {
     return single_open(file, proc_stats, NULL);
 };
@@ -335,8 +335,8 @@ static void ring_setup(struct dwc_i2s_dma_block_ring *ring, struct dwc_i2s_dma_b
 static void shmem_reset(struct dwc_i2s_dma_shmem_map *shmem)
 {
 	/* Reset IRQ Rx/Tx execution/interval stats */
-	shmem->irq_rx_stats = (struct irq_stats){ 0 };
-	shmem->irq_tx_stats = (struct irq_stats){ 0 };
+	shmem->irq_rx_stats = (struct irq_stats){ { 0 } };
+	shmem->irq_tx_stats = (struct irq_stats){ { 0 } };
 
 	/* Reset playback/record stats */
 	shmem->record.stats = (struct dwc_i2s_dma_record_stats){ 0 };
@@ -505,7 +505,7 @@ int hailo15_extra_probe(struct platform_device *pdev)
 		}
 
 		size = resource_size(&res);
-		data->scu_dw_i2s_dma.shmem = devm_ioremap(&pdev->dev, res.start, size);
+		data->scu_dw_i2s_dma.shmem = (__force struct dwc_i2s_dma_shmem_map *)devm_ioremap(&pdev->dev, res.start, size);
 		if (!data->scu_dw_i2s_dma.shmem) {
 			dev_err(&pdev->dev, "failed to ioremap I2S scu dma shmem\n");
 			return -EADDRNOTAVAIL;
