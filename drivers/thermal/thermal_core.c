@@ -1300,8 +1300,9 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 			goto unregister;
 	}
 
-	tz->trip_crossed_up_arr = kcalloc(tz->trips, sizeof(bool), GFP_KERNEL);
+	tz->trip_crossed_up_arr = kcalloc(tz->trips, sizeof(*tz->trip_crossed_up_arr), GFP_KERNEL);
 	if (!tz->trip_crossed_up_arr) {
+		result = -ENOMEM;
 		goto unregister;
 	}
 

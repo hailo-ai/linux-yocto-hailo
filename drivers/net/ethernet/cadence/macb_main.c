@@ -1749,6 +1749,7 @@ static int macb_hard_reset(struct macb *bp)
 	ret = clk_prepare_enable(bp->hclk);
 	if (ret) {
 		netdev_err(bp->dev, "Unable to enable hclk (ret=%d)\n", ret);
+		clk_disable_unprepare(bp->pclk);
 		return ret;
 	}
 	netdev_dbg(bp->dev, "MACB/GEM aclk enabled\n");
@@ -5001,7 +5002,6 @@ static const struct macb_config sama7g5_emac_config = {
 
 static const struct macb_config hailo15_config = {
 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE,
-	.usrio = &macb_default_usrio,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = hailo15_init,

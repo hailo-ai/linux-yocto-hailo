@@ -381,7 +381,6 @@ MODULE_DEVICE_TABLE(of, ov2775_dt_ids);
 
 static struct i2c_driver ov2775_i2c_driver = {
 	.driver = {
-		.owner = THIS_MODULE,
 		.name  = "ov2775",
 		.pm = &ov2775_pm_ops,
 		.of_match_table	= ov2775_dt_ids,
@@ -545,7 +544,7 @@ s32 ov2775_write_reg(struct ov2775 *sensor, u16 reg, u8 val)
 	send_buf[2] = val;
 	send_len = sizeof(send_buf);
 
-	msgs[0].addr  = sensor->i2c_client->addr >> 1;;
+	msgs[0].addr  = sensor->i2c_client->addr >> 1;
 	msgs[0].flags = sensor->i2c_client->flags & I2C_M_TEN;
 	msgs[0].len   = send_len;
 	msgs[0].buf   = send_buf;
@@ -638,7 +637,7 @@ static int ov2775_download_firmware(struct ov2775 *sensor,
 	ov2775_write_reg(sensor, 0x3013, 0x1);
 	msleep(10);
 
-	reg_buf = (u8 *)kmalloc(size + 2, GFP_KERNEL);
+	reg_buf = kmalloc(size + 2, GFP_KERNEL);
 	if (!reg_buf)
 		return -ENOMEM;
 
@@ -1029,10 +1028,9 @@ static int ov2775_probe(struct i2c_client *client,
 
 	pr_info("enter %s\n", __func__);
 
-	sensor = devm_kmalloc(dev, sizeof(*sensor), GFP_KERNEL);
+	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
-	memset(sensor, 0, sizeof(*sensor));
 	sensor->i2c_client = client;
 
 	/* request power down pin */
@@ -1068,8 +1066,6 @@ static int ov2775_probe(struct i2c_client *client,
 
 	sensor->sensor_clk = devm_clk_get(dev, "xvclk");
 	if (IS_ERR(sensor->sensor_clk)) {
-		/* assuming clock enabled by default */
-		sensor->sensor_clk = NULL;
 		dev_err(dev, "clock-frequency missing or invalid\n");
 		return PTR_ERR(sensor->sensor_clk);
 	}

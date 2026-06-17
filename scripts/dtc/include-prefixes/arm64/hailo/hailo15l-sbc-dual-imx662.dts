@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Dual IMX662 sensors on H15L SBC.
+ *   sensor 0: i2c_0/0x10, sensor 1: i2c_2/0x10
+ *
+ *   Enable: fw_setenv dtb_overlays '#conf-hailo_hailo15l-sbc-dual-imx662.dtbo'
+ */
+/dts-v1/;
+/plugin/;
+
+/* Shared 37.125 MHz INCLK for both sensors. */
+&{/} {
+	imx_662_sensor_clk: imx_662_sensor_clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <37125000>;
+	};
+};
+
+/* Sensor 0: i2c_0/0x10 (CSI2RX0) */
+&sensor_0 {
+	compatible = "sony,imx662";
+	reg = <0x10>;
+	clocks = <&imx_662_sensor_clk>;
+	clock-names = "inclk";
+	clock-frequency = <37125000>;
+};
+
+/* Sensor 1: i2c_2/0x10 (CSI2RX1) */
+&sensor_1 {
+	status = "okay";
+	compatible = "sony,imx662";
+	reg = <0x10>;
+	clocks = <&imx_662_sensor_clk>;
+	clock-names = "inclk";
+	clock-frequency = <37125000>;
+};
+
+&sensor_out_csi2rx {
+	data-lanes = <1 2>;
+	link-frequencies = /bits/ 64 <297000000 445500000 594000000>;
+};
+
+&sensor_out_csi2rx1 {
+	data-lanes = <1 2>;
+	link-frequencies = /bits/ 64 <297000000 445500000 594000000>;
+};
+
+/* The CSI bridge INPUT endpoints must match the sensor output endpoints —
+ * the dual-IMX662 lane-sharing scheme runs each sensor on 2 lanes, but
+ * the base DT (via hailo15-vision.dtsi) declares the bridge input as
+ * 4 lanes.
+ */
+&csi2rx_in_sensor {
+	data-lanes = <1 2>;
+};
+
+&csi2rx1_in_sensor {
+	data-lanes = <1 2>;
+};
+
+/* Dual-link mode: D-PHY drives both CSI2RX bridges simultaneously.
+ * The 2-clock-lane bring-up touches registers in the rxwrappers and the
+ * pixel-mux; the dphy driver reaches them via these phandles instead of
+ * mapping their addresses directly. Single-sensor variants intentionally
+ * omit all three properties so the right-pad lanes stay parked and the
+ * cross-IP bring-up never runs.
+ */
+&dphy_rx {
+	hailo,enable-2-clock-lane;
+	hailo,rxwrappers = <&rxwrapper0 &rxwrapper1>;
+	hailo,pixel-mux  = <&hailo_pixel_mux>;
+};
