@@ -400,7 +400,7 @@ static void *hailo_pmu_setup_aux(struct perf_event *event, void **pages,
 	/* Map the pages into a flat contiguous buffer */
 	page_list = kcalloc(nr_pages, sizeof(*page_list), GFP_KERNEL);
 	if (!page_list)
-		return NULL;
+		goto err_free_aux_buf;
 
 	for (i = 0; i < nr_pages; i++)
 		page_list[i] = virt_to_page(pages[i]);
@@ -409,11 +409,17 @@ static void *hailo_pmu_setup_aux(struct perf_event *event, void **pages,
 
 	kfree(page_list);
 
+	if (!flat_buf)
+		goto err_free_aux_buf;
 
 	aux_buf->data = flat_buf;
 	aux_buf->size = nr_pages * PAGE_SIZE;
 
 	return aux_buf;
+
+err_free_aux_buf:
+	kfree(aux_buf);
+	return NULL;
 }
 
 static void hailo_pmu_free_aux(void *aux)

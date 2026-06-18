@@ -25,5 +25,7 @@ int hailo15_isp_post_event(struct video_device *vdev,
 				 struct hailo15_event_resource *event_resource,
 				 int pad, void *data, size_t data_size);
 
+void hailo15_isp_event_reset_seq(struct hailo15_event_resource *event_resource);
+
 
 #endif /* __HAILO15_ISP_EVENTS_H__ */

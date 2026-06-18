@@ -14,11 +14,12 @@
 
 #include <linux/uaccess.h>
 #include <linux/mmap_lock.h>
+#include <linux/nospec.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/timekeeping.h>
 
-bool support_shadow_copy = true;
+static bool support_shadow_copy = true;
 module_param(support_shadow_copy, bool, 0644);
 MODULE_PARM_DESC(support_shadow_copy,
     "If enabled, the driver will create physically contiguous shadow copy of data buffers if required."
@@ -320,7 +321,7 @@ static long xrp_wait_for_cmd_completion(struct xvp *xvp, struct xrp_comm *comm)
 }
 
 static void xrp_fill_hw_request(struct xvp *xvp,
-                struct xrp_dsp_cmd __iomem *cmd,
+                struct xrp_dsp_cmd *cmd,
                 struct xrp_request *rq)
 {
     
@@ -367,7 +368,7 @@ static void xrp_fill_hw_request(struct xvp *xvp,
                 XRP_DSP_CMD_FLAG_REQUEST_VALID);
 }
 
-static long xrp_complete_hw_request(struct xvp *xvp, struct xrp_dsp_cmd __iomem *cmd,
+static long xrp_complete_hw_request(struct xvp *xvp, struct xrp_dsp_cmd *cmd,
                     struct xrp_request *rq)
 {
     u32 flags = xrp_comm_read32(&cmd->flags);
@@ -426,6 +427,7 @@ long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p)
 
         if (n >= xvp->n_queues)
             n = xvp->n_queues - 1;
+        n = array_index_nospec(n, xvp->n_queues);
         queue = xvp->queue_ordered[n];
         dev_dbg(xvp->dev, "%s: priority: %d -> %d\n",
             __func__, n, queue->priority);

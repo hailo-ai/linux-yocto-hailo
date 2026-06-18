@@ -122,7 +122,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_enable",
+		.name = "isp_dpf_enable",
 		.step = 1,
 		.min = 0,
 		.max = 1,
@@ -133,7 +133,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_U8,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_green_sigma",
+		.name = "isp_dpf_green_sigma",
 		.step = 1,
 		.min = 1,
 		.max = 255,
@@ -146,7 +146,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_U8,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_red_blue_sigma",
+		.name = "isp_dpf_red_blue_sigma",
 		.step = 1,
 		.min = 1,
 		.max = 255,
@@ -160,7 +160,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_gradient",
+		.name = "isp_dpf_gradient",
 		.step = 1,
 		.min = 0,
 		.max = 12800,
@@ -172,7 +172,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_offset",
+		.name = "isp_dpf_offset",
 		.step = 1,
 		.min = -12800,
 		.max = 12800,
@@ -184,7 +184,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_bound_min",
+		.name = "isp_dpf_bound_min",
 		.step = 1,
 		.min = 0,
 		.max = 12800,
@@ -196,7 +196,7 @@ static const struct v4l2_ctrl_config hailo15_isp_dpf_ctrls[] = {
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.flags = V4L2_CTRL_FLAG_VOLATILE |
 			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
-		.name = " isp_dpf_division_factor",
+		.name = "isp_dpf_division_factor",
 		.step = 1,
 		.min = 0,
 		.max = 6400,

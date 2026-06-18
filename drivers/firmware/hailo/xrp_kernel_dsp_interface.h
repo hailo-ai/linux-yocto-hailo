@@ -63,7 +63,7 @@ enum {
 struct xrp_dsp_tlv {
     uint32_t type;
     uint32_t length;
-    uint32_t value[0];
+    uint32_t value[];
 };
 
 typedef struct {
@@ -71,13 +71,13 @@ typedef struct {
 
 struct xrp_dsp_sync_v1 {
     uint32_t sync;
-    uint32_t hw_sync_data[0];
+    uint32_t hw_sync_data[];
 };
 
 struct xrp_dsp_sync_v2 {
     uint32_t sync;
     uint32_t reserved[3];
-    struct xrp_dsp_tlv hw_sync_data[0];
+    struct xrp_dsp_tlv hw_sync_data[];
 };
 
 enum {

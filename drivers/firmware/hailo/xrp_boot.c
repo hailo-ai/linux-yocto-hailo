@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2015 - 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include "xrp_boot.h"
@@ -17,7 +17,7 @@
 #define XRP_DEFAULT_TIMEOUT 10
 
 int firmware_command_timeout = XRP_DEFAULT_TIMEOUT;
-bool unsafe_enable_reset = false;
+static bool unsafe_enable_reset = false;
 
 module_param(unsafe_enable_reset, bool, 0644);
 MODULE_PARM_DESC(unsafe_enable_reset, 
@@ -29,14 +29,14 @@ MODULE_PARM_DESC(firmware_command_timeout,
 
 static void xrp_sync_v2(struct xvp *xvp, void *hw_sync_data, size_t sz)
 {
-    struct xrp_dsp_sync_v2 __iomem *shared_sync = xvp->comm.addr;
-    void __iomem *addr = shared_sync->hw_sync_data;
+    struct xrp_dsp_sync_v2 *shared_sync = xvp->comm.addr;
+    void *addr = shared_sync->hw_sync_data;
 
     xrp_comm_write(xrp_comm_put_tlv(&addr, XRP_DSP_SYNC_TYPE_HW_SPEC_DATA,
                     sz),
                hw_sync_data, sz);
     if (xvp->n_queues > 1) {
-        struct xrp_dsp_sync_v2 __iomem *queue_sync;
+        struct xrp_dsp_sync_v2 *queue_sync;
         unsigned i;
 
         xrp_comm_write(
@@ -53,8 +53,8 @@ static void xrp_sync_v2(struct xvp *xvp, void *hw_sync_data, size_t sz)
 
 static int xrp_sync_complete_v2(struct xvp *xvp, size_t sz)
 {
-    struct xrp_dsp_sync_v2 __iomem *shared_sync = xvp->comm.addr;
-    void __iomem *addr = shared_sync->hw_sync_data;
+    struct xrp_dsp_sync_v2 *shared_sync = xvp->comm.addr;
+    void *addr = shared_sync->hw_sync_data;
     u32 type, len;
 
     xrp_comm_get_tlv(&addr, &type, &len);
@@ -66,7 +66,7 @@ static int xrp_sync_complete_v2(struct xvp *xvp, size_t sz)
         dev_info(xvp->dev, "HW spec data not recognized by the DSP\n");
 
     if (xvp->n_queues > 1) {
-        void __iomem *p = xrp_comm_get_tlv(&addr, &type, &len);
+        void *p = xrp_comm_get_tlv(&addr, &type, &len);
 
         if (len != xvp->n_queues * sizeof(u32)) {
             dev_err(xvp->dev,
@@ -105,7 +105,7 @@ static int xrp_synchronize(struct xvp *xvp)
     size_t sz;
     void *hw_sync_data;
     unsigned long deadline = jiffies + firmware_command_timeout * HZ;
-    struct xrp_dsp_sync_v1 __iomem *shared_sync = xvp->comm.addr;
+    struct xrp_dsp_sync_v1 *shared_sync = xvp->comm.addr;
     int ret;
     u32 v, v1;
 
@@ -205,7 +205,7 @@ static int xrp_shutdown_hw(struct xvp *xvp)
 static int xrp_start(struct xvp *xvp)
 {
     int ret = 0;
-    struct xrp_dsp_sync_v1 __iomem *shared_sync = xvp->comm.addr;
+    struct xrp_dsp_sync_v1 *shared_sync = xvp->comm.addr;
 
     xrp_comm_write32(&shared_sync->sync, XRP_DSP_SYNC_IDLE);
     mb();

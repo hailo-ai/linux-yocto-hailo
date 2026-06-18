@@ -13,6 +13,7 @@
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-dma-contig.h>
 #include "hailo15-events.h"
+#include "hailo15-isp-hw-defs.h"
 #include "hailo15-media.h"
 
 #define HAILO_VID_NAME "hailo_video_out"
@@ -217,6 +218,36 @@ hailo15_video_out_node_subdev_set_stream(struct hailo15_video_out_node *vid_node
 	return ret;
 }
 
+/* Reject STREAMON on the video out device unless the ISP is either in a
+ * non-OFF MCM mode or has a non-OFF mode primed for the next fast toggle.
+ * STREAMOFF is cleanup and doesn't need the check. */
+static int hailo15_vid_out_check_streamon(struct hailo15_video_out_node *vid_node)
+{
+	uint32_t mcm_mode = 0;
+	uint32_t priming = 0;
+	int ret;
+
+	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_MCM_MODE, &mcm_mode);
+	if (ret) {
+		pr_err("%s - failed to read MCM mode from %s: %pe\n",
+		       __func__, vid_node->direct_sd->name, ERR_PTR(ret));
+		return ret;
+	}
+	ret = hailo15_subdev_call(vid_node, core, ioctl, ISPIOC_V4L2_MCM_MODE_PRIMING, &priming);
+	if (ret) {
+		pr_err("%s - failed to read MCM priming from %s: %pe\n",
+		       __func__, vid_node->direct_sd->name, ERR_PTR(ret));
+		return ret;
+	}
+	if (mcm_mode == ISP_MCM_MODE_OFF &&
+	    (priming == ISP_MCM_MODE_OFF || priming >= ISP_MCM_MODE_MAX)) {
+		pr_err("%s - refusing STREAMON on vid-out: MCM mode and priming are both OFF\n",
+		       __func__);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
 {
 	struct hailo15_video_out_node *vid_node = video_drvdata(file);
@@ -228,6 +259,12 @@ static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
 		return -EINVAL;
 	}
 	mutex_lock(&vid_node->ioctl_mutex);
+
+	ret = hailo15_vid_out_check_streamon(vid_node);
+	if (ret) {
+		mutex_unlock(&vid_node->ioctl_mutex);
+		return ret;
+	}
 
 	if (!vid_node->streaming) {
 		ret = vb2_ioctl_streamon(file, priv, i);
@@ -259,6 +296,7 @@ static int hailo15_streamoff(struct file *file, void *priv,
 	}
 
 	mutex_lock(&vid_node->ioctl_mutex);
+
 	if (!vid_node->streaming) {
 		mutex_unlock(&vid_node->ioctl_mutex);
 		return 0;
@@ -532,10 +570,13 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 	hailo15_video_device_process_vb2_buffer(vb);
 
 	elapsed_ms = ktime_ms_delta(ktime_get(), qbuf_start);
-	/* MSW-15089: slow QBUF log removed — can trigger under
-	 * heavy workloads without indicating an actual problem.
-	 */
-	(void)elapsed_ms;
+	if (elapsed_ms >= HAILO15_QBUF_SLOW_THRESHOLD_MS) {
+		trace_hailo15_slow_qbuf(vid_node, vb->index, elapsed_ms);
+		if (elapsed_ms >= 2 * HAILO15_QBUF_SLOW_THRESHOLD_MS) {
+			pr_warn_ratelimited("%s: QBUF processing very slow for path=%d index=%d - elapsed=%lld ms\n",
+					__func__, vid_node->path, vb->index, elapsed_ms);
+		}
+	}
 }
 
 static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
@@ -566,10 +607,22 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 
 		if (buf->timing.fe_switch_start) {
 			elapsed_ms = ktime_ms_delta(now, buf->timing.fe_switch_start);
-			/* MSW-15089: log removed — triggers frequently under
-			 * HDR + Detection without indicating an actual problem.
-			 */
-			(void)elapsed_ms;
+			if (elapsed_ms >= HAILO15_FRAME_SLOW_THRESHOLD_MS) {
+				trace_hailo15_slow_buffer_done(buf, grp_id,
+							       elapsed_ms, now);
+				if (elapsed_ms >= 2 * HAILO15_FRAME_SLOW_THRESHOLD_MS) {
+					pr_warn_ratelimited("%s: very slow frame for grp_id=%d index=%d - elapsed=%lld ms."
+								"  timestamps: qbuf_start=%lld, fe_switch_start=%lld, fe_switch_end=%lld, "
+								"rdma_ready=%lld, frame_end=%lld, now=%lld\n",
+								__func__, grp_id, buf->vb.vb2_buf.index, elapsed_ms,
+								ktime_to_ns(buf->timing.qbuf_start),
+								ktime_to_ns(buf->timing.fe_switch_start),
+								ktime_to_ns(buf->timing.fe_switch_end),
+								ktime_to_ns(buf->timing.rdma_ready),
+								ktime_to_ns(buf->timing.frame_end),
+								ktime_to_ns(now));
+				}
+			}
 		}
 
 		buf->queue_sequence = vid_node->sequence;
@@ -641,11 +694,25 @@ out:
 static void hailo15_video_out_node_stop_streaming(struct vb2_queue *q)
 {
 	struct hailo15_video_out_node *vid_node = queue_to_node(q);
+	unsigned int i;
 
 	if (WARN_ON(!vid_node))
 		return;
 
 	hailo15_video_out_node_stream_cancel(vid_node);
+
+	/* Return any buffers still owned by the driver.
+	 * The ISP's s_stream(OFF) drops cur_buf[grp_id] without calling
+	 * vb2_buffer_done(), so we must return all remaining ACTIVE buffers
+	 * here to satisfy the vb2 stop_streaming contract.
+	 * This is safe because q->lock is held by vb2_core_streamoff,
+	 * preventing concurrent buf_queue calls, and the ISP is fully
+	 * quiesced after stream_cancel (mi_stopped, workqueues drained). */
+	for (i = 0; i < q->num_buffers; ++i) {
+		if (q->bufs[i]->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(q->bufs[i], VB2_BUF_STATE_ERROR);
+	}
+
 	trace_hailo15_vidout_stop_streaming(vid_node);
 }
 

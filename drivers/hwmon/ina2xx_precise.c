@@ -287,20 +287,19 @@ static int ina2xx_precise_init(struct ina2xx_precise_data *data)
 
 	ret = ina2xx_precise_calibrate(data);
 	if (ret < 0)
-		return ret;
+		goto unlock;
 
 	ret = ina226_conversion_time_write(data);
 	if (ret < 0)
-		return ret;
+		goto unlock;
 
 	ret = ina226_averaging_factor_write(data);
 	if (ret < 0)
-		return ret;
+		goto unlock;
 
 	ret = ina226_mode_write(data);
-	if (ret < 0)
-		return ret;
 
+unlock:
 	mutex_unlock(&data->config_lock);
 
 	return ret;
@@ -519,7 +518,7 @@ static ssize_t ina226_alert_show(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct ina2xx_precise_data *data = dev_get_drvdata(dev);
-	int regval;
+	unsigned int regval;
 	int val = 0;
 	int ret;
 
@@ -589,7 +588,7 @@ static ssize_t ina226_alarm_show(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct ina2xx_precise_data *data = dev_get_drvdata(dev);
-	int regval;
+	unsigned int regval;
 	int alarm = 0;
 	int ret;
 
@@ -617,7 +616,7 @@ static ssize_t ina2xx_precise_max_current_show(struct device *dev,
 {
 	struct ina2xx_precise_data *data = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%lu\n", data->max_current_mA);
+	return scnprintf(buf, PAGE_SIZE, "%lu\n", data->max_current_mA);
 }
 
 static ssize_t ina2xx_interval_show(struct device *dev,

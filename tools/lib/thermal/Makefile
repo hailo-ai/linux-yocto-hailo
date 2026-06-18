@@ -96,7 +96,7 @@ $(LIBTHERMAL_A): $(LIBTHERMAL_IN)
 	$(QUIET_AR)$(RM) $@ && $(AR) rcs $@ $(LIBTHERMAL_IN)
 
 $(LIBTHERMAL_SO): $(LIBTHERMAL_IN)
-	$(QUIET_LINK)$(CC) --shared -Wl,-soname,libthermal.so \
+	$(QUIET_LINK)$(CC) --shared -Wl,-soname,libthermal.so.$(LIBTHERMAL_VERSION) \
                                     -Wl,--version-script=$(VERSION_SCRIPT) $^ -o $@
 	@ln -sf $(@F) $(OUTPUT)libthermal.so
 	@ln -sf $(@F) $(OUTPUT)libthermal.so.$(LIBTHERMAL_VERSION)

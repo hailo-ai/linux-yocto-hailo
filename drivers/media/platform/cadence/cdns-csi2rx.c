@@ -12,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/phy/phy.h>
+#include <linux/phy/phy-mipi-dphy.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -22,7 +23,6 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 
-#include <hailo15/hailo15-dphy.h>
 #include <hailo15/common.h>
 
 #define RES_MIN
@@ -115,7 +115,7 @@ static const struct v4l2_ctrl_ops csi2rx_ctrl_ops = {
 	.s_ctrl = csi2rx_set_ctrl,
 };
 
-const struct v4l2_ctrl_config csi2rx_mode_sel_ctrl_cfg = {
+static const struct v4l2_ctrl_config csi2rx_mode_sel_ctrl_cfg = {
 	.ops = &csi2rx_ctrl_ops,
 	.id = CSI2RX_CID_MODE_SEL,
 	.type = V4L2_CTRL_TYPE_INTEGER,
@@ -127,7 +127,7 @@ const struct v4l2_ctrl_config csi2rx_mode_sel_ctrl_cfg = {
 	.def = 0,
 };
 
-const struct v4l2_ctrl_config csi2rx_mode_sel_priming_ctrl_cfg = {
+static const struct v4l2_ctrl_config csi2rx_mode_sel_priming_ctrl_cfg = {
 	.ops = &csi2rx_ctrl_ops,
 	.id = CSI2RX_CID_MODE_SEL_PRIMING,
 	.type = V4L2_CTRL_TYPE_INTEGER,
@@ -142,7 +142,7 @@ const struct v4l2_ctrl_config csi2rx_mode_sel_priming_ctrl_cfg = {
 struct csi2rx_priv {
 	struct device *dev;
 	unsigned int count;
-	int id;
+	u32 id;
 
 	/*
 	 * Used to prevent race conditions between multiple,
@@ -220,11 +220,13 @@ static irqreturn_t csi2rx_error_irq_handler(int irq, void *data)
     /* Clear the error IRQs */
     writel(errors, csi2rx->base + CSI2RX_ERROR_IRQS_REG);
 
-    dev_err(csi2rx->dev, "CSI2RX error IRQ #%d. error_irqs: 0x%08X\n", irq, errors);
+    dev_err_ratelimited(csi2rx->dev,
+        "CSI2RX error IRQ #%d. error_irqs: 0x%08X\n", irq, errors);
 
     for (i = 0; i < csi2rx->max_streams; i++) {
         if (errors & CSI2RX_ERROR_IRQ_OVERFLOW_ERROR_BIT(i)) {
-            dev_err(csi2rx->dev, "CSI Stream %d fifo overflow error!\n", i);
+            dev_err_ratelimited(csi2rx->dev,
+                "CSI Stream %d fifo overflow error!\n", i);
         }
     }
 
@@ -323,6 +325,7 @@ static int cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 {
 	struct v4l2_ctrl_handler *ctrl_hdl;
 	struct v4l2_ctrl *ctrl;
+	union phy_configure_opts opts = { 0 };
 	s64 pixel_rate;
 	int ret = 0;
 
@@ -355,7 +358,12 @@ static int cdns_dphy_rx_init(struct csi2rx_priv *csi2rx)
 	writel(CSI2RX_DPHY_LANE_CONTROL_REG_LANES_RESET,
 		csi2rx->base + CSI2RX_DPHY_LANE_CONTROL_REG_OFFSET);
 
-	ret = hailo15_dphy_rx_init(csi2rx->dphy, pixel_rate);
+	opts.mipi_dphy.hs_clk_rate = (unsigned long)pixel_rate;
+
+	ret = phy_init(csi2rx->dphy);
+	if (ret)
+		return ret;
+	ret = phy_configure(csi2rx->dphy, &opts);
 	if (ret)
 		return ret;
 
@@ -393,7 +401,7 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 
 	if (!csi2rx->dphy) {
 		dev_err(csi2rx->dev, "Can't start without DPHY\n");
-		return ret;
+		return -ENODEV;
 	}
 
 	ret = clk_prepare_enable(csi2rx->p_clk);
@@ -598,7 +606,7 @@ static int csi2rx_get_fmt(struct v4l2_subdev *subdev,
 	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(subdev);
 	struct v4l2_mbus_framefmt *src_format;
 	struct v4l2_mbus_framefmt *dst_format;
-	if (!csi2rx || !fmt || fmt->pad >= CSI2RX_PAD_MAX) {
+	if (!fmt || fmt->pad >= CSI2RX_PAD_MAX) {
 		dev_err(csi2rx->dev, "get_fmt: fmt is NULL or pad is out of range\n");
 		return -EINVAL;
 	}
@@ -780,9 +788,9 @@ static int csi2rx_get_resources(struct csi2rx_priv *csi2rx,
 	csi2rx->dphy = devm_phy_get(&pdev->dev, "dphy");
 
 	if (IS_ERR(csi2rx->dphy)) {
-        ret = PTR_ERR(csi2rx->dphy);
-		dev_err(&pdev->dev, "Couldn't get a D-PHY device (%d)\n", ret);
-		return ret;
+		ret = PTR_ERR(csi2rx->dphy);
+		return dev_err_probe(&pdev->dev, ret,
+				     "Couldn't get a D-PHY device\n");
 	}
 
 	for (i = 0; i < csi2rx->max_streams; i++) {
