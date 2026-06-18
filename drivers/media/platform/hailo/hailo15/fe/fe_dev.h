@@ -358,8 +358,6 @@ struct isp_fe_context {
 	u64 last_t_end_ns;
 	int post_fe_modify_reg_offset[ISP_FE_POST_OFFSET_MAX];
 	int post_fe_modify_reg_value[ISP_FE_POST_OFFSET_MAX];
-	u32 saved_mi_imsc;
-	u32 saved_isp_imsc;
 	int isp_irq;
 };
 
@@ -371,20 +369,27 @@ struct vvcam_fe_dev {
 
 	u32 isp_mis;
 	int id;
-	atomic_t fe_transaction_active;
+	atomic_t fe_cmd_buf_bus_active;
+	/* MCM RDMA in-flight gate for isp_fe_perform_transaction.
+	 * Inc on MCM_RAW_RDMA_START kick, dec on MIV2_MCM_DMA_RAW_READY IRQ. */
+	atomic_t mcm_rdma_inflight;
+	wait_queue_head_t mcm_rdma_idle_wq;
+	/* wait_event_timeout value (ms) for the gate above. Derived at MCM
+	 * setup time from MCM_RETIMING + resolution + ISP wrapper clock so
+	 * it adapts to pipeline/fps changes. */
+	u32 mcm_rdma_timeout_ms;
 
 	struct isp_fe_context fe;
 	int (*fe_get_vdid) (struct vvcam_fe_dev *dev, uint8_t *vd_id);
 	// IRQ handler for FE interrupts
-	int (*fe_dma_irq) (struct vvcam_fe_dev *dev);
-	// irq_*_control_reg are for IRQ context
-	int (*irq_read_fe_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
-	// not including FE control regs
+	int (*fe_dma_irq) (struct vvcam_fe_dev *dev, u32 *isp_fe_mis, bool *skip_other_irqs);
+	// irq_*_control_reg are for IRQ context.
+	// API only allows non-FE control register access.
 	int (*irq_read_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
 	int (*irq_write_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val);
 
 	// following APIs are from process context only
-	// control here includes FE control regs
+	// Use only with non-FE control register access (although API allows FE control regs).
 	int (*read_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val);
 	int (*write_control_reg)(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t val);
 	int (*read_vdid_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
@@ -395,8 +400,9 @@ struct vvcam_fe_dev {
 // these functions are to be used even when FE is disabled
 // in order for us to assert all code uses correct function
 bool isp_fe_is_non_fe_control_register(uint32_t offset);
-bool isp_fe_is_fe_control_register(uint32_t offset);
-bool isp_fe_is_control_register(uint32_t offset);
 bool isp_fe_is_vdid_register(uint32_t offset);
 
-#endif //_FE_DEV_H_   
+void hailo15_fe_get_dev(struct vvcam_fe_dev** dev);
+void hailo15_fe_set_address_space_base(struct vvcam_fe_dev* fe_dev, void __iomem* base);
+
+#endif //_FE_DEV_H_

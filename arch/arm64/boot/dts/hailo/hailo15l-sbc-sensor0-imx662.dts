@@ -34,7 +34,11 @@
 	clock-frequency = <37125000>;
 };
 
-/* Update link frequencies for IMX662 in the sensor output endpoint */
 &sensor_out_csi2rx {
+	data-lanes = <1 2>;
 	link-frequencies = /bits/ 64 <297000000 445500000 594000000>;
+};
+
+&csi2rx_in_sensor {
+	data-lanes = <1 2>;
 };

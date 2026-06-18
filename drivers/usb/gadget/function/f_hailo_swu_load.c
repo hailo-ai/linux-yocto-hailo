@@ -661,10 +661,11 @@ static int hailo_sw_update_invoke_swupdate(struct f_hailo_swu_load *swu)
     /* Create and start kernel thread */
     swu->swupdate_task = kthread_run(swupdate_thread_fn, swu, "hailo_swupdate");
     if (IS_ERR(swu->swupdate_task)) {
-        pr_err("hailo_sw_update: failed to create swupdate thread: %ld\n", PTR_ERR(swu->swupdate_task));
         swu->swupdate_exit_code = PTR_ERR(swu->swupdate_task);
+        pr_err("hailo_sw_update: failed to create swupdate thread: %d\n",
+               swu->swupdate_exit_code);
         swu->swupdate_task = NULL;
-        return PTR_ERR(swu->swupdate_task);
+        return swu->swupdate_exit_code;
     }
     
     /* Thread started successfully - return immediately */
@@ -695,9 +696,9 @@ static void hailo_swu_load_file_work_fn(struct work_struct *work)
             const char *filename = "/tmp/image.swu";
             swu->swu_file = filp_open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
             if (IS_ERR(swu->swu_file)) {
-                pr_err("hailo_swu: failed to open %s: %ld\n", filename, PTR_ERR(swu->swu_file));
-                swu->swu_file = NULL;
                 swu->swu_file_result = PTR_ERR(swu->swu_file);
+                pr_err("hailo_swu: failed to open %s: %d\n", filename, swu->swu_file_result);
+                swu->swu_file = NULL;
             } else {
                 /* Write complete vmalloc buffer to file */
                 loff_t pos = 0;

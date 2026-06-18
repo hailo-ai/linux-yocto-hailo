@@ -210,7 +210,7 @@ struct imx678_reg_list {
 	const struct imx678_reg *regs;
 };
 
-u32 _get_mode_reg_val_by_address(const struct imx678_reg_list *reg_list, u16 reg_address, int num_bytes) {
+static u32 _get_mode_reg_val_by_address(const struct imx678_reg_list *reg_list, u16 reg_address, int num_bytes) {
 	u32 left = 0;
 	u32 right = reg_list->num_of_regs - 1;
 	u32 val = 0;
@@ -263,7 +263,7 @@ struct imx678_mode {
 	struct v4l2_fract frame_interval;
 };
 
-int compare_imx678_mode(const struct imx678_mode *mode1, const struct imx678_mode *mode2) {
+static int compare_imx678_mode(const struct imx678_mode *mode1, const struct imx678_mode *mode2) {
 	bool not_equal = (mode1->width != mode2->width) ||
            (mode1->height != mode2->height) ||
            (mode1->code != mode2->code) ||
@@ -328,7 +328,11 @@ struct imx678 {
 	struct v4l2_ctrl *hmax_ctrl;
 	struct v4l2_ctrl *test_pattern_ctrl;
 	struct v4l2_ctrl *mode_sel_ctrl;
+	/* HCG control cluster — must be contiguous for v4l2_ctrl_cluster */
 	struct v4l2_ctrl *hcg_ctrl;
+	struct v4l2_ctrl *hcg_lef_ctrl;
+	struct v4l2_ctrl *hcg_sef1_ctrl;
+	struct v4l2_ctrl *hcg_sef2_ctrl;
 	struct v4l2_ctrl *custom_rhs1_ctrl;
 	struct v4l2_ctrl *custom_rhs1_priming_ctrl;
 	struct v4l2_ctrl *wdr_priming_ctrl;
@@ -350,8 +354,12 @@ struct imx678 {
 	enum fast_toggle_state fast_toggle_state;
 };
 
+#define IMX678_LINK_FREQ_891M  891000000LL
+#define IMX678_LINK_FREQ_1440M 1440000000LL
+#define IMX678_LINK_FREQ_1782M 1782000000LL
+
 static const s64 link_freq[] = {
-	891000000, 1440000000, 1782000000,
+	IMX678_LINK_FREQ_891M, IMX678_LINK_FREQ_1440M, IMX678_LINK_FREQ_1782M,
 };
 
 /* Sensor mode registers */
@@ -2587,7 +2595,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
 	.link_freq_idx = 2,
-	.pclk = link_freq[2],
+	.pclk = IMX678_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2609,7 +2617,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
 	.link_freq_idx = 2,
-	.pclk = link_freq[2],
+	.pclk = IMX678_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2631,7 +2639,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
 	.link_freq_idx = 2,
-	.pclk = link_freq[2],
+	.pclk = IMX678_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2653,7 +2661,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
 	.link_freq_idx = 2,
-	.pclk = link_freq[2],
+	.pclk = IMX678_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2675,7 +2683,7 @@ static const struct imx678_mode supported_sdr_modes[] = {
 	.rhs1 = 0x0,
 	.rhs2 = 0x0,
 	.link_freq_idx = 2,
-	.pclk = link_freq[2],
+	.pclk = IMX678_LINK_FREQ_1782M,
 	.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 	.dol = 1,
 	.reg_list = {
@@ -2700,7 +2708,7 @@ static const struct imx678_mode supported_hdr_modes[] = {
     .rhs1 = 0x11b,
     .rhs2 = 0x0,
     .link_freq_idx = 2,
-    .pclk = link_freq[2],
+    .pclk = IMX678_LINK_FREQ_1782M,
     .code = MEDIA_BUS_FMT_SRGGB12_2X12,
     .dol = 2,
     .reg_list = {
@@ -2722,7 +2730,7 @@ static const struct imx678_mode supported_hdr_modes[] = {
 	.rhs1 = 0x40,
 	.rhs2 = 0x53,
     .link_freq_idx = 0,
-    .pclk = link_freq[0],
+    .pclk = IMX678_LINK_FREQ_891M,
     .code = MEDIA_BUS_FMT_SRGGB12_3X12,
     .dol = 3,
     .reg_list = {
@@ -2744,7 +2752,7 @@ static const struct imx678_mode supported_hdr_modes[] = {
 	.rhs1 = 0x1F3, /* change in registers */
 	.rhs2 = 0x230, /* change in registers */
     .link_freq_idx = 2,
-    .pclk = link_freq[2],
+    .pclk = IMX678_LINK_FREQ_1782M,
     .code = MEDIA_BUS_FMT_SRGGB12_3X12,
     .dol = 3,
     .reg_list = {
@@ -2767,7 +2775,7 @@ static const struct imx678_mode supported_hdr_modes[] = {
 	.rhs1 = 0x91,
 	.rhs2 = 0xAA,
 	.link_freq_idx = 1,
-	.pclk = link_freq[1],
+	.pclk = IMX678_LINK_FREQ_1440M,
 	.code = MEDIA_BUS_FMT_SRGGB12_3X12,
 	.dol = 3,
 	.reg_list = {
@@ -2781,7 +2789,7 @@ static const struct imx678_mode supported_hdr_modes[] = {
 	},
 };
 
-struct v4l2_ctrl_config imx678_custom_ctrls[] = {
+static struct v4l2_ctrl_config imx678_custom_ctrls[] = {
 	{
 		.ops = &imx678_ctrl_ops,
 		.id = IMX678_CID_ANALOGUE_GAIN_SHORT,
@@ -2824,8 +2832,41 @@ struct v4l2_ctrl_config imx678_custom_ctrls[] = {
 		.ops = &imx678_ctrl_ops,
 		.id = IMX678_CID_HCG,
 		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.flags = V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 		.name = "hcg",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_LEF,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_lef",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_SEF1,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef1",
+		.step = IMX678_HCG_STEP,
+		.min = IMX678_HCG_MIN,
+		.max = IMX678_HCG_MAX,
+		.def = IMX678_HCG_DEFAULT,
+	},
+	{
+		.ops = &imx678_ctrl_ops,
+		.id = IMX678_CID_HCG_SEF2,
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.flags = V4L2_CTRL_FLAG_UPDATE,
+		.name = "hcg_sef2",
 		.step = IMX678_HCG_STEP,
 		.min = IMX678_HCG_MIN,
 		.max = IMX678_HCG_MAX,
@@ -3009,7 +3050,7 @@ static inline struct imx678 *to_imx678(struct v4l2_subdev *subdev)
 static int imx678_read_reg(struct imx678 *imx678, u16 reg, u32 len, u32 *val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx678->sd);
-	struct i2c_msg msgs[2] = { 0 };
+	struct i2c_msg msgs[2] = { { 0 } };
 	u8 addr_buf[2] = { 0 };
 	u8 data_buf[4] = { 0 };
 	int ret;
@@ -3118,7 +3159,7 @@ typedef struct ExposureLimits_t {
     u32 exp_sef2_default;
 } * ExposureLimits;
 
-void calculate_exposure_limits(struct imx678* imx678, ExposureLimits limits) {
+static void calculate_exposure_limits(struct imx678* imx678, ExposureLimits limits) {
 	const int rhs1 = imx678->cur_mode->rhs1 > 0 ? imx678->cur_mode->rhs1 : IMX678_DEFAULT_RHS1;
 	const int rhs2 = imx678->cur_mode->rhs2 > 0 ? imx678->cur_mode->rhs2 : IMX678_DEFAULT_RHS2;
 	u32 shr0, shr1, shr2;
@@ -3129,25 +3170,31 @@ void calculate_exposure_limits(struct imx678* imx678, ExposureLimits limits) {
 
 	limits->lef_reg = IMX678_REG_SHUTTER;
 	limits->shr0_min = imx678->hdr_enabled ? imx678->cur_mode->rhs2 + IMX678_SHR0_RHS2_GAP : IMX678_SHR0_FSC_GAP;
-	limits->shr0_max = NON_NEGATIVE(limits->max_lpfr - IMX678_SHR0_FSC_GAP);
+	limits->shr0_max = NON_NEGATIVE((int)limits->max_lpfr - IMX678_SHR0_FSC_GAP);
 	limits->exp_lef_min = IMX678_SHR0_FSC_GAP;
-	limits->exp_lef_max = NON_NEGATIVE(limits->max_lpfr - limits->shr0_min);
+	limits->exp_lef_max = NON_NEGATIVE((int)limits->max_lpfr - (int)limits->shr0_min);
 	shr0 = imx678->vblank;
 	limits->exp_lef_default = MAX(limits->exp_lef_min, NON_NEGATIVE((int)limits->lpfr - (int)shr0));
+
+	if (imx678->cur_mode->dol < 2)
+		return;
 
 	limits->sef1_reg = IMX678_REG_SHUTTER_SHORT;
 	limits->shr1_min = IMX678_SHR1_MIN_GAP;
 	limits->shr1_max = NON_NEGATIVE(rhs1 - IMX678_SHR1_RHS1_GAP);
-	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - limits->shr1_max);
-	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - limits->shr1_min);
+	limits->exp_sef1_min = NON_NEGATIVE(rhs1 - (int)limits->shr1_max);
+	limits->exp_sef1_max = NON_NEGATIVE(rhs1 - (int)limits->shr1_min);
 	shr1 = MAX(limits->shr1_min, _get_mode_reg_val_by_address(&imx678->cur_mode->reg_list, limits->sef1_reg, 3));
 	limits->exp_sef1_default = MAX(limits->exp_sef1_min, NON_NEGATIVE((int)rhs1 - (int)shr1));
+
+	if (imx678->cur_mode->dol < 3)
+		return;
 
 	limits->sef2_reg = IMX678_REG_SHUTTER_VERY_SHORT;
 	limits->shr2_min = rhs1 + IMX678_SHR2_RHS1_GAP;
 	limits->shr2_max = NON_NEGATIVE(rhs2 - IMX678_SHR2_RHS2_GAP);
-	limits->exp_sef2_min = NON_NEGATIVE(rhs2 - limits->shr2_max);
-	limits->exp_sef2_max = NON_NEGATIVE(rhs2 - limits->shr2_min);
+	limits->exp_sef2_min = NON_NEGATIVE(rhs2 - (int)limits->shr2_max);
+	limits->exp_sef2_max = NON_NEGATIVE(rhs2 - (int)limits->shr2_min);
 	shr2 = MAX(limits->shr2_min, _get_mode_reg_val_by_address(&imx678->cur_mode->reg_list, limits->sef2_reg, 3));
 	limits->exp_sef2_default = MAX(limits->exp_sef2_min, NON_NEGATIVE((int)rhs2 - (int)shr2));
 }
@@ -3291,6 +3338,43 @@ release_hold:
 	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
 	return ret;
 }
+
+static int imx678_set_hcg_lef(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx678_set_hcg_sef1(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF1, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
+static int imx678_set_hcg_sef2(struct imx678 *imx678, u32 hcg)
+{
+	int ret;
+
+	ret = imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 1);
+	if (ret)
+		return ret;
+	ret = imx678_write_reg(imx678, IMX678_REG_HCG_SEF2, 1, hcg);
+	imx678_write_reg(imx678, IMX678_REG_HOLD, 1, 0);
+	return ret;
+}
+
 /**
  * imx678_update_exp_gain() - Set updated exposure and gain
  * @imx678: pointer to imx678 device
@@ -3500,6 +3584,9 @@ static void imx678_set_exp_activity(struct imx678 *imx678)
 	v4l2_ctrl_activate(imx678->sef2.exp_ctrl, sef2);
 	v4l2_ctrl_activate(imx678->rhs2_ctrl, sef2);
 	v4l2_ctrl_activate(imx678->shr2_ctrl, sef2);
+
+	v4l2_ctrl_activate(imx678->hcg_sef1_ctrl, sef1);
+	v4l2_ctrl_activate(imx678->hcg_sef2_ctrl, sef2);
 }
 
 static int imx678_set_hdr_mode(struct imx678 *imx678, bool enable)
@@ -3599,7 +3686,7 @@ static int imx678_get_ctrl(struct v4l2_ctrl *ctrl)
 			return -EBUSY;
 		}
 
-		ret = imx678_read_reg(imx678, reg, len, &ctrl->val);
+		ret = imx678_read_reg(imx678, reg, len, (u32 *)&ctrl->val);
 		if (ret)
 			dev_err(imx678->dev, "Failed to read register %d", reg);
 	}
@@ -3729,18 +3816,54 @@ static int imx678_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		break;
 	case IMX678_CID_HCG:
-		/* Set controls only if sensor is in power on state */
+		/* Global HCG: write all registers, sync per-exposure cached values.
+		 * Controls are independent (no cluster) so direct cur.val update is safe. */
+		imx678->hcg_lef_ctrl->cur.val = ctrl->val;
+		if (imx678->cur_mode->dol >= 2)
+			imx678->hcg_sef1_ctrl->cur.val = ctrl->val;
+		if (imx678->cur_mode->dol >= 3)
+			imx678->hcg_sef2_ctrl->cur.val = ctrl->val;
+
 		if (!pm_runtime_get_if_in_use(imx678->dev))
 			return 0;
 
-		dev_dbg(imx678->dev, "Setting HCG to %u\n", ctrl->val);
-
+		dev_dbg(imx678->dev, "Setting HCG (global) to %u\n", ctrl->val);
 		ret = imx678_set_hcg_mode(imx678, ctrl->val);
-		if (ret) {
+		if (ret)
 			dev_err(imx678->dev, "Failed to set HCG mode: %d\n", ret);
-		}
 		pm_runtime_put(imx678->dev);
-    	break;
+		break;
+	case IMX678_CID_HCG_LEF:
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG LEF to %u\n", ctrl->val);
+		ret = imx678_set_hcg_lef(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG LEF: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
+	case IMX678_CID_HCG_SEF1:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG SEF1 to %u\n", ctrl->val);
+		ret = imx678_set_hcg_sef1(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG SEF1: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
+	case IMX678_CID_HCG_SEF2:
+		if (ctrl->flags & V4L2_CTRL_FLAG_INACTIVE)
+			return 0;
+		if (!pm_runtime_get_if_in_use(imx678->dev))
+			return 0;
+		dev_dbg(imx678->dev, "Setting HCG SEF2 to %u\n", ctrl->val);
+		ret = imx678_set_hcg_sef2(imx678, ctrl->val);
+		if (ret)
+			dev_err(imx678->dev, "Failed to set HCG SEF2: %d\n", ret);
+		pm_runtime_put(imx678->dev);
+		break;
 	case IMX678_CID_WDR_PRIMING:
 		imx678->wdr_priming_val = ctrl->val;
 		ret = 0;
@@ -4281,11 +4404,13 @@ imx678_find_nearest_frame_interval_mode(struct imx678 *imx678,
 		 */
 		if (imx678->cur_mode) {
 			*mode = imx678->cur_mode;
-			dev_info(imx678->dev,
-				 "s_frame_interval: no mode matched curr_fmt, using cur_mode %ux%u %u/%u fps\n",
-				 imx678->cur_mode->width, imx678->cur_mode->height,
-				 imx678->cur_mode->frame_interval.denominator,
-				 imx678->cur_mode->frame_interval.numerator);
+			dev_dbg(imx678->dev,
+				"s_frame_interval: no mode matched curr_fmt %ux%u code=0x%x req_fps=%u/%u, using cur_mode %ux%u %u/%u fps\n",
+				framefmt->width, framefmt->height, framefmt->code,
+				fi->interval.denominator, fi->interval.numerator,
+				imx678->cur_mode->width, imx678->cur_mode->height,
+				imx678->cur_mode->frame_interval.denominator,
+				imx678->cur_mode->frame_interval.numerator);
 			return 0;
 		}
 		return -ENOTSUPP;
@@ -4577,7 +4702,12 @@ static int imx678_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx678 *imx678 = to_imx678(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret;
+
+	/* Hold i2c bus across the power-on transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx678->reset_gpio, 1);
 
@@ -4592,10 +4722,12 @@ static int imx678_power_on(struct device *dev)
 
 	usleep_range(18000, 20000);
 
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 	return 0;
 
 error_reset:
 	gpiod_set_value_cansleep(imx678->reset_gpio, 0);
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return ret;
 }
@@ -4610,10 +4742,17 @@ static int imx678_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx678 *imx678 = to_imx678(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	/* Hold i2c bus across the power-off transition so userspace 3A i2c
+	 * cannot interleave a write to a sensor that is mid-reset. */
+	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	gpiod_set_value_cansleep(imx678->reset_gpio, 0);
 
 	clk_disable_unprepare(imx678->inclk);
+
+	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
 
 	return 0;
 }
@@ -4694,8 +4833,11 @@ static int imx678_init_controls(struct imx678 *imx678)
 	imx678_setup_custom_ctrl(imx678, &imx678->vmax_ctrl, IMX678_CID_VMAX);
 	imx678_setup_custom_ctrl(imx678, &imx678->hmax_ctrl, IMX678_CID_HMAX);
 
-	/* Initialize HCG control */
+	/* Initialize HCG control cluster */
 	imx678_setup_custom_ctrl(imx678, &imx678->hcg_ctrl, IMX678_CID_HCG);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_lef_ctrl, IMX678_CID_HCG_LEF);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_sef1_ctrl, IMX678_CID_HCG_SEF1);
+	imx678_setup_custom_ctrl(imx678, &imx678->hcg_sef2_ctrl, IMX678_CID_HCG_SEF2);
 
 	/* Initialize priming ctrls */
 	imx678_setup_custom_ctrl(imx678, &imx678->wdr_priming_ctrl, IMX678_CID_WDR_PRIMING);
@@ -4790,7 +4932,10 @@ static int imx678_init_controls(struct imx678 *imx678)
 	}
 
 	imx678->sd.ctrl_handler = ctrl_hdlr;
-	
+
+	/* Set initial activity state for per-exposure controls */
+	imx678_set_exp_activity(imx678);
+
 	return 0;
 }
 

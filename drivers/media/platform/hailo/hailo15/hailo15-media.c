@@ -1,13 +1,13 @@
 #include "common.h"
 #include "hailo15-media.h"
 
-struct list_head connections;
-struct list_head endpoints_list;
-struct media_device mdev;
-struct mutex mdev_lock;
-int init;
+static struct list_head connections;
+static struct list_head endpoints_list;
+static struct media_device mdev;
+static struct mutex mdev_lock;
+static int init;
 
-struct media_device* hailo15_media_get_media_device(){
+struct media_device* hailo15_media_get_media_device(void){
 	return &mdev;
 }
 EXPORT_SYMBOL(hailo15_media_get_media_device);
@@ -63,7 +63,7 @@ static int hailo15_media_register_subdev_to_v4l2(struct hailo15_media_device* md
 	return 0;
 }
 
-int hailo15_media_device_initialized(){
+int hailo15_media_device_initialized(void){
 	return init;
 }
 EXPORT_SYMBOL(hailo15_media_device_initialized);
@@ -83,9 +83,10 @@ EXPORT_SYMBOL(hailo15_media_init_media_device);
 int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id){
 	struct fwnode_handle *handle, *remote_handle;
 	struct device* dev = v4l2_dev->dev;
-	struct hailo15_media_device* mdev;
-	int sink = 0, ret = -EINVAL;
-	int reg = 0;
+	struct hailo15_media_device* med_dev;
+	u32 sink = 0;
+	int ret = -EINVAL;
+	u32 reg = 0;
 
 	dev_dbg(dev, "Registering v4l2 device %s\n", v4l2_dev->name);
 
@@ -121,9 +122,9 @@ int hailo15_media_register_v4l2_device(struct v4l2_device* v4l2_dev, int id){
 			fwnode_handle_put(remote_handle);
 			return -EPROBE_DEFER;
 		}
-		mdev = hailo15_media_get_endpoint(remote_handle);
+		med_dev = hailo15_media_get_endpoint(remote_handle);
 		mutex_lock(&mdev_lock);
-		ret = hailo15_media_register_subdev_to_v4l2(mdev, v4l2_dev);
+		ret = hailo15_media_register_subdev_to_v4l2(med_dev, v4l2_dev);
 		mutex_unlock(&mdev_lock);
 		fwnode_handle_put(handle);
 		fwnode_handle_put(remote_handle);
@@ -137,7 +138,8 @@ EXPORT_SYMBOL(hailo15_media_register_v4l2_device);
 int hailo15_media_get_sink_endpoints_status(struct device* dev){
 	struct fwnode_handle *handle, *remote_handle;
 	struct fwnode_endpoint fwnode_ep, fwnode_remote_ep;
-	int sink = 0, ret = 0;
+	u32 sink = 0;
+	int ret = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
 		struct fwnode_handle *remote_parent;
@@ -201,8 +203,8 @@ int hailo15_media_get_subdev(struct device *dev, int id, struct v4l2_subdev **sd
 	struct fwnode_handle *handle, *remote_handle;
 	struct hailo15_media_device *med_dev;
 	int ret = 0;
-	int sink = 0;
-	int reg = 0;
+	u32 sink = 0;
+	u32 reg = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
 		struct fwnode_handle *remote_parent;
@@ -252,7 +254,7 @@ int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd)
 	struct fwnode_endpoint fwnode_ep, fwnode_remote_ep;
 	struct hailo15_media_device *sink_mdev, *source_mdev;
 	int ret = 0;
-	int sink = 0;
+	u32 sink = 0;
 
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
 		struct fwnode_handle *remote_parent;
@@ -270,10 +272,11 @@ int hailo15_media_create_connections(struct device* dev, struct v4l2_subdev* sd)
 				if (ret) {
 					pr_err("failed to parse source-ep %s of subdev %s, skipping...",
 						handle->ops->get_name(handle), sd->name);
+					kfree(source_mdev);
 					continue;
 				}
 
-				pr_info("Registering source-ep: [%s, port %d, id %d]\n", 
+				pr_info("Registering source-ep: [%s, port %d, id %d]\n",
 					sd->name, fwnode_ep.port, fwnode_ep.id);
 				hailo15_media_register_subdevice(source_mdev);
 			}
@@ -363,8 +366,8 @@ int hailo15_media_create_links(struct device* dev, struct media_entity* entity, 
 	struct hailo15_media_device *med_dev;
 	struct v4l2_fwnode_link link;
 	int ret = 0;
-	int sink = 0;
-	int reg = 0;
+	u32 sink = 0;
+	u32 reg = 0;
 
 	memset(&link, 0, sizeof(link));
 	fwnode_graph_for_each_endpoint(dev_fwnode(dev), handle){
@@ -438,7 +441,7 @@ EXPORT_SYMBOL(hailo15_media_register_video_subdev_nodes);
 void hailo15_media_entity_clean(struct media_entity* entity){
 	struct list_head *pos, *npos;
 	struct hailo15_media_connection* connection;
-	struct hailo15_media_device* mdev;
+	struct hailo15_media_device* med_dev;
 	mutex_lock(&mdev_lock);
 	list_for_each_safe(pos, npos, &connections){
 		connection = list_entry(pos, struct hailo15_media_connection, connection);
@@ -452,10 +455,10 @@ void hailo15_media_entity_clean(struct media_entity* entity){
 	}
 
 	list_for_each_safe(pos, npos, &endpoints_list){
-		mdev = list_entry(pos, struct hailo15_media_device, link);
-		if(&mdev->sd->entity == entity){
-			list_del(&mdev->link);
-			kfree(mdev);
+		med_dev = list_entry(pos, struct hailo15_media_device, link);
+		if(&med_dev->sd->entity == entity){
+			list_del(&med_dev->link);
+			kfree(med_dev);
 		}
 	}
 	mutex_unlock(&mdev_lock);

@@ -100,7 +100,7 @@ static int hailo15l_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 	char const *const *groups;
 	unsigned num_groups;
 	unsigned func_select;
-	unsigned grp_select;
+	int grp_select;
 	unsigned num_pins = 0;
 	const unsigned *pins = NULL;
 
@@ -137,7 +137,7 @@ static int hailo15l_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 		grp_select = pinctrl_get_group_selector(pctrl_dev, grp);
 		if (grp_select < 0) {
 			dev_err(pinctrl->dev, "invalid group %s in map table\n", grp);
-			return ret;
+			return grp_select;
 		}
 		pctrl_dev->desc->pctlops->get_group_pins(pctrl_dev, grp_select,
 							&pins, &num_pins);
@@ -281,7 +281,7 @@ static int hailo15l_early_assignments(struct hailo15l_pinctrl *pinctrl)
 
 			// Get the pins which belong to the current group
 			ret = hailo15l_get_group_pins(pinctrl->pctl, current_pin_group_selector, &group_pins, &num_group_pins);
-			if (ret < 0 || num_group_pins < 0) {
+			if (ret < 0) {
 				dev_err(pinctrl->dev, "Failed to get early-pins-group %s pins", early_pin_group_str_array[early_pins_group_index]);
 				return -EFAULT;
 			}
