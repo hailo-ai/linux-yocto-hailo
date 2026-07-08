@@ -620,6 +620,16 @@ hailo15_isp_configure_rdma_frame_base(struct hailo15_isp_device *isp_dev,
 	   It will do so after the FE is finished (fe_switch wait for completion, and then executes this write)
 	*/
 	if(isp_dev->fe_enable) {
+		/* FE switch latches on the next sensor frame; a stalled feed wedges it.
+		 * Skip when stale, unless stall_mcm_on_no_mp handles frames individually. */
+		if (!isp_dev->stall_mcm_on_no_mp && vdid < HAILO15_ISP_SINK_PAD_MAX &&
+		    isp_dev->mcm_in_last_frame_ktime[vdid] &&
+		    ktime_to_ms(ktime_sub(ktime_get(), isp_dev->mcm_in_last_frame_ktime[vdid])) >
+			    MCM_IN_FEED_STALL_TIMEOUT_MS) {
+			pr_warn_ratelimited("%s: sensor feed stalled, skipping MCM FE switch\n", __func__);
+			return;
+		}
+
 		if (timing)
 			timing->fe_switch_start = ktime_get();
 
@@ -1038,11 +1048,13 @@ static void hailo15_isp_handle_frame_rx_rdma(struct hailo15_isp_device *isp_dev,
 				break;
 			case ISP_MCM_MODE_INJECTION:
 				mutex_lock(&isp_dev->ready_lock);
-				if (isp_dev->output_ready){
-					/* do rx_rdma */
+				/* Stall only when explicitly asked; otherwise dispatch
+				 * and let the missing MP slot fall through to fakebuf. */
+				if (isp_dev->output_ready || !isp_dev->stall_mcm_on_no_mp){
 					hailo15_isp_buffer_done(isp_dev, HAILO15_VID_GRP_MCM_IN);
 				} else {
-					/* indicates that the MCM is waiting for the MP to have a buffer ready */
+					trace_isp_mcm_in_no_mp_stall(HAILO15_VID_GRP_MCM_IN,
+								     ktime_get_ns());
 					isp_dev->mcm_waiting = 1;
 				}
 				mutex_unlock(&isp_dev->ready_lock);
@@ -1651,6 +1663,14 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 	    READ_ONCE(isp_dev->sensors_rdma_sync_sink) >= 0) {
 		WRITE_ONCE(isp_dev->sensors_rdma_sync_sink, -1);
 		wake_up_interruptible(&isp_dev->sensors_rdma_sync_wq);
+	}
+
+	/* Record feed liveness for the MCM FE-switch stall guard. */
+	if (__hailo15_isp_frame_rx_rdma_ready(isp_dev->irq_status.isp_miv2_mis)) {
+		uint8_t rx_vdid = isp_dev->fe_switch.next_vdid[0];
+
+		if (rx_vdid < HAILO15_ISP_SINK_PAD_MAX)
+			isp_dev->mcm_in_last_frame_ktime[rx_vdid] = ktime_get();
 	}
 
 	/* queue raw frame mcm work */

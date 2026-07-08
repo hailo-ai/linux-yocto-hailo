@@ -249,6 +249,11 @@ enum isp_mcm_mode {
     ISP_MCM_MODE_MAX
 };
 
+/* Optional bit on the ISPIOC_V4L2_MCM_MODE argument: stall MCM IN
+ * buffer_done while MP has no buffer queued. Default: drop to fakebuf. */
+#define MCM_MODE_MASK              0xFFFF
+#define MCM_FLAG_INJECT_STALL      (1u << 31)
+
 /*AF Measurments*/
 #define ISP_AFM_SUM_A 0x2024
 #define ISP_AFM_SUM_B 0x2028
