@@ -1702,10 +1702,11 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 
 	if (prev_buf) {
 		if (vid_node->drop_prev_buf) {
-			/* Fast toggle: prev_buf contains a stale frame from the old mode.
-			 * Re-queue it silently instead of returning to userspace. */
-			vb2_buffer_done(&prev_buf->vb.vb2_buf,
-					VB2_BUF_STATE_QUEUED);
+			/* Re-queue the stale frame to the driver queue; vb2_buffer_done(QUEUED)
+			 * would orphan it (no done_list, no buf_queue op) and leak one per toggle. */
+			mutex_lock(&vid_node->qlock);
+			hailo15_buf_list_add_tail(prev_buf, &vid_node->buf_queue);
+			mutex_unlock(&vid_node->qlock);
 			vid_node->drop_prev_buf = false;
 		} else {
 			prev_buf->vb.sequence = vid_node->sequence++;
