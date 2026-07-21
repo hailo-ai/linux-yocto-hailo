@@ -26,6 +26,9 @@
 #define HAILO15_ISP_PATHS_MAX 2 // MP/SP
 #define HAILO15_ISP_RAW_BUFS_NUM 3 /* number of buffers for raw frames from sensors */
 #define FRAME_TIMEOUT_MS 1100
+/* Skip an MCM-injection FE switch once the sensor feed has been silent this
+ * long: above the frame-timeout CPU-hiccup tolerance, below a real stall. */
+#define MCM_IN_FEED_STALL_TIMEOUT_MS (2 * FRAME_TIMEOUT_MS)
 #define SENSORS_RDMA_SYNC_TIMEOUT_MS 200 /* falls back to immediate toggle on expiry */
 #define HAILO15_ISP_IRQ_EVENTS_COUNT 2
 
@@ -285,6 +288,9 @@ struct hailo15_isp_device {
 	struct work_struct stitcher_stats_work;
 	struct workqueue_struct *stitcher_stats_wq;
 	int mcm_mode;
+	/* Set via MCM_FLAG_INJECT_STALL: stall MCM IN buffer_done while MP
+	 * has no buffer queued. Default false drops to fakebuf instead. */
+	bool stall_mcm_on_no_mp;
 	struct v4l2_subdev_format input_fmt[HAILO15_ISP_SINK_PAD_MAX];
 	struct list_head mcm_queue;
 	struct list_head mcm_raw_wr_queue;
@@ -309,6 +315,9 @@ struct hailo15_isp_device {
 	int fe_enable;
 	int mcm_waiting;
 	bool mcm_in_streaming;
+	/* Per-sink ktime of the last completed injected frame; feeds the MCM
+	 * FE-switch stall guard in hailo15_isp_configure_rdma_frame_base(). */
+	ktime_t mcm_in_last_frame_ktime[HAILO15_ISP_SINK_PAD_MAX];
 	int output_ready;
 	struct mutex ready_lock;
 	spinlock_t stream_state_lock;

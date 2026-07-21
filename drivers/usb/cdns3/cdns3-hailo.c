@@ -1028,7 +1028,8 @@ static int cdns_hailo_suspend(struct device *dev)
 #endif
 
 static const struct dev_pm_ops cdns_hailo_pm_ops = {
-	SET_RUNTIME_PM_OPS(cdns_hailo_suspend, cdns_hailo_resume, NULL)
+	// SET_RUNTIME_PM_OPS(cdns_hailo_suspend, cdns_hailo_resume, NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(cdns_hailo_suspend, cdns_hailo_resume)
 };
 
 static const struct of_device_id cdns_hailo_of_match[] = {
@@ -1043,7 +1044,7 @@ static struct platform_driver cdns_hailo_driver = {
 	.driver		= {
 		.name	= CDNS_HAILO_DRIVER_NAME,
 		.of_match_table	= cdns_hailo_of_match,
-		// .pm	= &cdns_hailo_pm_ops, TODO: enable power management
+		.pm	= &cdns_hailo_pm_ops,
 	},
 };
 module_platform_driver(cdns_hailo_driver);

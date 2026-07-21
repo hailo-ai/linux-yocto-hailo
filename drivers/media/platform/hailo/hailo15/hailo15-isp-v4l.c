@@ -319,7 +319,9 @@ static int hailo15_isp_mcm_extract_priming(struct v4l2_subdev *sd, void *arg)
 static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 {
 	struct hailo15_isp_device *isp_dev = isp_dev_from_v4l2_subdev(sd);
+	uint32_t arg_value;
 	uint32_t mcm_mode;
+	bool stall_flag;
 	bool streaming = false;
 	unsigned long flags;
 	int i;
@@ -335,8 +337,10 @@ static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 		return 0;
 	}
 
-	// The MCM mode passed down from v4l
-	mcm_mode = *(uint32_t *)arg;
+	// User passes the mcm enum value OR'd with optional MCM_FLAG_* bits.
+	arg_value = *(uint32_t *)arg;
+	mcm_mode = arg_value & MCM_MODE_MASK;
+	stall_flag = !!(arg_value & MCM_FLAG_INJECT_STALL);
 
 	if (mcm_mode >= ISP_MCM_MODE_MAX) {
 		pr_err("%s - invalid mcm mode %d\n", __func__, mcm_mode);
@@ -355,6 +359,7 @@ static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 	}
 
 	isp_dev->mcm_mode = mcm_mode;
+	isp_dev->stall_mcm_on_no_mp = stall_flag;
 	return 0;
 }
 
@@ -1291,6 +1296,15 @@ static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
 }
 
 static void hailo15_isp_start_mcm_in(struct hailo15_isp_device *isp_dev) {
+	int sink_pad;
+
+	/* Seed the feed-liveness clock so a new stream isn't gated by a stale timestamp. */
+	for (sink_pad = 0; sink_pad < HAILO15_ISP_SINK_PAD_MAX; sink_pad++) {
+		isp_dev->mcm_in_last_frame_ktime[sink_pad] = ktime_get();
+		if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
+			isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, sink_pad);
+	}
+
 	isp_dev->rdma_enable = 1;
 	isp_dev->fe_enable = 1;
 	isp_dev->dma_ready = 0;

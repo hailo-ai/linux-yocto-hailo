@@ -2,7 +2,7 @@
 /*
  * Driver for Hailo pixel mux
  *
- * Copyright (c) 2019-2023 Hailo Technologies Ltd. All rights reserved. 
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved. 
  */
 
 #include <linux/clk.h>
@@ -1148,12 +1148,39 @@ int hailo15_pixel_mux_route_right_lane(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(hailo15_pixel_mux_route_right_lane);
 
+static int __maybe_unused pixel_mux_suspend(struct device *dev)
+{
+	struct pixel_mux_priv *pixel_mux = dev_get_drvdata(dev);
+
+	if (pixel_mux->enabled) {
+		clk_disable_unprepare(pixel_mux->vision_clk);
+		clk_disable_unprepare(pixel_mux->vision_hclk);
+	}
+
+	return 0;
+}
+
+static int __maybe_unused pixel_mux_resume(struct device *dev)
+{
+	struct pixel_mux_priv *pixel_mux = dev_get_drvdata(dev);
+
+	if (pixel_mux->enabled)
+		return pixel_mux_enable(pixel_mux);
+
+	return 0;
+}
+
+static const struct dev_pm_ops pixel_mux_pm_ops = {
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pixel_mux_suspend, pixel_mux_resume)
+};
+
 static struct platform_driver pixel_mux_driver = {
 	.probe	= pixel_mux_probe,
 	.remove	= pixel_mux_remove,
 	.driver	= {
 		.name = HAILO_PIXEL_MUX_NAME,
 		.of_match_table	= hailo_pixel_mux_of_table,
+		.pm = &pixel_mux_pm_ops,
 	},
 };
 

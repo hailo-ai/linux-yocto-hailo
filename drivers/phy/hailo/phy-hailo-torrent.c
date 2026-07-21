@@ -531,6 +531,7 @@ static int hailo_torrent_suspend(struct device *dev)
 
 static const struct dev_pm_ops hailo_torrent_pm_ops = {
 	SET_RUNTIME_PM_OPS(hailo_torrent_suspend, hailo_torrent_resume, NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(hailo_torrent_suspend, hailo_torrent_resume)
 };
 
 static struct hailo_matched_data hailo15_matched_data = {
