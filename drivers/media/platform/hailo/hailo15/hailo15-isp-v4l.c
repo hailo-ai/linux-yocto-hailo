@@ -319,7 +319,9 @@ static int hailo15_isp_mcm_extract_priming(struct v4l2_subdev *sd, void *arg)
 static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 {
 	struct hailo15_isp_device *isp_dev = isp_dev_from_v4l2_subdev(sd);
+	uint32_t arg_value;
 	uint32_t mcm_mode;
+	bool stall_flag;
 	bool streaming = false;
 	unsigned long flags;
 	int i;
@@ -335,8 +337,10 @@ static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 		return 0;
 	}
 
-	// The MCM mode passed down from v4l
-	mcm_mode = *(uint32_t *)arg;
+	// User passes the mcm enum value OR'd with optional MCM_FLAG_* bits.
+	arg_value = *(uint32_t *)arg;
+	mcm_mode = arg_value & MCM_MODE_MASK;
+	stall_flag = !!(arg_value & MCM_FLAG_INJECT_STALL);
 
 	if (mcm_mode >= ISP_MCM_MODE_MAX) {
 		pr_err("%s - invalid mcm mode %d\n", __func__, mcm_mode);
@@ -355,6 +359,7 @@ static int hailo15_isp_mcm_set_mode(struct v4l2_subdev *sd, void *arg)
 	}
 
 	isp_dev->mcm_mode = mcm_mode;
+	isp_dev->stall_mcm_on_no_mp = stall_flag;
 	return 0;
 }
 
@@ -1291,6 +1296,15 @@ static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
 }
 
 static void hailo15_isp_start_mcm_in(struct hailo15_isp_device *isp_dev) {
+	int sink_pad;
+
+	/* Seed the feed-liveness clock so a new stream isn't gated by a stale timestamp. */
+	for (sink_pad = 0; sink_pad < HAILO15_ISP_SINK_PAD_MAX; sink_pad++) {
+		isp_dev->mcm_in_last_frame_ktime[sink_pad] = ktime_get();
+		if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
+			isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, sink_pad);
+	}
+
 	isp_dev->rdma_enable = 1;
 	isp_dev->fe_enable = 1;
 	isp_dev->dma_ready = 0;
@@ -1411,6 +1425,13 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 
 			isp_dev->rdma_enable = 1;
 			isp_dev->fe_enable = 1;
+
+			/* Seed the feed-liveness clock so a new stream isn't gated by a stale timestamp. */
+			for (pad_index = 0; pad_index < HAILO15_ISP_SINK_PAD_MAX; pad_index++) {
+				isp_dev->mcm_in_last_frame_ktime[pad_index] = ktime_get();
+				if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
+					isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, pad_index);
+			}
 
 			/* if this is the first stream, do initializations */
 			spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
@@ -1740,6 +1761,11 @@ disable_rdma:
 			if (stream_cnt <= 1) {
 				atomic_set(&isp_dev->first_rdma_done, 0);
 				WRITE_ONCE(isp_dev->sensors_rdma_sync_sink, -1);
+				/* MULTI_SENSOR leaves next_vdid alternated; reset to the VDID0
+				 * default so a later single-sensor pipeline isn't mis-routed
+				 * and stalls on sink 0. */
+				isp_dev->fe_switch.next_vdid[0] = 0;
+				isp_dev->fe_switch.next_vdid[1] = 0;
 			}
 		}
 

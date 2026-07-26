@@ -35,6 +35,8 @@
 #include <linux/timer.h>
 #include <linux/jiffies.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
+#include <linux/pm_wakeup.h>
 
 #include "xrp_cma_alloc.h"
 #include "xrp_firmware.h"
@@ -583,6 +585,7 @@ static int xrp_probe(struct platform_device *pdev)
     int ret;
     xrp_init_function *init;
     const struct of_device_id *match;
+    struct generic_pm_domain *genpd;
     struct xvp *xvp;
 
     match = of_match_device(xrp_of_match, &pdev->dev);
@@ -604,6 +607,12 @@ static int xrp_probe(struct platform_device *pdev)
         return ret;
     }
 
+    /* Keep the DSP power domain powered across system suspend */
+    genpd = pd_to_genpd(xvp->dev->pm_domain);
+    if (!IS_ERR_OR_NULL(genpd)) {
+        genpd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
+    }
+
     pm_runtime_set_active(xvp->dev);
     pm_runtime_enable(xvp->dev);
 
@@ -615,12 +624,55 @@ static int xrp_remove(struct platform_device *pdev)
     return xrp_deinit(pdev);
 }
 
+static int __maybe_unused xrp_suspend(struct device *dev)
+{
+    struct xvp *xvp = dev_get_drvdata(dev);
+
+    /* Refuse system suspend if DSP is in use. */
+    if (xvp->state == DSP_STATE_RUNNING &&
+        atomic_read(&xvp->open_counter) != 0) {
+        dev_warn(dev, "refusing system suspend: DSP is in use\n");
+        return -EBUSY;
+    }
+
+    /* Keep the DSP power domain powered across suspend */
+    device_set_wakeup_path(dev);
+
+    /* Only a running DSP needs to be quiesced. */
+    if (xvp->state == DSP_STATE_RUNNING) {
+        xrp_hw_suspend_dsp(xvp);
+    }
+
+    return 0;
+}
+
+static int __maybe_unused xrp_resume(struct device *dev)
+{
+    struct xvp *xvp = dev_get_drvdata(dev);
+    int ret;
+
+    if (xvp->state != DSP_STATE_RUNNING) {
+        return 0;
+    }
+
+    ret = xrp_hw_resume_dsp(xvp);
+    if (ret < 0) {
+        dev_err(dev, "failed to resume DSP (%d)\n", ret);
+        return ret;
+    }
+
+    return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(xrp_pm_ops, xrp_suspend, xrp_resume);
+
 static struct platform_driver xrp_driver = {
     .probe   = xrp_probe,
     .remove  = xrp_remove,
     .driver  = {
         .name = DRIVER_NAME,
         .of_match_table = of_match_ptr(xrp_of_match),
+        .pm = &xrp_pm_ops,
     },
 };
 

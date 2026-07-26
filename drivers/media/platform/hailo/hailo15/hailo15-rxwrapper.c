@@ -2534,12 +2534,58 @@ int hailo15_rxwrapper_restore_single_link(struct device *dev)
 EXPORT_SYMBOL_GPL(hailo15_rxwrapper_restore_single_link);
 
 
+static int __maybe_unused hailo15_rxwrapper_suspend(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(priv->rxwrapper_xtal_clk);
+	clk_disable_unprepare(priv->rxwrapper_data_clk);
+	clk_disable_unprepare(priv->rxwrapper_p_clk);
+
+	return 0;
+}
+
+static int __maybe_unused hailo15_rxwrapper_resume(struct device *dev)
+{
+	struct hailo15_rxwrapper_priv *priv = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare_enable(priv->rxwrapper_p_clk);
+	if (ret) {
+		dev_err(dev, "failed enabling rxwrapper_p_clk on resume, err = (%pe)\n", ERR_PTR(ret));
+		return ret;
+	}
+
+	ret = clk_prepare_enable(priv->rxwrapper_data_clk);
+	if (ret) {
+		dev_err(dev, "failed enabling rxwrapper_data_clk on resume, err = (%pe)\n", ERR_PTR(ret));
+		clk_disable_unprepare(priv->rxwrapper_p_clk);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(priv->rxwrapper_xtal_clk);
+	if (ret) {
+		dev_err(dev, "failed enabling rxwrapper_xtal_clk on resume, err = (%pe)\n", ERR_PTR(ret));
+		clk_disable_unprepare(priv->rxwrapper_data_clk);
+		clk_disable_unprepare(priv->rxwrapper_p_clk);
+		return ret;
+	}
+
+	return 0;
+}
+
+static const struct dev_pm_ops hailo15_rxwrapper_pm_ops = {
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(hailo15_rxwrapper_suspend,
+				      hailo15_rxwrapper_resume)
+};
+
 static struct platform_driver hailo15_rxwrapper_driver = {
 	.probe = hailo15_rxwrapper_probe,
 	.remove = hailo15_rxwrapper_remove,
 	.driver = {
 		.name = HAILO_RXWRAPPER_NAME,
 		.of_match_table = hailo15_rxwrapper_of_match,
+		.pm = &hailo15_rxwrapper_pm_ops,
 	}
 };
 

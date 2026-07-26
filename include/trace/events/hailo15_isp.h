@@ -155,6 +155,12 @@ DEFINE_EVENT(hailo15_isp_simple_event_class, isp_mcm_raw_wr_buffer_done_null,
 	TP_ARGS(grp_id, timestamp)
 );
 
+/* MCM IN buffer_done gated off — MP queue empty and stall flag set. */
+DEFINE_EVENT(hailo15_isp_simple_event_class, isp_mcm_in_no_mp_stall,
+	TP_PROTO(u32 grp_id, u64 timestamp),
+	TP_ARGS(grp_id, timestamp)
+);
+
 /* MCM_IN buffer initialization and release traces */
 DECLARE_EVENT_CLASS(hailo15_isp_mcm_in_buffer_class,
 	TP_PROTO(u32 grp_id, u32 buffer_index, dma_addr_t buffer_address, u64 timestamp),
