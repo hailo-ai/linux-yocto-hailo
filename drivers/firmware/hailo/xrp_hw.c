@@ -101,11 +101,11 @@ static void configure_reset_vector(struct xvp *xvp)
     xvp->hw_ops->configure_reset_vector(xvp);
 }
 
-static int dsp_config_poweron(struct xvp *xvp)
+static int dsp_config_clk_enable(struct xvp *xvp)
 {
     int ret;
 
-    dev_dbg(xvp->dev, "DSP Config Poweron\n");
+    dev_dbg(xvp->dev, "DSP config clock enable\n");
 
     ret = clk_prepare_enable(xvp->dsp_config_clock);
     if (ret) {
@@ -116,19 +116,19 @@ static int dsp_config_poweron(struct xvp *xvp)
     return 0;
 }
 
-static void dsp_config_poweroff(struct xvp *xvp)
+static void dsp_config_clk_disable(struct xvp *xvp)
 {
-    dev_dbg(xvp->dev, "DSP Config Poweroff\n");
+    dev_dbg(xvp->dev, "DSP config clock disable\n");
 
     clk_disable_unprepare(xvp->dsp_config_clock);
 }
 
-static int dsp_poweron(struct xvp *xvp)
+static int dsp_clk_enable(struct xvp *xvp)
 {
     int ret;
     u32 pll_rate;
 
-    dev_dbg(xvp->dev, "DSP Poweron\n");
+    dev_dbg(xvp->dev, "DSP clock enable\n");
 
     ret = device_property_read_u32(xvp->dev, "clock-frequency", &pll_rate);
     if (ret < 0) {
@@ -153,9 +153,9 @@ exit:
     return ret;
 }
 
-static void dsp_poweroff(struct xvp *xvp)
+static void dsp_clk_disable(struct xvp *xvp)
 {
-    dev_dbg(xvp->dev, "DSP Poweroff\n");
+    dev_dbg(xvp->dev, "DSP clock disable\n");
 
     // Linux prints a warning if we try to 
     // unprepare a clock that is already unprepared
@@ -278,7 +278,7 @@ int xrp_enable_dsp(struct xvp *xvp)
 
     pm_runtime_get_sync(xvp->dev);
 
-    ret = dsp_config_poweron(xvp);
+    ret = dsp_config_clk_enable(xvp);
     if (ret) {
         goto exit;
     }
@@ -296,7 +296,7 @@ int xrp_enable_dsp(struct xvp *xvp)
     configure_reset_vector(xvp);
     enable_jtag(xvp);
 
-    ret = dsp_poweron(xvp);
+    ret = dsp_clk_enable(xvp);
     if (ret < 0) {
         goto exit;
     }
@@ -317,11 +317,44 @@ void xrp_disable_dsp(struct xvp *xvp)
 
     xrp_destroy_mbox(xvp);
 
-    dsp_poweroff(xvp);
+    dsp_clk_disable(xvp);
 
-    dsp_config_poweroff(xvp);
+    dsp_config_clk_disable(xvp);
 
     pm_runtime_put_sync(xvp->dev);
+}
+
+void xrp_hw_suspend_dsp(struct xvp *xvp)
+{
+    dev_dbg(xvp->dev, "Suspend DSP: halt and clock-gate\n");
+
+    xrp_halt_dsp(xvp);
+    dsp_clk_disable(xvp);
+    dsp_config_clk_disable(xvp);
+}
+
+int xrp_hw_resume_dsp(struct xvp *xvp)
+{
+    int ret;
+
+    dev_dbg(xvp->dev, "Resume DSP: clock-ungate and release\n");
+
+    ret = dsp_config_clk_enable(xvp);
+    if (ret < 0) {
+        dev_err(xvp->dev, "Failed to enable DSP config clock on resume (%d)\n", ret);
+        return ret;
+    }
+
+    ret = dsp_clk_enable(xvp);
+    if (ret < 0) {
+        dev_err(xvp->dev, "Failed to enable DSP clock on resume (%d)\n", ret);
+        dsp_config_clk_disable(xvp);
+        return ret;
+    }
+
+    xrp_release_dsp(xvp);
+
+    return 0;
 }
 
 void xrp_halt_dsp(struct xvp *xvp)

@@ -54,6 +54,8 @@
 #ifndef _FE_DEV_H_
 #define _FE_DEV_H_
 
+#include <linux/ktime.h>
+
 #define ISP_FE_FULL_BUFFER_BYTE_MAX     (0x7A00) /* non-ctrl + ctrl + special registers */
 #define ISP_FE_REG_OFFSET_BYTE_MAX		(0x7750)
 #define ISP_FE_REG_SIZE 				(4) /* Byte */
@@ -379,6 +381,9 @@ struct vvcam_fe_dev {
 	 * it adapts to pipeline/fps changes. */
 	u32 mcm_rdma_timeout_ms;
 
+	/* Per-vdid injected-frame arrival time; set via record_injection_frame(). */
+	ktime_t mcm_in_last_frame_ktime[ISP_FE_VIRT_MAXCNT];
+
 	struct isp_fe_context fe;
 	int (*fe_get_vdid) (struct vvcam_fe_dev *dev, uint8_t *vd_id);
 	// IRQ handler for FE interrupts
@@ -395,6 +400,8 @@ struct vvcam_fe_dev {
 	int (*read_vdid_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t *val);
 	int (*write_vdid_reg)(struct vvcam_fe_dev *dev, uint8_t vdid, uint32_t offset, uint32_t val);
 	int (*fe_switch)(struct vvcam_fe_dev *dev, struct isp_fe_switch_t *fe_switch);
+	// Record injection-feed liveness; lockless, callable from IRQ or process context.
+	void (*record_injection_frame)(struct vvcam_fe_dev *dev, uint8_t vdid);
 };
 
 // these functions are to be used even when FE is disabled

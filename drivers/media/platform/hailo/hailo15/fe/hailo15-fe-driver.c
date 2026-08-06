@@ -92,6 +92,8 @@
 #define VI_MI_IMSC_OFFSET 0x16c0
 #define VI_ISP_STITCHING_IMSC_OFFSET 0x33e4
 #define VIV_ISP_FE_DMA_TIMOUT_MS	1000
+/* Injection feed considered dead past this age (above the frame-timeout watchdog). */
+#define FE_FEED_STALL_TIMEOUT_MS	2200
 #define VIV_ISP_FE_DEBUG_DUMP		0
 #define VIV_ISP_FE_UNUSED_OFFSET	((uint32_t)-1)
 
@@ -1310,6 +1312,17 @@ static int __isp_fe_write_vdid_reg(struct vvcam_fe_dev *dev, uint8_t vdid, uint3
 			return ret;
 		}
 	} else if (fe->state == ISP_FE_STATE_WAITING && stop && fe->running_num == 0) {
+		/* Dead injection feed: the stop-finalize DMA would wait forever for a
+		 * frame boundary that never comes and wedge the FE. Skip it. */
+		ktime_t last_frame = (vdid < ISP_FE_VIRT_MAXCNT) ?
+			READ_ONCE(dev->mcm_in_last_frame_ktime[vdid]) : 0;
+
+		if (last_frame &&
+		    ktime_to_ms(ktime_sub(ktime_get(), last_frame)) > FE_FEED_STALL_TIMEOUT_MS) {
+			pr_debug("%s: injection feed stalled on vdid %d, skipping stop finalize\n",
+				 __func__, vdid);
+			return 0;
+		}
 		ret = isp_fe_update_cmd(dev);
 		if (ret) {
 			pr_err("%s: failed to update cmd on stop, ret=%d\n", __func__, ret);
@@ -1790,6 +1803,13 @@ int isp_fe_destory(struct vvcam_fe_dev *dev)
 }
 
 /* === IRQ context ops: no mutex, no state checks === */
+
+static void isp_fe_ops_record_injection_frame(struct vvcam_fe_dev *dev, uint8_t vdid)
+{
+	/* Single aligned store; the stop-finalize guard reads it with READ_ONCE. */
+	if (vdid < ISP_FE_VIRT_MAXCNT)
+		WRITE_ONCE(dev->mcm_in_last_frame_ktime[vdid], ktime_get());
+}
 
 
 static int isp_fe_ops_irq_read_control_reg(struct vvcam_fe_dev *dev, uint32_t offset, uint32_t *val)
@@ -2371,6 +2391,7 @@ static int vvcam_fe_probe(struct platform_device *pdev)
 	pfe_dev->read_vdid_reg = isp_fe_read_vdid_reg;
 	pfe_dev->write_vdid_reg = isp_fe_write_vdid_reg;
 	pfe_dev->fe_switch = isp_fe_switch;
+	pfe_dev->record_injection_frame = isp_fe_ops_record_injection_frame;
 
 	fe_register_index++;
 	fe_dev = pfe_dev;

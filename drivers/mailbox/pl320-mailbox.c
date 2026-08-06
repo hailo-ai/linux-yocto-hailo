@@ -354,7 +354,8 @@ static int pl320_mbox_probe(struct platform_device *pdev)
 
 	// registering irq should be last to prevent race conditions
 	// that IRQ handler is called before the rest of the driver is ready
-	ret = devm_request_irq(&pdev->dev, irq, pl320_mbox_interrupt, 0, dev_name(&pdev->dev), mdev);
+	ret = devm_request_irq(&pdev->dev, irq, pl320_mbox_interrupt, IRQF_NO_SUSPEND,
+			       dev_name(&pdev->dev), mdev);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register a mailbox IRQ handler: %d\n", ret);
 		return ret;

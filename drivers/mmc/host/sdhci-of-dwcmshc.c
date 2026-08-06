@@ -172,6 +172,8 @@ struct dwcmshc_priv {
 	struct clk	*bus_clk;
 	int vendor_specific_area1; /* P_VENDOR_SPECIFIC_AREA reg */
 	void *priv; /* pointer to SoC private stuff */
+	bool is_rk3568;
+	bool is_hailo;
 };
 static void dwcmshc_hailo15_phy_config(struct sdhci_host *host);
 /*
@@ -541,11 +543,15 @@ static void dwcmshc_hailo15_get_sd_vsel_from_dts(struct device *dev, struct sdhc
 		hailo15_dwcmshc_set_vdd_gpio(host, false);
 }
 
-static void hailo15_dwcmshc_hw_reset(struct sdhci_host *host)
-{
+static void hailo15_dwcmshc_setup(struct sdhci_host *host) {
 	dwcmshc_hailo15_phy_config(host);
 	hailo15_dwcmshc_set_vdd_gpio(host, false);
 	hailo15_dwcmshc_set_rxsel(host, false);
+}
+
+static void hailo15_dwcmshc_hw_reset(struct sdhci_host *host)
+{
+	hailo15_dwcmshc_setup(host);
 }
 
 static void hailo15_dwcmshc_voltage_switch(struct sdhci_host *host)
@@ -1034,6 +1040,7 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		}
 
 		priv->priv = rk_priv;
+		priv->is_rk3568 = true;
 
 		err = dwcmshc_rk3568_init(host, priv);
 		if (err)
@@ -1050,6 +1057,7 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		}
 		
 		priv->priv = hailo_priv;
+		priv->is_hailo = true;
 		hailo_priv->is_hailo15l = is_hailo15l;
 		card_clk = devm_clk_get_optional(dev, "card_clk");
 		if (IS_ERR(card_clk)) {
@@ -1137,7 +1145,6 @@ static int dwcmshc_suspend(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
-	struct rk3568_priv *rk_priv = priv->priv;
 	int ret;
 
 	ret = sdhci_suspend_host(host);
@@ -1148,9 +1155,12 @@ static int dwcmshc_suspend(struct device *dev)
 	if (!IS_ERR(priv->bus_clk))
 		clk_disable_unprepare(priv->bus_clk);
 
-	if (rk_priv)
+	if (priv->is_rk3568) {
+		struct rk3568_priv *rk_priv = priv->priv;
+
 		clk_bulk_disable_unprepare(RK3568_MAX_CLKS,
 					   rk_priv->rockchip_clks);
+	}
 
 	return ret;
 }
@@ -1160,7 +1170,6 @@ static int dwcmshc_resume(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
-	struct rk3568_priv *rk_priv = priv->priv;
 	int ret;
 
 	ret = clk_prepare_enable(pltfm_host->clk);
@@ -1173,14 +1182,25 @@ static int dwcmshc_resume(struct device *dev)
 			return ret;
 	}
 
-	if (rk_priv) {
+	if (priv->is_rk3568) {
+		struct rk3568_priv *rk_priv = priv->priv;
+
 		ret = clk_bulk_prepare_enable(RK3568_MAX_CLKS,
 					      rk_priv->rockchip_clks);
 		if (ret)
 			return ret;
 	}
 
-	return sdhci_resume_host(host);
+	ret = sdhci_resume_host(host);
+	if (ret)
+		return ret;
+
+	/* sdhci_resume_host() issues a full controller reset (SDHCI_RESET_ALL via
+	   sdhci_init()), which clears our configuration so we re-apply. */
+	if (priv->is_hailo)
+		hailo15_dwcmshc_setup(host);
+
+	return ret;
 }
 #endif
 
