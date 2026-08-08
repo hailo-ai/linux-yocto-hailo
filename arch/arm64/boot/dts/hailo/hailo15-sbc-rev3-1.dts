@@ -101,14 +101,14 @@
        regulator-initial-mode = <2>;
     };
     sensor_1: camera-sensor@1a {
-        status = "disabled";
+        status = "okay";
         compatible = "sony,imx334", "sony,imx664", "sony,imx675", "sony,imx678", "sony,imx715";
         reg = <0x1a>;
         clocks = <&sensor_clk>;
         clock-names = "inclk";
         clock-frequency = <24000000>;
         csi-id = <0>;
-        reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
         xmaster-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
         port {
             sensor1_out_csi2rx: endpoint {
@@ -430,5 +430,153 @@
     // Media buffer: reserve 768 Mib: [0x88000000 - 0xB8000000)
     hailo_media_buf_cma: hailo_media_buf,cma {
         reg = <0 0x88000000 0 0x30000000>;
+    };
+};
+/* ---- Second camera capture chain (HCDT) ----
+ * rev3-1 omits the CSI1 wiring present in hailo15-sbc.dts.
+ * Adapted from hailo15-sbc.dts; endpoint labels differ on rev3-1
+ * (sensor1_out_csi2rx / csi2rx_in_sensor1).
+ */
+&rxwrapper1 {
+    status = "okay";
+    ports {
+        port@0 {
+            rxwrapper1_in_mux: endpoint {
+                remote-endpoint = <&mux_out_rxwrapper1>;
+            };
+        };
+        port@1 {
+            rxwrapper_out_csi1_sX: endpoint {
+                remote-endpoint = <&vid5_in>;
+            };
+        };
+        port@2 {
+            rxwrapper_out_csi1_s0: endpoint {
+                remote-endpoint = <&vid50_in>;
+            };
+        };
+        port@3 {
+            rxwrapper_out_csi1_s1: endpoint {
+                remote-endpoint = <&vid51_in>;
+            };
+        };
+        port@4 {
+            rxwrapper_out_csi1_s2: endpoint {
+                remote-endpoint = <&vid52_in>;
+            };
+        };
+        port@5 {
+            rxwrapper_out_csi1_s3: endpoint {
+                remote-endpoint = <&vid53_in>;
+            };
+        };
+        port@6 {
+            rxwrapper1_out_isp: endpoint {
+                remote-endpoint = <&isp_in_rxwrapper1>;
+            };
+        };
+    };
+};
+
+&hailo_isp {
+    ports {
+        port@4 {
+            reg = <4>;
+            isp_out_s1_vid4: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid4_in>;
+            };
+        };
+        port@6 {
+            reg = <6>;
+            isp_out_s1_vid6: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid6_in>;
+            };
+        };
+        port@7 {
+            reg = <7>;
+            isp_out_s0_mcm_raw_wr: endpoint {
+                sink = <0>;
+                remote-endpoint = <&vid6_mcm_raw_wr_in>;
+            };
+        };
+    };
+};
+
+&hailo_vid_cap {
+    ports {
+        port@4 {
+            reg = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+            vid4_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_ISP_MP>;
+                remote-endpoint = <&isp_out_s1_vid4>;
+            };
+        };
+        port@7 {
+            reg = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+            vid6_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_ISP_SP>;
+                remote-endpoint = <&isp_out_s1_vid6>;
+            };
+        };
+        port@6 {
+            reg = <HAILO15_VID_GRP_MCM_RAW_WR>;
+            vid6_mcm_raw_wr_in: endpoint {
+                reg = <HAILO15_VID_GRP_MCM_RAW_WR>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_MCM_RAW_WR>;
+                remote-endpoint = <&isp_out_s0_mcm_raw_wr>;
+            };
+        };
+        port@5 {
+            reg = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+            vid5_in: endpoint {
+                reg = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_SX_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_sX>;
+            };
+        };
+        port@50 {
+            reg = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+            vid50_in: endpoint {
+                reg = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S0_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s0>;
+            };
+        };
+        port@51 {
+            reg = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+            vid51_in: endpoint {
+                reg = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S1_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s1>;
+            };
+        };
+        port@52 {
+            reg = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+            vid52_in: endpoint {
+                reg = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S2_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s2>;
+            };
+        };
+        port@53 {
+            reg = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+            vid53_in: endpoint {
+                reg = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+                sink = <1>;
+                path = <HAILO15_VID_GRP_S3_CSI1_P2A>;
+                remote-endpoint = <&rxwrapper_out_csi1_s3>;
+            };
+        };
     };
 };
