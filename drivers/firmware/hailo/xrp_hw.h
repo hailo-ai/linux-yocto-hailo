@@ -29,6 +29,10 @@ int xrp_enable_dsp(struct xvp *xvp);
 
 void xrp_disable_dsp(struct xvp *xvp);
 
+void xrp_hw_suspend_dsp(struct xvp *xvp);
+
+int xrp_hw_resume_dsp(struct xvp *xvp);
+
 void xrp_halt_dsp(struct xvp *xvp);
 
 void xrp_release_dsp(struct xvp *xvp);

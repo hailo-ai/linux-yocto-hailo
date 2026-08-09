@@ -824,7 +824,7 @@
         groups = "gpio8_3_grp";
     };
 
-    /* IO_PAD_68 - GPIO_9 - In SBC, gpio 9 pin is serving as gpio function, and not connected to any external function */
+    /* IO_PAD_69 - GPIO_9 - In SBC, gpio 9 pin is serving as gpio function, and not connected to any external function */
     pinctrl_gpio_9: gpio_9 {
         function = "gpio9";
         groups = "gpio9_5_grp";
