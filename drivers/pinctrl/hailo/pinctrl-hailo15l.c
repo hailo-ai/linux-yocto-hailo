@@ -316,7 +316,8 @@ static int hailo15l_early_assignments(struct hailo15l_pinctrl *pinctrl)
 			continue;
 		}
 
-		hailo15l_set_pads_pinmux_mode(pinctrl, pinctrl_pin_index, mode);
+		/* Address the pinmux register by the pin's mux_index, matching hailo15l_set_mux(). */
+		hailo15l_set_pads_pinmux_mode(pinctrl, pin_data->mux_index, mode);
 	}
 	return 0;
 }
@@ -464,14 +465,14 @@ static int hailo15l_gpio_set_strength(struct pinctrl_dev *pctldev,
 }
 
 static int hailo15l_pad_get_strength(struct pinctrl_dev *pctldev,
-				     uint32_t *pad)
+				     uint32_t __iomem *pad)
 {
 	/* Drive-strength reverse lookup is the same as forward lookup */
 	return PADS_CONFIG__DS__GET(readl(pad));
 }
 
 static int hailo15l_pad_set_strength(struct pinctrl_dev *pctldev,
-				     uint32_t *pad,
+				     uint32_t __iomem *pad,
 				     unsigned strength_value)
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
@@ -493,7 +494,7 @@ static int hailo15l_pin_get_strength(struct pinctrl_dev *pctldev, unsigned pin)
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 		case H15L_GENERAL_PAD:
@@ -517,7 +518,7 @@ static int hailo15l_pin_set_strength(struct pinctrl_dev *pctldev, unsigned pin,
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	if (strength_value > 16) {
 		pr_err("Error: make sure drive strength is supported");
@@ -541,13 +542,13 @@ static int hailo15l_pin_set_strength(struct pinctrl_dev *pctldev, unsigned pin,
 	return -ENOTSUPP;
 }
 
-static int hailo15l_pad_get_pull_selector(struct pinctrl_dev *pctldev, uint32_t *pad)
+static int hailo15l_pad_get_pull_selector(struct pinctrl_dev *pctldev, uint32_t __iomem *pad)
 {
 	return PADS_CONFIG__PS__GET(readl(pad)) ? PIN_CONFIG_BIAS_PULL_UP : PIN_CONFIG_BIAS_PULL_DOWN;
 }
 
 static int hailo15l_pad_set_pull(struct pinctrl_dev *pctldev,
-				 uint32_t *pad,
+				 uint32_t __iomem *pad,
 				 enum pin_config_param pull)
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
@@ -623,7 +624,7 @@ static int hailo15l_pin_get_pull_selector(struct pinctrl_dev *pctldev, unsigned 
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 		case H15L_GENERAL_PAD:
@@ -647,7 +648,7 @@ static int hailo15l_pin_set_pull(struct pinctrl_dev *pctldev, unsigned pin,
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 		case H15L_GENERAL_PAD:
@@ -666,12 +667,12 @@ static int hailo15l_pin_set_pull(struct pinctrl_dev *pctldev, unsigned pin,
 	return -ENOTSUPP;
 }
 
-static int hailo15l_pad_get_pull_enabled(struct pinctrl_dev *pctldev, uint32_t *pad)
+static int hailo15l_pad_get_pull_enabled(struct pinctrl_dev *pctldev, uint32_t __iomem *pad)
 {
 	return PADS_CONFIG__PE__GET(readl(pad));
 }
 
-static int hailo15l_pad_bias_disable(struct pinctrl_dev *pctldev, uint32_t *pad)
+static int hailo15l_pad_bias_disable(struct pinctrl_dev *pctldev, uint32_t __iomem *pad)
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	uint32_t data_reg;
@@ -726,7 +727,7 @@ static int hailo15l_pin_get_pull_enabled(struct pinctrl_dev *pctldev, unsigned p
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 		case H15L_GENERAL_PAD:
@@ -749,7 +750,7 @@ static int hailo15l_pin_bias_disable(struct pinctrl_dev *pctldev, unsigned pin)
 {
 	struct hailo15l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h15l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 		case H15L_GENERAL_PAD:

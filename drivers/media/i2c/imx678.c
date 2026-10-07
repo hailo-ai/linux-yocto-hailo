@@ -38,6 +38,47 @@
 
 #define IMX678_REG_HMAX 0x302C
 
+/* Mode-control registers used by mode-init tables and SDR<->2DOL deltas */
+#define IMX678_REG_TUNING_300C       0x300C
+#define IMX678_REG_TUNING_300D       0x300D
+#define IMX678_REG_INCK_SEL          0x3014
+#define IMX678_REG_DATARATE_SEL      0x3015
+#define IMX678_REG_WINMODE           0x3018
+#define IMX678_REG_WDMODE            0x301A   /* 0=SDR, 1=DOL 2-frame */
+#define IMX678_REG_ADDMODE           0x301B   /* binning */
+#define IMX678_REG_THIN_V_EN         0x301C   /* DOL subsampling enable */
+#define IMX678_REG_ADBIT             0x3022
+#define IMX678_REG_MDBIT             0x3023
+#define IMX678_REG_VMAX_HIGH         0x3029
+#define IMX678_REG_HMAX_LOW          0x302C
+#define IMX678_REG_HMAX_HIGH         0x302D
+#define IMX678_REG_PIX_HST_LOW       0x303C
+#define IMX678_REG_PIX_HWIDTH_LOW    0x303E
+#define IMX678_REG_PIX_HWIDTH_HIGH   0x303F
+#define IMX678_REG_LANEMODE          0x3040
+#define IMX678_REG_XSIZE_OVERLAP     0x3042
+#define IMX678_REG_PIX_VST_LOW       0x3044
+#define IMX678_REG_PIX_VWIDTH_LOW    0x3046
+#define IMX678_REG_PIX_VWIDTH_HIGH   0x3047
+#define IMX678_REG_TUNING_304C       0x304C
+#define IMX678_REG_SHR0_LOW          0x3050
+#define IMX678_REG_SHR0_HIGH         0x3051
+#define IMX678_REG_SHR1_LOW          0x3054
+#define IMX678_REG_RHS1_LOW          0x3058
+#define IMX678_REG_RHS1_HIGH         0x3059
+#define IMX678_REG_SHR2_LOW          0x3060
+#define IMX678_REG_SHR2_HIGH         0x3061
+#define IMX678_REG_RHS2_LOW          0x3064
+#define IMX678_REG_RHS2_HIGH         0x3065
+#define IMX678_REG_XVS_DRV           0x30A6
+#define IMX678_REG_TPG_EN_DUOUT      0x30E0
+#define IMX678_REG_TPG_COLORWIDTH    0x30E4
+#define IMX678_REG_GAIN_PGC_FIDMD    0x3400   /* per-frame gain mode */
+#define IMX678_REG_TUNING_3460       0x3460
+#define IMX678_REG_TUNING_355A       0x355A
+#define IMX678_REG_TUNING_37B0       0x37B0
+#define IMX678_REG_TUNING_4E3C       0x4E3C   /* analog interface */
+
 /* defaults */
 #define IMX678_DEFAULT_RHS1 0x91
 #define IMX678_DEFAULT_RHS2 0xaa
@@ -352,11 +393,40 @@ struct imx678 {
 	int wdr_priming_val;
 	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
+	/*
+	 * Whether this driver currently holds a runtime-PM reference. The put is
+	 * skipped across a fast toggle so the sensor keeps its power - and with it
+	 * its register contents - between the stop and the restart. The matching
+	 * get must then be skipped too, so it is gated on this flag rather than on
+	 * fast_toggle_state: that state can be set while the sensor is stopped and
+	 * already suspended, and gating the get on it would leave the restart
+	 * programming an unpowered sensor.
+	 */
+	bool pm_ref_held;
+	enum fast_toggle_type toggle_type;
+	const struct imx678_mode *prev_mode; /* last successfully streamed mode, or NULL */
+	/* Per-regime (0=SDR, 1=HDR) last-committed LEF exposure in lines + analog gain,
+	 * restored on a fast-toggle delta switch (the delta table's default would
+	 * otherwise brighten the first frame). Exposure rather than SHR0: see
+	 * hailo_ft_cache_exposure(). */
+	u32 exp_cache[2];
+	u32 gain_cache[2];
 };
 
 #define IMX678_LINK_FREQ_891M  891000000LL
 #define IMX678_LINK_FREQ_1440M 1440000000LL
 #define IMX678_LINK_FREQ_1782M 1782000000LL
+
+/*
+ * Skip the documented STANDBY entry/exit cycle (and its 24 ms regulator
+ * stabilization wait) - pause/resume via XMSTA only. Used when the
+ * mode-switch delta touches no S-type registers.
+ */
+static inline bool imx678_skip_standby_toggle(struct imx678 *imx678)
+{
+	return hailo_ft_skip_standby(imx678->fast_toggle_state, imx678->toggle_type,
+				     HAILO_FT_SKIP_PREISP | HAILO_FT_SKIP_2DOL);
+}
 
 static const s64 link_freq[] = {
 	IMX678_LINK_FREQ_891M, IMX678_LINK_FREQ_1440M, IMX678_LINK_FREQ_1782M,
@@ -364,30 +434,30 @@ static const s64 link_freq[] = {
 
 /* Sensor mode registers */
 static const struct imx678_reg mode_3840x2160_regs[] = {
-	{0x3000, 0x01}, // STANDBY					*imx678
-	{0x3002, 0x01}, // XMSTA					*imx678
-	{0x3014, IMX678_INCLK_CODE}, // INCK_SEL				*imx678
-	{0x3018, 0x04}, // WINMODE					*imx678
-	//{0x37b0, 0x36}, // ?
-	//{0x304c, 0x00}, // OPB_SIZE_V				*no in imx678
-	//{0x300c, 0x3b}, // BC_WAIT_TIME			*no in imx678
-	//{0x300d, 0x2a}, // CPWAIT_TIME			*no in imx678
-	{0x302c, 0x26}, // HMAX						*imx678
-	{0x302d, 0x02}, // HMAX						*imx678
-	{0x3040, 0x03}, // LANEMODE - 4 lanes		*imx678
-	//{0x301a, 0x00}, // WDMODE=Normal			*imx678
-	//{0x3022, 0x01}, // ADBIT=12Bit			*imx678
-	{0x303c, 0x00}, // PIX_HST=00				*imx678
-	{0x303e, 0x00}, // PIX_HWIDTH_LSB=3840		*imx678
-	{0x303f, 0x0f}, // PIX_HWIDTH_MSB			*imx678
-	{0x3044, 0x00}, // PIX_VST=00				*imx678
-	{0x3046, 0x70}, // PIX_VWIDTH_LSB=2160		*imx678
-	{0x3047, 0x08}, // PIX_VWIDTH_MSB			*imx678
-	{0x3050, 0x03},
-	{0x3051, 0x00},
-	{0x30a6, 0x00}, // XVS_DRV, XHS_DRV			*imx678
-	{0x3460, 0x22},
-	{0x355A, 0x64},
+	{IMX678_REG_MODE_SELECT, 0x01}, // STANDBY					*imx678
+	{IMX678_REG_XMSTA, 0x01}, // XMSTA					*imx678
+	{IMX678_REG_INCK_SEL, IMX678_INCLK_CODE}, // INCK_SEL				*imx678
+	{IMX678_REG_WINMODE, 0x04}, // WINMODE					*imx678
+	//{IMX678_REG_TUNING_37B0, 0x36}, // ?
+	//{IMX678_REG_TUNING_304C, 0x00}, // OPB_SIZE_V				*no in imx678
+	//{IMX678_REG_TUNING_300C, 0x3b}, // BC_WAIT_TIME			*no in imx678
+	//{IMX678_REG_TUNING_300D, 0x2a}, // CPWAIT_TIME			*no in imx678
+	{IMX678_REG_HMAX, 0x26}, // HMAX						*imx678
+	{IMX678_REG_HMAX_HIGH, 0x02}, // HMAX						*imx678
+	{IMX678_REG_LANEMODE, 0x03}, // LANEMODE - 4 lanes		*imx678
+	//{IMX678_REG_WDMODE, 0x00}, // WDMODE=Normal			*imx678
+	//{IMX678_REG_ADBIT, 0x01}, // ADBIT=12Bit			*imx678
+	{IMX678_REG_PIX_HST_LOW, 0x00}, // PIX_HST=00				*imx678
+	{IMX678_REG_PIX_HWIDTH_LOW, 0x00}, // PIX_HWIDTH_LSB=3840		*imx678
+	{IMX678_REG_PIX_HWIDTH_HIGH, 0x0f}, // PIX_HWIDTH_MSB			*imx678
+	{IMX678_REG_PIX_VST_LOW, 0x00}, // PIX_VST=00				*imx678
+	{IMX678_REG_PIX_VWIDTH_LOW, 0x70}, // PIX_VWIDTH_LSB=2160		*imx678
+	{IMX678_REG_PIX_VWIDTH_HIGH, 0x08}, // PIX_VWIDTH_MSB			*imx678
+	{IMX678_REG_SHR0_LOW, 0x03},
+	{IMX678_REG_SHR0_HIGH, 0x00},
+	{IMX678_REG_XVS_DRV, 0x00}, // XVS_DRV, XHS_DRV			*imx678
+	{IMX678_REG_TUNING_3460, 0x22},
+	{IMX678_REG_TUNING_355A, 0x64},
 	{0x3A02, 0x7A},
 	{0x3A10, 0xEC},
 	{0x3A12, 0x71},
@@ -746,35 +816,35 @@ static const struct imx678_reg mode_3840x2160_regs[] = {
 };
 
 static const struct imx678_reg mode_1920x1080_sdr_binning_regs[] = {
-    { 0x3000, 0x01 }, // STANDBY                    *imx678
-    { 0x3002, 0x01 }, // XMSTA (started later by start_streaming)
-    { 0x3014, IMX678_INCLK_CODE }, // INCK_SEL          *imx678
-    { 0x3018, 0x04 }, // WINMODE - crop                 *imx678
-    { 0x301A, 0x00 }, //WDMODE[7:0] - sdr
-    { 0x301B, 0x01 }, //ADDMODE[1:0] - binning
-    // { 0x301C, 0x01 }, //THIN_V_EN[7:0] - subsampling
-    { 0x3022, 0x00 }, //ADBIT[1:0] // 10 bit
-    { 0x3023, 0x01 }, //MDBIT[1:0] // raw12 IMPORTANT
-    { 0x3028, 0x5e }, //VMAX[15:0]
-    { 0x3029, 0x1a }, //VMAX[15:0] // 6750
-    { 0x302C, 0x26 }, //HMAX[15:0] // 550
-    { 0x302D, 0x02 },
-    { 0x303c, 0x00 }, // PIX_HST=00             *imx678
-    { 0x303e, 0x00 }, // PIX_HWIDTH_LSB=3840        *imx678
-    { 0x303f, 0x0f }, // PIX_HWIDTH_MSB         *imx678
-    { 0x3044, 0x00 }, // PIX_VST=00             *imx678
-    { 0x3046, 0x70 }, // PIX_VWIDTH_LSB=2160        *imx678
-    { 0x3047, 0x08 }, // PIX_VWIDTH_MSB         *imx678
-    { 0x3050, 0x18 }, //SHR0[19:0]
-    { 0x3051, 0x15 }, 
-    // { 0x3054, 0x07 }, //SHR1[19:0]
-    // { 0x3058, 0x4A }, //SHR2[19:0]
-    // { 0x3059, 0x00 }, 
-    // { 0x3060, 0x40 }, //RHS1[19:0]
-    // { 0x3061, 0x00 }, 
-    // { 0x3064, 0x53 }, //RHS2[19:0]
-    { 0x3065, 0x00 }, { 0x30A6, 0x00 }, //XVS_DRV[1:0]
-    { 0x3460, 0x22 }, { 0x355A, 0x64 }, { 0x3A02, 0x7A }, { 0x3A10, 0xEC },
+	{ IMX678_REG_MODE_SELECT, 0x01 }, // STANDBY                    *imx678
+	{ IMX678_REG_XMSTA, 0x01 }, // XMSTA (started later by start_streaming)
+	{ IMX678_REG_INCK_SEL, IMX678_INCLK_CODE }, // INCK_SEL          *imx678
+	{ IMX678_REG_WINMODE, 0x04 }, // WINMODE - crop                 *imx678
+	{ IMX678_REG_WDMODE, 0x00 }, //WDMODE[7:0] - sdr
+	{ IMX678_REG_ADDMODE, 0x01 }, //ADDMODE[1:0] - binning
+	// { IMX678_REG_THIN_V_EN, 0x01 }, //THIN_V_EN[7:0] - subsampling
+	{ IMX678_REG_ADBIT, 0x00 }, //ADBIT[1:0] // 10 bit
+	{ IMX678_REG_MDBIT, 0x01 }, //MDBIT[1:0] // raw12 IMPORTANT
+	{ IMX678_REG_LPFR, 0x5e }, //VMAX[15:0]
+	{ IMX678_REG_VMAX_HIGH, 0x1a }, //VMAX[15:0] // 6750
+	{ IMX678_REG_HMAX, 0x26 }, //HMAX[15:0] // 550
+	{ IMX678_REG_HMAX_HIGH, 0x02 },
+	{ IMX678_REG_PIX_HST_LOW, 0x00 }, // PIX_HST=00             *imx678
+	{ IMX678_REG_PIX_HWIDTH_LOW, 0x00 }, // PIX_HWIDTH_LSB=3840        *imx678
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0f }, // PIX_HWIDTH_MSB         *imx678
+	{ IMX678_REG_PIX_VST_LOW, 0x00 }, // PIX_VST=00             *imx678
+	{ IMX678_REG_PIX_VWIDTH_LOW, 0x70 }, // PIX_VWIDTH_LSB=2160        *imx678
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 }, // PIX_VWIDTH_MSB         *imx678
+	{ IMX678_REG_SHR0_LOW, 0x18 }, //SHR0[19:0]
+	{ IMX678_REG_SHR0_HIGH, 0x15 },
+	// { IMX678_REG_SHR1_LOW, 0x07 }, //SHR1[19:0]
+	// { IMX678_REG_RHS1_LOW, 0x4A }, //SHR2[19:0]
+	// { IMX678_REG_RHS1_HIGH, 0x00 },
+	// { IMX678_REG_SHR2_LOW, 0x40 }, //RHS1[19:0]
+	// { IMX678_REG_SHR2_HIGH, 0x00 },
+	// { IMX678_REG_RHS2_LOW, 0x53 }, //RHS2[19:0]
+	{ IMX678_REG_RHS2_HIGH, 0x00 }, { IMX678_REG_XVS_DRV, 0x00 }, //XVS_DRV[1:0]
+	{ IMX678_REG_TUNING_3460, 0x22 }, { IMX678_REG_TUNING_355A, 0x64 }, { 0x3A02, 0x7A }, { 0x3A10, 0xEC },
     { 0x3A12, 0x71 }, { 0x3A14, 0xDE }, { 0x3A20, 0x2B }, { 0x3A24, 0x22 },
     { 0x3A25, 0x25 }, { 0x3A26, 0x2A }, { 0x3A27, 0x2C }, { 0x3A28, 0x39 },
     { 0x3A29, 0x38 }, { 0x3A30, 0x04 }, { 0x3A31, 0x04 }, { 0x3A32, 0x03 },
@@ -863,58 +933,58 @@ static const struct imx678_reg mode_1920x1080_sdr_binning_regs[] = {
     { 0x47AE, 0x0D }, { 0x47B0, 0x31 }, { 0x47B1, 0x01 }, { 0x47B2, 0x4A },
     { 0x47B3, 0x01 }, { 0x47B4, 0x3F }, { 0x47B6, 0x49 }, { 0x47BC, 0xFB },
     { 0x47BE, 0x0C }, { 0x47C0, 0x32 }, { 0x47C1, 0x01 }, { 0x47C2, 0x3E },
-    { 0x47C3, 0x01 }, { 0x4E3C, 0x07 }
+	{ 0x47C3, 0x01 }, { IMX678_REG_TUNING_4E3C, 0x07 }
 };
 
 static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
-	{ 0x3015, 0x02 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
+	{ IMX678_REG_INCK_SEL, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
+	{ IMX678_REG_DATARATE_SEL, 0x02 }, /* DATARATE_SEL[3:0] */
+	{ IMX678_REG_WINMODE, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
-	{ 0x301A, 0x02 }, /* WDMODE[7:0] */
+	{ IMX678_REG_WDMODE, 0x02 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
-	{ 0x301C, 0x01 }, /* THIN_V_EN[7:0] */
+	{ IMX678_REG_THIN_V_EN, 0x01 }, /* THIN_V_EN[7:0] */
 	/* 0x301E: Using default value (VCMODE[7:0]) */
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-    { 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
+	{ IMX678_REG_MDBIT, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
-	{ 0x302C, 0x26 }, /* HMAX[15:0] */
-	{ 0x302D, 0x02 },
+	{ IMX678_REG_HMAX, 0x26 }, /* HMAX[15:0] */
+	{ IMX678_REG_HMAX_HIGH, 0x02 },
 	/* 0x3030: Using default value (FDG_SEL0[1:0]) */
 	/* 0x3031: Using default value (FDG_SEL1[1:0]) */
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
-	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_LOW, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
-	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
-	{ 0x3050, 0x18 }, /* SHR0[19:0] */
-	{ 0x3051, 0x15 },
+	{ IMX678_REG_PIX_VWIDTH_LOW, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
+	{ IMX678_REG_SHR0_LOW, 0x18 }, /* SHR0[19:0] */
+	{ IMX678_REG_SHR0_HIGH, 0x15 },
 	/* 0x3052: Using default value */
-	{ 0x3054, 0x07 }, /* SHR1[19:0] */
+	{ IMX678_REG_SHR1_LOW, 0x07 }, /* SHR1[19:0] */
 	/* 0x3055: Using default value */
 	/* 0x3056: Using default value */
-	{ 0x3058, 0x4A }, /* SHR2[19:0] */
-	{ 0x3059, 0x00 },
+	{ IMX678_REG_RHS1_LOW, 0x4A }, /* SHR2[19:0] */
+	{ IMX678_REG_RHS1_HIGH, 0x00 },
 	/* 0x305A: Using default value */
-	{ 0x3060, 0xF3 }, /* RHS1[19:0] */
-	{ 0x3061, 0x01 },
+	{ IMX678_REG_SHR2_LOW, 0xF3 }, /* RHS1[19:0] */
+	{ IMX678_REG_SHR2_HIGH, 0x01 },
 	/* 0x3062: Using default value */
-	{ 0x3064, 0x30 }, /* RHS2[19:0] */
-	{ 0x3065, 0x02 },
+	{ IMX678_REG_RHS2_LOW, 0x30 }, /* RHS2[19:0] */
+	{ IMX678_REG_RHS2_HIGH, 0x02 },
 	/* 0x3066: Using default value */
 	/* 0x3069: Using default value (CHDR_GAIN_EN[7:0]) */
 	/* 0x306B: Using default value */
@@ -932,14 +1002,14 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	/* 0x309C: Using default value (CHDR_AGAIN0_HG[10:0]) */
 	/* 0x309D: Using default value */
 	/* 0x30A4: Using default value (XVSOUTSEL[1:0]) */
-	{ 0x30A6, 0x00 }, /* XVS_DRV[1:0] */
+	{ IMX678_REG_XVS_DRV, 0x00 }, /* XVS_DRV[1:0] */
 	/* 0x30CC: Using default value */
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
-	{ 0x3460, 0x22 },
-	{ 0x355A, 0x64 },
+	{ IMX678_REG_GAIN_PGC_FIDMD, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ IMX678_REG_TUNING_3460, 0x22 },
+	{ IMX678_REG_TUNING_355A, 0x64 },
 	{ 0x3A02, 0x7A },
 	{ 0x3A10, 0xEC },
 	{ 0x3A12, 0x71 },
@@ -1303,58 +1373,58 @@ static const struct imx678_reg mode_4k_3dol_20fps_all_pixel[] = {
 	{ 0x47C1, 0x01 },
 	{ 0x47C2, 0x3E },
 	{ 0x47C3, 0x01 },
-	{ 0x4E3C, 0x07 },
+	{ IMX678_REG_TUNING_4E3C, 0x07 },
 };
 
 static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
-	{ 0x3015, 0x02 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
+	{ IMX678_REG_INCK_SEL, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
+	{ IMX678_REG_DATARATE_SEL, 0x02 }, /* DATARATE_SEL[3:0] */
+	{ IMX678_REG_WINMODE, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
-	{ 0x301A, 0x01 }, /* WDMODE[7:0] */
+	{ IMX678_REG_WDMODE, 0x01 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
-	{ 0x301C, 0x01 }, /* THIN_V_EN[7:0] */
+	{ IMX678_REG_THIN_V_EN, 0x01 }, /* THIN_V_EN[7:0] */
 	/* 0x301E: Using default value (VCMODE[7:0]) */
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-	{ 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
+	{ IMX678_REG_MDBIT, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
-	{ 0x302C, 0x26 }, /* HMAX[15:0] */
-	{ 0x302D, 0x02 },
+	{ IMX678_REG_HMAX, 0x26 }, /* HMAX[15:0] */
+	{ IMX678_REG_HMAX_HIGH, 0x02 },
 	/* 0x3030: Using default value (FDG_SEL0[1:0]) */
 	/* 0x3031: Using default value (FDG_SEL1[1:0]) */
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
-	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_LOW, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
-	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
-	{ 0x3050, 0xEC }, /* SHR0[19:0] */
-	{ 0x3051, 0x04 },
+	{ IMX678_REG_PIX_VWIDTH_LOW, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
+	{ IMX678_REG_SHR0_LOW, 0xEC }, /* SHR0[19:0] */
+	{ IMX678_REG_SHR0_HIGH, 0x04 },
 	/* 0x3052: Using default value */
-	{ 0x3054, 0x05 }, /* SHR1[19:0] */
+	{ IMX678_REG_SHR1_LOW, 0x05 }, /* SHR1[19:0] */
 	/* 0x3055: Using default value */
 	/* 0x3056: Using default value */
-	{ 0x3058, 0x4A }, /* SHR2[19:0] */
-	{ 0x3059, 0x00 },
+	{ IMX678_REG_RHS1_LOW, 0x4A }, /* SHR2[19:0] */
+	{ IMX678_REG_RHS1_HIGH, 0x00 },
 	/* 0x305A: Using default value */
-	{ 0x3060, 0x1B }, // MANUAL (increase max SEF value)
-	{ 0x3061, 0x01 }, // MANUAL (increase max SEF value)
+	{ IMX678_REG_SHR2_LOW, 0x1B }, // MANUAL (increase max SEF value)
+	{ IMX678_REG_SHR2_HIGH, 0x01 }, // MANUAL (increase max SEF value)
 	/* 0x3062: Using default value */
-	{ 0x3064, 0x53 }, /* RHS2[19:0] */
-	{ 0x3065, 0x00 },
+	{ IMX678_REG_RHS2_LOW, 0x53 }, /* RHS2[19:0] */
+	{ IMX678_REG_RHS2_HIGH, 0x00 },
 	/* 0x3066: Using default value */
 	/* 0x3069: Using default value (CHDR_GAIN_EN[7:0]) */
 	/* 0x306B: Using default value */
@@ -1372,14 +1442,14 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	/* 0x309C: Using default value (CHDR_AGAIN0_HG[10:0]) */
 	/* 0x309D: Using default value */
 	/* 0x30A4: Using default value (XVSOUTSEL[1:0]) */
-	{ 0x30A6, 0x00 }, /* XVS_DRV[1:0] */
+	{ IMX678_REG_XVS_DRV, 0x00 }, /* XVS_DRV[1:0] */
 	/* 0x30CC: Using default value */
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
-	{ 0x3460, 0x22 },
-	{ 0x355A, 0x64 },
+	{ IMX678_REG_GAIN_PGC_FIDMD, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ IMX678_REG_TUNING_3460, 0x22 },
+	{ IMX678_REG_TUNING_355A, 0x64 },
 	{ 0x3A02, 0x7A },
 	{ 0x3A10, 0xEC },
 	{ 0x3A12, 0x71 },
@@ -1743,7 +1813,7 @@ static const struct imx678_reg mode_4k_2dol_all_pixel[] = {
 	{ 0x47C1, 0x01 },
 	{ 0x47C2, 0x3E },
 	{ 0x47C3, 0x01 },
-	{ 0x4E3C, 0x07 },
+	{ IMX678_REG_TUNING_4E3C, 0x07 },
 };
 
 
@@ -1751,51 +1821,51 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x3000: Using default value (STANDBY) */
 	/* 0x3001: Using default value (REGHOLD) */
 	/* 0x3002: Using default value (XMSTA) */
-	{ 0x3014, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
-	{ 0x3015, 0x05 }, /* DATARATE_SEL[3:0] */
-	{ 0x3018, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
+	{ IMX678_REG_INCK_SEL, IMX678_INCLK_CODE }, // MANUAL (default(0x00) -> our clock's value)
+	{ IMX678_REG_DATARATE_SEL, 0x05 }, /* DATARATE_SEL[3:0] */
+	{ IMX678_REG_WINMODE, 0x04 }, // MANUAL (default(0x00) -> recommended resolution)
 	/* 0x3019: Using default value (CFMODE[1:0]) */
-	{ 0x301A, 0x02 }, /* WDMODE[7:0] */
+	{ IMX678_REG_WDMODE, 0x02 }, /* WDMODE[7:0] */
 	/* 0x301B: Using default value (ADDMODE[1:0]) */
-	{ 0x301C, 0x01 }, /* THIN_V_EN[7:0] */
+	{ IMX678_REG_THIN_V_EN, 0x01 }, /* THIN_V_EN[7:0] */
 	/* 0x301E: Using default value (VCMODE[7:0]) */
 	/* 0x3020: Using default value (HREVERSE) */
 	/* 0x3021: Using default value (VREVERSE) */
 	/* 0x3022: Using default value (ADBIT[1:0]) */
-	{ 0x3023, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
+	{ IMX678_REG_MDBIT, 0x01 }, // MANUAL (default(0x01) -> same value, write explicitly)
 	/* 0x3028: Using default value (VMAX[19:0]) */
 	/* 0x3029: Using default value */
 	/* 0x302A: Using default value */
-	{ 0x302C, 0x28 }, /* HMAX[15:0] */
-	{ 0x302D, 0x05 },
+	{ IMX678_REG_HMAX, 0x28 }, /* HMAX[15:0] */
+	{ IMX678_REG_HMAX_HIGH, 0x05 },
 	/* 0x3030: Using default value (FDG_SEL0[1:0]) */
 	/* 0x3031: Using default value (FDG_SEL1[1:0]) */
 	/* 0x3032: Using default value (FDG_SEL2[1:0]) */
 	/* 0x303C: Using default value (PIX_HST[12:0]) */
 	/* 0x303D: Using default value */
-	{ 0x303E, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
-	{ 0x303F, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_LOW, 0x00 }, // MANUAL (default(0x10) -> recommended resolution)
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F }, // MANUAL (default(0x0F) -> recommended resolution)
 	/* 0x3040: Using default value (LANEMODE[2:0]) */
 	/* 0x3042: Using default value (XSIZE_OVERLAP[10:0]) */
 	/* 0x3043: Using default value */
 	/* 0x3044: Using default value (PIX_VST[11:0]) */
 	/* 0x3045: Using default value */
-	{ 0x3046, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
-	{ 0x3047, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
-	{ 0x3050, 0x18 }, /* SHR0[19:0] */
-	{ 0x3051, 0x15 },
+	{ IMX678_REG_PIX_VWIDTH_LOW, 0x70 }, // MANUAL (default(0x84) -> recommended resolution)
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 }, // MANUAL (default(0x08) -> recommended resolution)
+	{ IMX678_REG_SHR0_LOW, 0x18 }, /* SHR0[19:0] */
+	{ IMX678_REG_SHR0_HIGH, 0x15 },
 	/* 0x3052: Using default value */
-	{ 0x3054, 0x07 }, /* SHR1[19:0] */
+	{ IMX678_REG_SHR1_LOW, 0x07 }, /* SHR1[19:0] */
 	/* 0x3055: Using default value */
 	/* 0x3056: Using default value */
-	{ 0x3058, 0x4A }, /* SHR2[19:0] */
-	{ 0x3059, 0x00 },
+	{ IMX678_REG_RHS1_LOW, 0x4A }, /* SHR2[19:0] */
+	{ IMX678_REG_RHS1_HIGH, 0x00 },
 	/* 0x305A: Using default value */
-	{ 0x3060, 0x40 }, /* RHS1[19:0] */
-	{ 0x3061, 0x00 },
+	{ IMX678_REG_SHR2_LOW, 0x40 }, /* RHS1[19:0] */
+	{ IMX678_REG_SHR2_HIGH, 0x00 },
 	/* 0x3062: Using default value */
-	{ 0x3064, 0x53 }, /* RHS2[19:0] */
-	{ 0x3065, 0x00 },
+	{ IMX678_REG_RHS2_LOW, 0x53 }, /* RHS2[19:0] */
+	{ IMX678_REG_RHS2_HIGH, 0x00 },
 	/* 0x3066: Using default value */
 	/* 0x3069: Using default value (CHDR_GAIN_EN[7:0]) */
 	/* 0x306B: Using default value */
@@ -1813,14 +1883,14 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	/* 0x309C: Using default value (CHDR_AGAIN0_HG[10:0]) */
 	/* 0x309D: Using default value */
 	/* 0x30A4: Using default value (XVSOUTSEL[1:0]) */
-	{ 0x30A6, 0x00 }, /* XVS_DRV[1:0] */
+	{ IMX678_REG_XVS_DRV, 0x00 }, /* XVS_DRV[1:0] */
 	/* 0x30CC: Using default value */
 	/* 0x30CD: Using default value */
 	/* 0x30DC: Using default value (BLKLEVEL[11:0]) */
 	/* 0x30DD: Using default value */
-	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
-	{ 0x3460, 0x22 },
-	{ 0x355A, 0x64 },
+	{ IMX678_REG_GAIN_PGC_FIDMD, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ IMX678_REG_TUNING_3460, 0x22 },
+	{ IMX678_REG_TUNING_355A, 0x64 },
 	{ 0x3A02, 0x7A },
 	{ 0x3A10, 0xEC },
 	{ 0x3A12, 0x71 },
@@ -2184,47 +2254,47 @@ static const struct imx678_reg mode_4k_3dol_all_pixel[] = {
 	{ 0x47C1, 0x01 },
 	{ 0x47C2, 0x3E },
 	{ 0x47C3, 0x01 },
-	{ 0x4E3C, 0x07 },
+	{ IMX678_REG_TUNING_4E3C, 0x07 },
 };
 
 
 static const struct imx678_reg imx678_tpg_en_regs[] = {
 	//TPG config
-	{ 0x3042, 0x00 }, //XSIZE_OVERLAP
-	{ 0x30e0, 0x01 }, //TPG_EN_DUOUT
-	{ 0x30e4, 0x13 }, //TPG_COLORWIDTH
+	{ IMX678_REG_XSIZE_OVERLAP, 0x00 }, //XSIZE_OVERLAP
+	{ IMX678_REG_TPG_EN_DUOUT, 0x01 }, //TPG_EN_DUOUT
+	{ IMX678_REG_TPG_COLORWIDTH, 0x13 }, //TPG_COLORWIDTH
 };
 
 
 static const struct imx678_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
-	{ 0x3002, 0x01 }, /* XMSTA */
-	{ 0x3014, IMX678_INCLK_CODE }, /* INCK_SEL[3:0] */
-	{ 0x3015, 0x03 },
-	{ 0x3018, 0x04 }, /* WINMODE[4:0] */  // MANUAL (crop 3856x2180 to 3840x2160)
-	{ 0x301A, 0x02 },
-	{ 0x301B, 0x01 },
-	{ 0x301C, 0x01 },
-	{ 0x3022, 0x00 },
-	{ 0x302C, 0x26 },
-	{ 0x302D, 0x02 },
-	{ 0x303E, 0x00 }, /* PIX_HWIDTH[12:0] */  // MANUAL (crop 3856 to 3840)
-	{ 0x303F, 0x0F }, // MANUAL (crop 3856 to 3840)
-	{ 0x3040, 0x03 }, /* LANEMODE[2:0] */
-	{ 0x3046, 0x70 }, /* PIX_VWIDTH[11:0] */  // MANUAL (crop 2180 to 2160)
-	{ 0x3047, 0x08 }, // MANUAL (crop 2180 to 2160)
-	{ 0x3050, 0xB6 },
-	{ 0x3051, 0x0D },
-	{ 0x3054, 0x07 },
-	{ 0x3058, 0x98 },
-	{ 0x3059, 0x00 },
-	{ 0x3060, 0x91 },
-	{ 0x3061, 0x00 },
-	{ 0x3064, 0xAA },
-	{ 0x3065, 0x00 },
-	{ 0x30A6, 0x00 },
-	{ 0x3400, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
-	{ 0x3460, 0x22 },
-	{ 0x355A, 0x64 },
+	{ IMX678_REG_XMSTA, 0x01 }, /* XMSTA */
+	{ IMX678_REG_INCK_SEL, IMX678_INCLK_CODE }, /* INCK_SEL[3:0] */
+	{ IMX678_REG_DATARATE_SEL, 0x03 },
+	{ IMX678_REG_WINMODE, 0x04 }, /* WINMODE[4:0] */  // MANUAL (crop 3856x2180 to 3840x2160)
+	{ IMX678_REG_WDMODE, 0x02 },
+	{ IMX678_REG_ADDMODE, 0x01 },
+	{ IMX678_REG_THIN_V_EN, 0x01 },
+	{ IMX678_REG_ADBIT, 0x00 },
+	{ IMX678_REG_HMAX, 0x26 },
+	{ IMX678_REG_HMAX_HIGH, 0x02 },
+	{ IMX678_REG_PIX_HWIDTH_LOW, 0x00 }, /* PIX_HWIDTH[12:0] */  // MANUAL (crop 3856 to 3840)
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F }, // MANUAL (crop 3856 to 3840)
+	{ IMX678_REG_LANEMODE, 0x03 }, /* LANEMODE[2:0] */
+	{ IMX678_REG_PIX_VWIDTH_LOW, 0x70 }, /* PIX_VWIDTH[11:0] */  // MANUAL (crop 2180 to 2160)
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 }, // MANUAL (crop 2180 to 2160)
+	{ IMX678_REG_SHR0_LOW, 0xB6 },
+	{ IMX678_REG_SHR0_HIGH, 0x0D },
+	{ IMX678_REG_SHR1_LOW, 0x07 },
+	{ IMX678_REG_RHS1_LOW, 0x98 },
+	{ IMX678_REG_RHS1_HIGH, 0x00 },
+	{ IMX678_REG_SHR2_LOW, 0x91 },
+	{ IMX678_REG_SHR2_HIGH, 0x00 },
+	{ IMX678_REG_RHS2_LOW, 0xAA },
+	{ IMX678_REG_RHS2_HIGH, 0x00 },
+	{ IMX678_REG_XVS_DRV, 0x00 },
+	{ IMX678_REG_GAIN_PGC_FIDMD, 0x00 }, /* GAIN_PGC_FIDMD - 0: set individual exposure gains*/
+	{ IMX678_REG_TUNING_3460, 0x22 },
+	{ IMX678_REG_TUNING_355A, 0x64 },
 	{ 0x3A02, 0x7A },
 	{ 0x3A10, 0xEC },
 	{ 0x3A12, 0x71 },
@@ -2580,10 +2650,14 @@ static const struct imx678_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 	{ 0x47C1, 0x01 },
 	{ 0x47C2, 0x3E },
 	{ 0x47C3, 0x01 },
-	{ 0x4E3C, 0x07 }
+	{ IMX678_REG_TUNING_4E3C, 0x07 }
 };
 
-/* Supported sensor mode configurations */
+/* Supported sensor mode configurations.
+ * Modes sharing a reg_list must differ only in vblank/frame_interval: the delta lookup
+ * keys on the reg list. Safe - vblank lands as LPFR via the exposure s_ctrl after the
+ * delta, frame_interval has no register. Anything else would come from the reg list.
+ */
 static const struct imx678_mode supported_sdr_modes[] = {
 	{
 	.width = 3840,
@@ -2973,7 +3047,7 @@ static void convert_v4l2_subdev_code_to_sensor_code(struct imx678* imx678, struc
 	} else {
 		/* sdr mode: all fmt->code should be 1xnum_bits */
 		return;
-	}	
+	}
 }
 
 static struct v4l2_ctrl_config *get_custom_ctrl_by_id(u32 id) {
@@ -3017,7 +3091,7 @@ static void imx678_setup_custom_ctrl_limits(
 	config->min = min;
 	config->max = max;
 	config->def = def;
-	
+
 	*ctrl = v4l2_ctrl_new_custom(&imx678->ctrl_handler, config, NULL);
 
 	if (!*ctrl)
@@ -3093,6 +3167,7 @@ static int imx678_read_reg(struct imx678 *imx678, u16 reg, u32 len, u32 *val)
  *
  * Return: 0 if successful, error code otherwise.
  */
+/* Forward declaration for debug readback */
 static int imx678_write_reg(struct imx678 *imx678, u16 reg, u32 len, u32 val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx678->sd);
@@ -3394,12 +3469,12 @@ static int imx678_update_exp_gain(struct imx678 *imx678, u32 exposure_time, u32 
 			// Minimum number of lines until starting exposure
 			u32 shr0_min_gap = imx678->hdr_enabled ? imx678->cur_mode->rhs2 + IMX678_SHR0_RHS2_GAP : IMX678_SHR0_FSC_GAP;
 			shr0_min_gap = MAX(shr0_min_gap, imx678->cur_mode->vblank_min);
-			
+
 			// The desired fps is blocked by cur_mode->frame_interval (for example 30/1 for 30fps)
 			// Note that this calculation does not take into account HDR - so HDR is broken by this v4l control
 			desired_fps_numerator = CLOCK_FREQ_HZ / imx678->cur_mode->hblank;
 			desired_fps_denominator = exposure_time + shr0_min_gap;
-			
+
 			// Note that frame_interval is in opposite units from fps, so 30fps will be represented by 1/30
 			// This checks if: desired_fps_numerator / desired_fps_denominator > imx678->cur_mode->frame_interval.denominator / imx678->cur_mode->frame_interval.numerator
 			// But accounts for int rounding
@@ -3507,7 +3582,7 @@ static void imx678_set_mode_string(struct imx678 *imx678)
 {
 	int fps;
 
-	fps = imx678->cur_mode->frame_interval.denominator / 
+	fps = imx678->cur_mode->frame_interval.denominator /
 		imx678->cur_mode->frame_interval.numerator;
 
 	switch (imx678->cur_mode->dol) {
@@ -3524,7 +3599,7 @@ static void imx678_set_mode_string(struct imx678 *imx678)
             dev_err(imx678->dev, "Invalid SDR mode with dol=%d\n", imx678->cur_mode->dol);
             return;
         }
-		snprintf(imx678->mode_string, SENSOR_MODE_STRING_LENGTH, "HDR #%d, %dDOL %dfps", 
+		snprintf(imx678->mode_string, SENSOR_MODE_STRING_LENGTH, "HDR #%d, %dDOL %dfps",
 			imx678->mode_idx, imx678->cur_mode->dol, fps);
         break;
 	default:
@@ -3537,6 +3612,9 @@ static void imx678_set_mode(struct imx678 *imx678, const struct imx678_mode *mod
 {
 	int ret;
 	imx678->cur_mode = mode;
+	imx678->curr_fmt.format.code   = mode->code;
+	imx678->curr_fmt.format.width  = mode->width;
+	imx678->curr_fmt.format.height = mode->height;
 	imx678->vblank = mode->vblank;
 
     /* if the mode is from the modes list (not custom mode), set the mode index */
@@ -3599,7 +3677,7 @@ static int imx678_set_hdr_mode(struct imx678 *imx678, bool enable)
 		imx678->hdr_enabled = enable;
 		prev_mode = imx678->cur_mode;
 
-		imx678_set_mode(imx678, imx678->hdr_enabled ? 
+		imx678_set_mode(imx678, imx678->hdr_enabled ?
 								&supported_hdr_modes[DEFAULT_MODE_IDX] :
 								&supported_sdr_modes[DEFAULT_MODE_IDX]);
 
@@ -3708,7 +3786,7 @@ static int imx678_set_custom_rhs1(struct imx678 *imx678, u32 rhs1)
 	if (rhs1 == 0) {
 		// Set the mode back to the builtin mode
 		imx678_set_mode(imx678, imx678->hdr_enabled ?
-								&supported_hdr_modes[imx678->mode_idx] : 
+								&supported_hdr_modes[imx678->mode_idx] :
 								&supported_sdr_modes[imx678->mode_idx]);
 		ret = imx678_update_exp_vblank_controls(imx678);
 		if (ret) {
@@ -3942,7 +4020,7 @@ static int imx678_enum_mbus_code(struct v4l2_subdev *sd,
 		supported_modes = (struct imx678_mode *)supported_hdr_modes;
 	else
 		supported_modes = (struct imx678_mode *)supported_sdr_modes;
-	
+
 	mutex_lock(&imx678->mutex);
 	code->code = supported_modes[DEFAULT_MODE_IDX].code;
 	mutex_unlock(&imx678->mutex);
@@ -4078,11 +4156,11 @@ static int imx678_get_fmt_mode(struct imx678* imx678, struct v4l2_subdev_format*
 		supported_modes = (struct imx678_mode *)supported_sdr_modes;
 		mode_count = ARRAY_SIZE(supported_sdr_modes);
 	}
-	
+
 	convert_v4l2_subdev_code_to_sensor_code(imx678, &fmt->format);
 	for (index = 0; index < mode_count; ++index) {
-		if (supported_modes[index].width == fmt->format.width && 
-		   supported_modes[index].height == fmt->format.height && 
+		if (supported_modes[index].width == fmt->format.width &&
+		   supported_modes[index].height == fmt->format.height &&
 		   supported_modes[index].code == fmt->format.code) {
 			*mode = &supported_modes[index];
 			return 0;
@@ -4109,13 +4187,6 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 	int ret = 0;
 	mutex_lock(&imx678->mutex);
 
-	if (imx678->streaming) {
-		dev_err(imx678->dev,
-			"Cannot set pad format while streaming\n");
-		ret = -EINVAL;
-		goto out;
-	}
-	
 	ret = imx678_get_fmt_mode(imx678, fmt, &mode);
 	if(ret){
 		pr_err("%s - get_fmt failed with %d (format: %dx%d, code: 0x%x)\n", __func__,
@@ -4127,12 +4198,29 @@ static int imx678_set_pad_format(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
-	} else {
-		memcpy(&imx678->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
-		if (compare_imx678_mode(mode, imx678->cur_mode)) {
-			imx678_set_mode(imx678, mode);
-			ret = imx678_update_exp_vblank_controls(imx678);
+		goto out;
+	}
+
+	/*
+	 * While streaming a format that keeps the readout geometry is a no-op;
+	 * the frame rate belongs to s_frame_interval(). Anything else is a
+	 * mode change and is refused.
+	 */
+	if (imx678->streaming) {
+		if (mode->width != imx678->cur_mode->width ||
+		    mode->height != imx678->cur_mode->height ||
+		    mode->code != imx678->cur_mode->code) {
+			dev_err(imx678->dev,
+				"Cannot change the mode while streaming\n");
+			ret = -EBUSY;
 		}
+		goto out;
+	}
+
+	memcpy(&imx678->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
+	if (compare_imx678_mode(mode, imx678->cur_mode)) {
+		imx678_set_mode(imx678, mode);
+		ret = imx678_update_exp_vblank_controls(imx678);
 	}
 
 out:
@@ -4204,6 +4292,107 @@ static int imx678_setup_custom_values(struct imx678 *imx678)
 	return ret;
 }
 
+/*
+ * Delta register tables for mode switches.
+ * Only registers that differ between SDR 4K and 2DOL 4K.
+ * All are V-type (reflected at next XVS) - no standby required per datasheet.
+ */
+
+/*
+ * SDR 4K -> 2DOL 4K: all control registers from 2DOL table.
+ * Skips 356 analog tuning registers (0x3A00+) which are identical
+ * between SDR and 2DOL modes - saves ~94% of I2C writes.
+ */
+static const struct imx678_reg sdr_to_hdr2dol_delta[] = {
+	{ IMX678_REG_WINMODE,         0x04 },
+	{ IMX678_REG_WDMODE,          0x01 },	/* DOL 2-frame */
+	{ IMX678_REG_THIN_V_EN,       0x01 },
+	{ IMX678_REG_HMAX_LOW,        0x26 },
+	{ IMX678_REG_HMAX_HIGH,       0x02 },
+	{ IMX678_REG_PIX_HWIDTH_LOW,  0x00 },
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F },
+	{ IMX678_REG_PIX_VWIDTH_LOW,  0x70 },
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 },
+	{ IMX678_REG_SHR0_LOW,        0xEC },
+	{ IMX678_REG_SHR0_HIGH,       0x04 },
+	{ IMX678_REG_SHR1_LOW,        0x05 },
+	{ IMX678_REG_RHS1_LOW,        0x4A },
+	{ IMX678_REG_RHS1_HIGH,       0x00 },
+	{ IMX678_REG_SHR2_LOW,        0x1B },
+	{ IMX678_REG_SHR2_HIGH,       0x01 },
+	{ IMX678_REG_RHS2_LOW,        0x53 },
+	{ IMX678_REG_RHS2_HIGH,       0x00 },
+	{ IMX678_REG_GAIN_PGC_FIDMD,  0x00 },	/* GAIN: per-frame gain mode */
+};
+
+/*
+ * 2DOL 4K -> SDR 4K: all control registers from SDR table,
+ * plus explicit WDMODE/THIN_V_EN/GAIN_PGC_FIDMD restore.
+ * Skips 355 analog tuning registers (0x3A00+) which are identical.
+ */
+static const struct imx678_reg hdr2dol_to_sdr_delta[] = {
+	{ IMX678_REG_WINMODE,         0x04 },
+	{ IMX678_REG_WDMODE,          0x00 },	/* normal (SDR) - must explicitly clear */
+	{ IMX678_REG_THIN_V_EN,       0x00 },	/* DOL subsampling off - must explicitly clear */
+	{ IMX678_REG_HMAX_LOW,        0x26 },
+	{ IMX678_REG_HMAX_HIGH,       0x02 },
+	{ IMX678_REG_PIX_HST_LOW,     0x00 },
+	{ IMX678_REG_PIX_HWIDTH_LOW,  0x00 },
+	{ IMX678_REG_PIX_HWIDTH_HIGH, 0x0F },
+	{ IMX678_REG_PIX_VST_LOW,     0x00 },
+	{ IMX678_REG_PIX_VWIDTH_LOW,  0x70 },
+	{ IMX678_REG_PIX_VWIDTH_HIGH, 0x08 },
+	{ IMX678_REG_SHR0_LOW,        0x03 },
+	{ IMX678_REG_SHR0_HIGH,       0x00 },
+	{ IMX678_REG_GAIN_PGC_FIDMD,  0x01 },	/* GAIN: per-frame gain mode - restore SDR default */
+};
+
+static const struct imx678_reg_list sdr_to_hdr2dol_delta_list = {
+	.num_of_regs = ARRAY_SIZE(sdr_to_hdr2dol_delta),
+	.regs = sdr_to_hdr2dol_delta,
+};
+
+static const struct imx678_reg_list hdr2dol_to_sdr_delta_list = {
+	.num_of_regs = ARRAY_SIZE(hdr2dol_to_sdr_delta),
+	.regs = hdr2dol_to_sdr_delta,
+};
+
+/**
+ * imx678_get_mode_delta() - Check if a delta register table exists for this transition
+ * @from: previous mode (or NULL for first boot)
+ * @to: target mode
+ *
+ * Matched on the reg lists, so modes sharing one are indistinguishable here and must
+ * differ only in vblank/frame_interval. See supported_sdr_modes[].
+ *
+ * Return: pointer to delta reg list, or NULL if full reprogram is needed.
+ */
+static const struct hailo_ft_mode_delta imx678_ft_deltas[] = {
+	{ mode_3840x2160_regs, mode_4k_2dol_all_pixel,
+	  &sdr_to_hdr2dol_delta_list },
+	{ mode_4k_2dol_all_pixel, mode_3840x2160_regs,
+	  &hdr2dol_to_sdr_delta_list },
+};
+
+static const struct imx678_reg_list *imx678_get_mode_delta(
+	const struct imx678_mode *from, const struct imx678_mode *to)
+{
+	return hailo_ft_find_delta(imx678_ft_deltas, ARRAY_SIZE(imx678_ft_deltas),
+				   from ? from->reg_list.regs : NULL,
+				   to ? to->reg_list.regs : NULL);
+}
+
+HAILO_FT_DEFINE_REG_OPS(imx678);
+
+static const struct hailo_ft_exp_regs imx678_ft_exp_regs = {
+	.shutter = IMX678_REG_SHUTTER,
+	.shutter_len = 3,
+	.again = IMX678_REG_AGAIN,
+	.again_len = 2,
+	.lpfr = IMX678_REG_LPFR,
+	.lpfr_len = 3,
+};
+
 /**
  * imx678_start_streaming() - Start sensor stream
  * @imx678: pointer to imx678 device
@@ -4212,51 +4401,46 @@ static int imx678_setup_custom_values(struct imx678 *imx678)
  */
 static int imx678_start_streaming(struct imx678 *imx678)
 {
-	const struct imx678_reg_list *reg_list;
+	const struct imx678_reg_list *delta;
 	int ret;
+	bool same_mode = (imx678->prev_mode == imx678->cur_mode) &&
+			 (imx678->prev_mode != NULL);
+	const struct hailo_ft_mode_ops ft_ops = {
+		.dev = imx678->dev,
+		.sensor = imx678,
+		.write_regs = imx678_ft_write_regs,
+		.exp_ctrl = imx678->lef.exp_ctrl,
+		.again_ctrl = imx678->lef.again_ctrl,
+		.exp_cache = imx678->exp_cache,
+		.gain_cache = imx678->gain_cache,
+	};
 
-	/* Save all writable control values before handler setup may overwrite them */
-	struct hailo_ctrl_snapshot snap;
+	delta = imx678_get_mode_delta(imx678->prev_mode, imx678->cur_mode);
 
-	hailo_ctrl_snapshot_save(imx678->sd.ctrl_handler, &snap);
+	ret = hailo_ft_apply_mode(&ft_ops, same_mode, imx678->hdr_enabled,
+				  delta ? delta->regs : NULL,
+				  delta ? delta->num_of_regs : 0,
+				  imx678->cur_mode->reg_list.regs,
+				  imx678->cur_mode->reg_list.num_of_regs);
+	if (ret)
+		return ret;
 
-	/* Write sensor mode registers */
-	dev_dbg(imx678->dev, "%s - hdr_enabled: %d\n", __func__, imx678->hdr_enabled);
-	reg_list = &imx678->cur_mode->reg_list;
-	ret = imx678_write_regs(imx678, reg_list->regs, reg_list->num_of_regs);
+	ret = hailo_ft_push_controls(imx678->dev, imx678->sd.ctrl_handler);
+	if (ret)
+		return ret;
+
+	ret = imx678_setup_custom_values(imx678);
 	if (ret) {
-		dev_err(imx678->dev, "fail to write initial registers");
+		dev_err(imx678->dev, "failed to setup custom values");
 		return ret;
 	}
 
-	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
-	ret = __v4l2_ctrl_handler_setup(imx678->sd.ctrl_handler);
-	if (ret) {
-		dev_err(imx678->dev, "fail to setup handler (%d)", ret);
-		return ret;
+	if (!imx678_skip_standby_toggle(imx678)) {
+		ret = hailo_ft_cancel_standby(imx678->dev, IMX678_REG_MODE_SELECT, IMX678_MODE_STREAMING,
+					      imx678_ft_write_reg, imx678);
+		if (ret)
+			return ret;
 	}
-
-	/* Restore any control values corrupted by handler_setup side effects
-	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
-	hailo_ctrl_snapshot_restore(&snap);
-
-	/* Setup custom controls */
-    ret = imx678_setup_custom_values(imx678);
-    if (ret) {
-        dev_err(imx678->dev, "failed to setup custom values");
-        return ret;
-    }
-
-	/* Standby cancel */
-	ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
-			       IMX678_MODE_STREAMING);
-	if (ret) {
-		dev_err(imx678->dev, "Failed to cancel standby on stream start: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait 24ms for internal regulator stabilization */
-	usleep_range(24000, 25000);
 
 	/* Master mode start */
 	ret = imx678_write_reg(imx678, IMX678_REG_XMSTA, 1, 0);
@@ -4268,7 +4452,12 @@ static int imx678_start_streaming(struct imx678 *imx678)
 	imx678->wdr_priming_val = -1;
 	imx678->custom_rhs1_priming_val = -1;
 
-	dev_info(imx678->dev, "imx678: stream started (%s)", imx678->mode_string);
+	/* Track mode for next start - enables same-mode skip and delta */
+	imx678->prev_mode = imx678->cur_mode;
+
+	dev_info(imx678->dev, "imx678: stream started (%s%s)",
+		 imx678->mode_string,
+		 same_mode ? ", same-mode" : delta ? ", delta" : "");
 	return 0;
 }
 
@@ -4282,12 +4471,19 @@ static int imx678_stop_streaming(struct imx678 *imx678)
 {
 	int ret;
 
-	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
-	ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
-				IMX678_MODE_STANDBY);
-	if (ret) {
-		dev_err(imx678->dev, "Failed to set standby on stream stop: %d\n", ret);
-		return ret;
+	hailo_ft_cache_exposure(imx678->dev, &imx678_ft_exp_regs,
+				imx678->exp_cache, imx678->gain_cache,
+				imx678->hdr_enabled, imx678->cur_mode->dol,
+				imx678_ft_read_reg, imx678);
+
+	if (!imx678_skip_standby_toggle(imx678)) {
+		/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+		ret = imx678_write_reg(imx678, IMX678_REG_MODE_SELECT, 1,
+				       IMX678_MODE_STANDBY);
+		if (ret) {
+			dev_err(imx678->dev, "Failed to set standby on stream stop: %d\n", ret);
+			return ret;
+		}
 	}
 
 	ret = imx678_write_reg(imx678, IMX678_REG_XMSTA, 1, 1);
@@ -4320,16 +4516,26 @@ static int imx678_set_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx678->dev);
-		if (ret < 0)
-			goto error_unlock;
+		if (!imx678->pm_ref_held) {
+			ret = pm_runtime_resume_and_get(imx678->dev);
+			if (ret < 0)
+				goto error_unlock;
+			imx678->pm_ref_held = true;
+		}
 
 		ret = imx678_start_streaming(imx678);
 		if (ret)
 			goto error_power_off;
 	} else {
 		imx678_stop_streaming(imx678);
-		pm_runtime_put(imx678->dev);
+		if (imx678->fast_toggle_state == FAST_TOGGLE_NONE && imx678->pm_ref_held) {
+			pm_runtime_put(imx678->dev);
+			imx678->pm_ref_held = false;
+			/* pm_runtime_put triggers XCLR reset - all sensor registers
+			 * revert to defaults. Clear prev_mode so the next stream
+			 * does a full register write instead of same_mode/delta skip. */
+			imx678->prev_mode = NULL;
+		}
 	}
 
 	imx678->streaming = enable;
@@ -4339,7 +4545,15 @@ static int imx678_set_stream(struct v4l2_subdev *sd, int enable)
 	return 0;
 
 error_power_off:
-	pm_runtime_put(imx678->dev);
+	/* Drop the reference only if one is actually held, so the count stays
+	 * balanced however fast_toggle_state changed in between. prev_mode is
+	 * cleared either way - a failed start may have written part of the mode,
+	 * so the recorded mode no longer describes the hardware. */
+	if (imx678->pm_ref_held) {
+		pm_runtime_put(imx678->dev);
+		imx678->pm_ref_held = false;
+	}
+	imx678->prev_mode = NULL;
 error_unlock:
 	mutex_unlock(&imx678->mutex);
 
@@ -4604,7 +4818,7 @@ done_endpoint_free:
 static int imx678_priming_apply(struct imx678 *imx678, int toggle_type)
 {
 	int ret;
-	
+
 	// WDR apply
 	ret = imx678_set_hdr_mode(imx678, imx678->wdr_priming_val);
 	if (ret) {
@@ -4624,30 +4838,20 @@ static int imx678_priming_apply(struct imx678 *imx678, int toggle_type)
 	return 0;
 }
 
-static int imx678_fast_toggle_set_state(struct imx678 *imx678, int toggle_state)
+static int imx678_ft_apply_priming(void *sensor)
 {
-	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
-		dev_err(imx678->dev, "Invalid fast toggle state %d\n", toggle_state);
-		return -EINVAL;
-	}
+	return imx678_priming_apply(sensor, FAST_TOGGLE_APPLY_PRIMING);
+}
 
-	imx678->fast_toggle_state = toggle_state;
-
-	switch (toggle_state) {
-	case FAST_TOGGLE_APPLY_PRIMING:
-		return imx678_priming_apply(imx678, toggle_state);
-	default:
-		// No action needed for other states
-		break;
-	}
-	
-	return 0;
+static int imx678_fast_toggle_set_state(struct imx678 *imx678, struct fast_toggle_data *toggle_data)
+{
+	return hailo_ft_set_state(imx678->dev, toggle_data, &imx678->fast_toggle_state,
+				  &imx678->toggle_type, imx678_ft_apply_priming, imx678);
 }
 
 static long imx678_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx678 *imx678 = to_imx678(sd);
-	int toggle_state;
 	long ret;
 
 	mutex_lock(&imx678->mutex);
@@ -4657,8 +4861,7 @@ static long imx678_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = -EINVAL;
 			break;
 		}
-		toggle_state = *((int*)arg);
-		ret = imx678_fast_toggle_set_state(imx678, toggle_state);
+		ret = imx678_fast_toggle_set_state(imx678, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		ret = -ENOTTY;
@@ -4800,7 +5003,7 @@ static int imx678_init_controls(struct imx678 *imx678)
 				  V4L2_CID_ANALOGUE_GAIN, IMX678_AGAIN_MIN,
 				  IMX678_AGAIN_MAX, IMX678_AGAIN_STEP,
 				  IMX678_AGAIN_DEFAULT);
-	
+
 	if (ctrl_hdlr->error) {
 		ret = ctrl_hdlr->error;
 		dev_err(imx678->dev, "failed to create LEF gain control (%d)", ret);
@@ -4828,7 +5031,7 @@ static int imx678_init_controls(struct imx678 *imx678)
 	imx678_setup_custom_ctrl(imx678, &imx678->shr0_ctrl, IMX678_CID_SHR0);
 	imx678_setup_custom_ctrl(imx678, &imx678->shr1_ctrl, IMX678_CID_SHR1);
 	imx678_setup_custom_ctrl(imx678, &imx678->shr2_ctrl, IMX678_CID_SHR2);
-	
+
 	/* Other read only custom controls */
 	imx678_setup_custom_ctrl(imx678, &imx678->vmax_ctrl, IMX678_CID_VMAX);
 	imx678_setup_custom_ctrl(imx678, &imx678->hmax_ctrl, IMX678_CID_HMAX);
@@ -4868,25 +5071,25 @@ static int imx678_init_controls(struct imx678 *imx678)
 		v4l2_ctrl_handler_free(ctrl_hdlr);
 		return ret;
 	}
-	
+
 	imx678->mode_sel_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx678_ctrl_ops,
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX678_WDR_MIN,
 				IMX678_WDR_MAX, IMX678_WDR_STEP,
 				IMX678_WDR_DEFAULT);
-	
+
 	if (imx678->mode_sel_ctrl) {
 		// Always call callback, even if called with same value
 		// (this is important for fast toggle - which changes WDR mode outside of control framework)
 		imx678->mode_sel_ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
 	}
-	
+
 	if (ctrl_hdlr->error) {
 		ret = ctrl_hdlr->error;
 		dev_err(imx678->dev, "failed to create mode select control (%d)", ret);
 		v4l2_ctrl_handler_free(ctrl_hdlr);
 		return ret;
 	}
-	
+
 	/* Read only controls */
 	imx678->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
 						&imx678_ctrl_ops,
@@ -4988,7 +5191,7 @@ static int imx678_probe(struct i2c_client *client)
 
 	/* Initialize custom values to default */
 	imx678->custom_rhs1_value = IMX678_CUSTOM_RHS1_DEFAULT;
-	
+
 	imx678->wdr_priming_val = -1;
 	imx678->custom_rhs1_priming_val = -1;
 	imx678->fast_toggle_state = FAST_TOGGLE_NONE;

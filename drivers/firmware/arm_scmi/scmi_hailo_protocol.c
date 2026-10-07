@@ -3,6 +3,10 @@
 #include <dt-bindings/soc/hailo15_scu_fw_version.h>
 #include "common.h"
 
+/*
+ * Hailo SCMI messages are little-endian and are copied to and from the transport buffers as-is.
+ * The CPU is assumed to be little-endian.
+ */
 static int scmi_hailo_xfer(const struct scmi_protocol_handle *ph, unsigned int cmd_id, const void *request_buffer, size_t request_size, void *response_buffer, size_t response_size)
 {
 	struct scmi_xfer *transaction_info;
@@ -148,6 +152,18 @@ static int scmi_hailo_set_throttling_mode(const struct scmi_protocol_handle *ph,
 	return ret;
 }
 
+static int scmi_hailo_set_throttling_thresholds(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_throttling_thresholds_a2p *params)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_SET_THROTTLING_THRESHOLDS_ID, params, sizeof(*params), NULL, 0);
+	return ret;
+}
+
+static int scmi_hailo_get_throttling_thresholds(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_thresholds_p2a *info)
+{
+	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_THROTTLING_THRESHOLDS_ID, NULL, 0, info, sizeof(*info));
+	return ret;
+}
+
 static int scmi_hailo_get_throttling_mode(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info)
 {
 	int ret = scmi_hailo_xfer(ph, SCMI_HAILO_GET_THROTTLING_MODE_ID, params, sizeof(*params), info, sizeof(*info));
@@ -184,6 +200,8 @@ static const struct scmi_hailo_proto_ops hailo_proto_ops = {
 	.set_spi_interrupt_forwarding = scmi_hailo_set_spi_interrupt_forwarding,
 	.set_throttling_mode = scmi_hailo_set_throttling_mode,
 	.get_throttling_mode = scmi_hailo_get_throttling_mode,
+	.set_throttling_thresholds = scmi_hailo_set_throttling_thresholds,
+	.get_throttling_thresholds = scmi_hailo_get_throttling_thresholds,
 	.set_source_clock = scmi_hailo_set_source_clock,
 	.get_source_clock = scmi_hailo_get_source_clock,
 	.get_identification_attributes = scmi_hailo_get_identification_attributes,
@@ -231,7 +249,7 @@ static void* handle_noc_measurement_trigger(const struct scmi_protocol_handle* p
 	if (sizeof(*trigger_p) != payld_sz)
 		return NULL;
 
-	trigger_r->sample_index = le16_to_cpu(trigger_p->sample_index);
+	trigger_r->sample_index = trigger_p->sample_index;
 
 	return trigger_r;
 
@@ -246,8 +264,8 @@ static void* handle_noc_measurement_ended(const struct scmi_protocol_handle* ph,
 	if (sizeof(*ended_p) != payld_sz)
 		return NULL;
 
-	ended_r->sample_start_index = le16_to_cpu(ended_p->sample_start_index);
-	ended_r->sample_end_index = le16_to_cpu(ended_p->sample_end_index);
+	ended_r->sample_start_index = ended_p->sample_start_index;
+	ended_r->sample_end_index = ended_p->sample_end_index;
 
 	return ended_r;
 }
@@ -261,8 +279,8 @@ static void* handle_hailo_rt_notification(const struct scmi_protocol_handle* ph,
 	if (sizeof(*hrt_notif_p) != payld_sz)
 		return NULL;
 
-	hrt_notif_r->message_id = le16_to_cpu(hrt_notif_p->message_id);
-	hrt_notif_r->arg = le16_to_cpu(hrt_notif_p->arg);
+	hrt_notif_r->message_id = hrt_notif_p->message_id;
+	hrt_notif_r->arg = hrt_notif_p->arg;
 
 	return hrt_notif_r;
 }
@@ -276,8 +294,8 @@ static void* handle_crc_error(const struct scmi_protocol_handle* ph, u8 evt_id, 
 	if (sizeof(*crc_err_p) != payld_sz)
 		return NULL;
 
-	crc_err_r->csm_unit_idx = le16_to_cpu(crc_err_p->csm_unit_idx);
-	crc_err_r->csm_channel_idx = le16_to_cpu(crc_err_p->csm_channel_idx);
+	crc_err_r->csm_unit_idx = crc_err_p->csm_unit_idx;
+	crc_err_r->csm_channel_idx = crc_err_p->csm_channel_idx;
 
 	return crc_err_r;
 }

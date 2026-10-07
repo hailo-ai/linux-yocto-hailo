@@ -415,7 +415,7 @@ static void hailo15_evb_cpld_print_dip_switches(
 static int switches_show(struct seq_file *s, void *unused)
 {
         struct hailo15_evb_cpld *cpld = s->private;
-        struct hailo15_evb_cpld_registers regs = {0};
+        struct hailo15_evb_cpld_registers regs = { {0} };
         int ret;
 
         ret = hailo15_evb_cpld_get_registers(cpld, &regs);
@@ -494,7 +494,7 @@ static int hailo15_evb_cpld_probe(struct i2c_client *client,
         struct device *dev = &client->dev;
         struct hailo15_evb_cpld *cpld;
         u32 board_config;
-        struct hailo15_evb_cpld_registers regs = {0};
+        struct hailo15_evb_cpld_registers regs = { {0} };
         int ret;
 
         cpld = devm_kzalloc(dev, sizeof(*cpld), GFP_KERNEL);

@@ -98,28 +98,7 @@
 #define MCM_RETIMING_VSYNC 0x0A /* vblank = 0 */
 #define MCM_RETIMING_HSYNC 0x11E201 /* hblank = 4578 cycles */
 
-/* MCM_RETIMING register field decoders. Per ISP8000L V5.0.0 register map:
- *   MCM_RETIMING0 [31:8] mcm_vsync_blank     (clocks: prev frame end -> next VSYNC)
- *   MCM_RETIMING0 [7:0]  mcm_vsync_duration  (clocks of active VSYNC)
- *   MCM_RETIMING1 [31:8] mcm_hsync_blank     (clocks: prev line end -> next HSYNC)
- *   MCM_RETIMING1 [7:0]  mcm_hsync_preample  (clocks: VSYNC -> first HSYNC) */
-#define MCM_RETIMING_HBLANK_CYCLES(r1)     ((r1) >> 8)
-#define MCM_RETIMING_HPREAMP_CYCLES(r1)    ((r1) & 0xFF)
-#define MCM_RETIMING_VBLANK_CYCLES(r0)     ((r0) >> 8)
-#define MCM_RETIMING_VDURATION_CYCLES(r0)  ((r0) & 0xFF)
-
-/* ISP wrapper clock — see /sys/kernel/debug/clk/isp_wrapper_clk/clk_rate.
- * Update if the SoC clock-controller default ever changes. */
-#define ISP_WRAPPER_CLK_HZ                 600000000U
-
-/* Slack added on top of the computed MCM RDMA duration to absorb IRQ
- * dispatch / scheduling jitter. */
-#define MCM_RDMA_TIMEOUT_SLACK_US          5000U
-
-/* Defensive clamp bounds on the dynamic MCM RDMA timeout, in milliseconds. */
-#define MCM_RDMA_TIMEOUT_MIN_MS            20U
-#define MCM_RDMA_TIMEOUT_MAX_MS            200U
-#define MCM_RDMA_TIMEOUT_DEFAULT_MS        35U
+#define MCM_RDMA_TIMEOUT_MS                1000U
 
 /* isp ae mis and int mask */
 #define ISP_MIS_EXP_END_MASK 0x00040000

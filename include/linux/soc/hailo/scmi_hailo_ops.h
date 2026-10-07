@@ -27,6 +27,8 @@ struct scmi_hailo_ops {
     int (*set_spi_interrupt_forwarding)(struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
     int (*set_throttling_mode)(struct scmi_hailo_set_throttling_mode_a2p *params);
     int (*get_throttling_mode)(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+    int (*set_throttling_thresholds)(struct scmi_hailo_set_throttling_thresholds_a2p *params);
+    int (*get_throttling_thresholds)(struct scmi_hailo_get_throttling_thresholds_p2a *info);
 	int (*set_source_clock)(struct scmi_hailo_set_source_clock_a2p *params);
 	int (*get_source_clock)(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
     int (*get_identification_attributes)(struct scmi_hailo_identification_attributes_p2a *params);

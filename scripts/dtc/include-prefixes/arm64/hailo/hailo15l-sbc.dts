@@ -401,11 +401,11 @@
         "flash_spi_dq_2_grp",
         "flash_spi_dq_3_grp",
         "flash_spi_sclk_out_grp",
-	"jtag_tck_in_grp",
-	"jtag_tdi_in_grp",
-	"jtag_tdo_out_grp",
-	"jtag_tms_grp",
-	"jtag_trstn_in_grp";
+        "jtag_tck_in_grp",
+        "jtag_tdi_in_grp",
+        "jtag_tdo_out_grp",
+        "jtag_tms_grp",
+        "jtag_trstn_in_grp";
 
     /* IO_PAD_0 */
     pinctrl_i2c0_scl: i2c0_scl {
@@ -1001,7 +1001,6 @@
 };
 
 &sensor_0 {
-    status = "ok";
     reset-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 };
 

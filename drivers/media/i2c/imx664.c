@@ -37,6 +37,40 @@
 
 #define IMX664_REG_HMAX 0x302C
 
+/* Mode-control registers used by mode-init tables and SDR<->2DOL deltas */
+#define IMX664_REG_INCK_SEL          0x3014
+#define IMX664_REG_DATARATE_SEL      0x3015
+#define IMX664_REG_WINMODE           0x3018
+#define IMX664_REG_WDMODE            0x301A   /* 0=SDR, 1=DOL 2-frame */
+#define IMX664_REG_ADDMODE           0x301B   /* binning */
+#define IMX664_REG_THIN_V_EN         0x301C   /* DOL subsampling enable */
+#define IMX664_REG_ADBIT             0x3022
+#define IMX664_REG_MDBIT             0x3023
+#define IMX664_REG_VMAX_HIGH         0x3029
+#define IMX664_REG_HMAX_HIGH         0x302D
+#define IMX664_REG_PIX_HST_LOW       0x303C
+#define IMX664_REG_PIX_HWIDTH_LOW    0x303E
+#define IMX664_REG_PIX_HWIDTH_HIGH   0x303F
+#define IMX664_REG_LANEMODE          0x3040
+#define IMX664_REG_XSIZE_OVERLAP     0x3042
+#define IMX664_REG_PIX_VST_LOW       0x3044
+#define IMX664_REG_PIX_VWIDTH_LOW    0x3046
+#define IMX664_REG_PIX_VWIDTH_HIGH   0x3047
+#define IMX664_REG_SHR0_HIGH         0x3051
+#define IMX664_REG_RHS1              0x3060
+#define IMX664_REG_RHS1_HIGH         0x3061
+#define IMX664_REG_RHS2              0x3064
+#define IMX664_REG_RHS2_HIGH         0x3065
+#define IMX664_REG_XVS_DRV           0x30A6
+#define IMX664_REG_TUNING_30E0       0x30E0
+#define IMX664_REG_TUNING_30E4       0x30E4
+#define IMX664_REG_TUNING_3148       0x3148
+#define IMX664_REG_TUNING_3412       0x3412
+#define IMX664_REG_TUNING_3460       0x3460
+#define IMX664_REG_TUNING_3492       0x3492
+#define IMX664_REG_TUNING_355A       0x355A
+#define IMX664_REG_TUNING_3930       0x3930
+
 /* defaults */
 #define IMX664_DEFAULT_RHS1 0x6E
 #define IMX664_DEFAULT_RHS2 0XAA // not supported yet
@@ -330,7 +364,36 @@ struct imx664 {
 	int wdr_priming_val;
 	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
+	/*
+	 * Whether this driver currently holds a runtime-PM reference. The put is
+	 * skipped across a fast toggle so the sensor keeps its power - and with it
+	 * its register contents - between the stop and the restart. The matching
+	 * get must then be skipped too, so it is gated on this flag rather than on
+	 * fast_toggle_state: that state can be set while the sensor is stopped and
+	 * already suspended, and gating the get on it would leave the restart
+	 * programming an unpowered sensor.
+	 */
+	bool pm_ref_held;
+	enum fast_toggle_type toggle_type;
+	const struct imx664_mode *prev_mode; /* last successfully streamed mode, or NULL */
+	/* Per-regime (0=SDR, 1=HDR) last-committed LEF exposure in lines + analog gain,
+	 * restored on a fast-toggle delta switch (the delta table's default would
+	 * otherwise brighten the first frame). Exposure rather than SHR0: see
+	 * hailo_ft_cache_exposure(). */
+	u32 exp_cache[2];
+	u32 gain_cache[2];
 };
+
+/*
+ * Skip the documented STANDBY entry/exit cycle (and its 24 ms regulator
+ * stabilization wait) - pause/resume via XMSTA only. Used when the
+ * mode-switch delta touches no S-type registers.
+ */
+static inline bool imx664_skip_standby_toggle(struct imx664 *imx664)
+{
+	return hailo_ft_skip_standby(imx664->fast_toggle_state, imx664->toggle_type,
+				     HAILO_FT_SKIP_PREISP | HAILO_FT_SKIP_2DOL);
+}
 
 static const s64 link_freq[] = {
 	IMX664_LINK_FREQ,
@@ -341,9 +404,9 @@ static const struct imx664_reg mode_2688x1520_regs[] = {
 	/* Using default value for 0x3000 (STANDBY, 0x01) */
 	/* Using default value for 0x3001 (REGHOLD, 0x00) */
 	/* Using default value for 0x3002 (XMSTA, 0x01) */
-	{ 0x3014, 0x04 }, /* INCK_SEL 4 -24MHhz */
-	{ 0x3015, 0x04 }, /* DATARATE_SEL [3:0] */
-	{ 0x3018, 0x04 },/* 0x3018 (WINMODE [3:0], 0x04) --> window cropping mdoe */
+	{ IMX664_REG_INCK_SEL, 0x04 }, /* INCK_SEL 4 -24MHhz */
+	{ IMX664_REG_DATARATE_SEL, 0x04 }, /* DATARATE_SEL [3:0] */
+	{ IMX664_REG_WINMODE, 0x04 },/* 0x3018 (WINMODE [3:0], 0x04) --> window cropping mdoe */
 	/* Using default value for 0x301A (WDMODE [7:0], 0x00) */
 	/* Using default value for 0x301B (ADDMODE [1:0], 0x00) */
 	/* Using default value for 0x301C (THIN_V_EN [7:0], 0x00) */
@@ -362,16 +425,16 @@ static const struct imx664_reg mode_2688x1520_regs[] = {
 	/* Using default value for 0x3032 (FDG_SEL2 [1:0], 0x00) */
 	/* Using default value for 0x303C (PIX_HST [12:0], 0x00) */
 	/* Using default value for 0x303D  */
-	{ 0x303E, 0x80 },/* 0x303E (PIX_HWIDTH [12:0], = 0xA80 = 2688) */
-	{ 0x303F, 0x0A },/* 0x303F (0x0A) */ 
-	{ 0x3040, 0x03 },/* LANEMODE [2:0] */
+	{ IMX664_REG_PIX_HWIDTH_LOW, 0x80 },/* 0x303E (PIX_HWIDTH [12:0], = 0xA80 = 2688) */
+	{ IMX664_REG_PIX_HWIDTH_HIGH, 0x0A },/* 0x303F (0x0A) */
+	{ IMX664_REG_LANEMODE, 0x03 },/* LANEMODE [2:0] */
 	/* Using default value for 0x3044 (PIX_VST [11:0], 0x00) */
 	/* Using default value for 0x3045 (0x00) */
-	{ 0x3046, 0xF0 },/* 0x3046 (PIX_VWIDTH [11:0],0x5F0 = 1520) */
-	{ 0x3047, 0x05 },/* 0x3047 (0x05) */
+	{ IMX664_REG_PIX_VWIDTH_LOW, 0xF0 },/* 0x3046 (PIX_VWIDTH [11:0],0x5F0 = 1520) */
+	{ IMX664_REG_PIX_VWIDTH_HIGH, 0x05 },/* 0x3047 (0x05) */
 	/* Using default value for 0x304C (GAIN_HG0 [10:0], 0x00) */
 	/* Using default value for 0x304D (0x00) */
-	{ 0x3050, 0x08 }, /* SHR0 [19:0] */
+	{ IMX664_REG_SHUTTER, 0x08 }, /* SHR0 [19:0] */
 	/* Using default value for 0x3051 (0x00) */
 	/* Using default value for 0x3052 (0x00) */
 	/* Using default value for 0x3054 (SHR1 [19:0], 0x1A) */
@@ -393,23 +456,23 @@ static const struct imx664_reg mode_2688x1520_regs[] = {
 	/* Using default value for 0x3074 (GAIN_2 [10:0], 0x00) */
 	/* Using default value for 0x3075 (0x00) */
 	/* Using default value for 0x30A4 (XVSOUTSEL [1:0], 0xAA) */
-	{ 0x30A6, 0x00 }, /* XVS_DRV [1:0] */
+	{ IMX664_REG_XVS_DRV, 0x00 }, /* XVS_DRV [1:0] */
 	/* Using default value for 0x30CC (0x00) */
 	/* Using default value for 0x30CD (0x00) */
 	/* Using default value for 0x30DC (BLKLEVEL [9:0], 0x32) */
 	/* Using default value for 0x30DD (0x40) */
 	/* Using default value for 0x310C (0x01) */
 	/* Using default value for 0x3130 (0x01) */
-	{ 0x3148, 0x00 },
+	{ IMX664_REG_TUNING_3148, 0x00 },
 	/* Using default value for 0x315E (0x10) */
 	/* Using default value for 0x3400 (GAIN_PGC_FIDMD, 0x01) */
-	{ 0x3412, 0x01 },
-	{ 0x3460, 0x21 },
-	{ 0x3492, 0x08 },
+	{ IMX664_REG_TUNING_3412, 0x01 },
+	{ IMX664_REG_TUNING_3460, 0x21 },
+	{ IMX664_REG_TUNING_3492, 0x08 },
 	/* Using default value for 0x3890 (HFR_EN [3:0], 0x08) */
 	/* Using default value for 0x3891 (0x00) */
 	/* Using default value for 0x3893 (0x00) */
-	{ 0x3930, 0x01 },
+	{ IMX664_REG_TUNING_3930, 0x01 },
 	{ 0x3B1D, 0x17 },
 	{ 0x3C00, 0x0C },
 	{ 0x3C01, 0x0C },
@@ -547,35 +610,35 @@ static const struct imx664_reg mode_2688x1520_regs[] = {
 };
 
 static const struct imx664_reg mode_1920x1080_sdr_binning_regs[] = {
-    { 0x3000, 0x01 }, // STANDBY                    *imx664
-    { 0x3002, 0x01 }, // XMSTA (started later by start_streaming)
-    { 0x3014, 0x04 }, // INCK_SEL                   *imx664
-    { 0x3018, 0x04 }, // WINMODE - crop                 *imx664
-    { 0x301A, 0x00 }, //WDMODE[7:0] - sdr
-    { 0x301B, 0x01 }, //ADDMODE[1:0] - binning
-    // { 0x301C, 0x01 }, //THIN_V_EN[7:0] - subsampling
-    { 0x3022, 0x00 }, //ADBIT[1:0] // 10 bit
-    { 0x3023, 0x01 }, //MDBIT[1:0] // raw12 IMPORTANT
-    { 0x3028, 0x5e }, //VMAX[15:0]
-    { 0x3029, 0x1a }, //VMAX[15:0] // 6750
-    { 0x302C, 0x26 }, //HMAX[15:0] // 550
-    { 0x302D, 0x02 },
-    { 0x303c, 0x00 }, // PIX_HST=00             *imx664
-    { 0x303e, 0x00 }, // PIX_HWIDTH_LSB=3840        *imx664
-    { 0x303f, 0x0f }, // PIX_HWIDTH_MSB         *imx664
-    { 0x3044, 0x00 }, // PIX_VST=00             *imx664
-    { 0x3046, 0x70 }, // PIX_VWIDTH_LSB=2160        *imx664
-    { 0x3047, 0x08 }, // PIX_VWIDTH_MSB         *imx664
-    { 0x3050, 0x18 }, //SHR0[19:0]
-    { 0x3051, 0x15 }, 
-    // { 0x3054, 0x07 }, //SHR1[19:0]
-    // { 0x3058, 0x4A }, //SHR2[19:0]
-    // { 0x3059, 0x00 }, 
-    // { 0x3060, 0x40 }, //RHS1[19:0]
-    // { 0x3061, 0x00 }, 
-    // { 0x3064, 0x53 }, //RHS2[19:0]
-    { 0x3065, 0x00 }, { 0x30A6, 0x00 }, //XVS_DRV[1:0]
-    { 0x3460, 0x22 }, { 0x355A, 0x64 }, { 0x3A02, 0x7A }, { 0x3A10, 0xEC },
+	{ IMX664_REG_MODE_SELECT, 0x01 }, // STANDBY                    *imx664
+	{ IMX664_REG_XMSTA, 0x01 }, // XMSTA (started later by start_streaming)
+	{ IMX664_REG_INCK_SEL, 0x04 }, // INCK_SEL                   *imx664
+	{ IMX664_REG_WINMODE, 0x04 }, // WINMODE - crop                 *imx664
+	{ IMX664_REG_WDMODE, 0x00 }, //WDMODE[7:0] - sdr
+	{ IMX664_REG_ADDMODE, 0x01 }, //ADDMODE[1:0] - binning
+	// { IMX664_REG_THIN_V_EN, 0x01 }, //THIN_V_EN[7:0] - subsampling
+	{ IMX664_REG_ADBIT, 0x00 }, //ADBIT[1:0] // 10 bit
+	{ IMX664_REG_MDBIT, 0x01 }, //MDBIT[1:0] // raw12 IMPORTANT
+	{ IMX664_REG_LPFR, 0x5e }, //VMAX[15:0]
+	{ IMX664_REG_VMAX_HIGH, 0x1a }, //VMAX[15:0] // 6750
+	{ IMX664_REG_HMAX, 0x26 }, //HMAX[15:0] // 550
+	{ IMX664_REG_HMAX_HIGH, 0x02 },
+	{ IMX664_REG_PIX_HST_LOW, 0x00 }, // PIX_HST=00             *imx664
+	{ IMX664_REG_PIX_HWIDTH_LOW, 0x00 }, // PIX_HWIDTH_LSB=3840        *imx664
+	{ IMX664_REG_PIX_HWIDTH_HIGH, 0x0f }, // PIX_HWIDTH_MSB         *imx664
+	{ IMX664_REG_PIX_VST_LOW, 0x00 }, // PIX_VST=00             *imx664
+	{ IMX664_REG_PIX_VWIDTH_LOW, 0x70 }, // PIX_VWIDTH_LSB=2160        *imx664
+	{ IMX664_REG_PIX_VWIDTH_HIGH, 0x08 }, // PIX_VWIDTH_MSB         *imx664
+	{ IMX664_REG_SHUTTER, 0x18 }, //SHR0[19:0]
+	{ IMX664_REG_SHR0_HIGH, 0x15 },
+	// { IMX664_REG_SHUTTER_SHORT, 0x07 }, //SHR1[19:0]
+	// { IMX664_REG_SHUTTER_VERY_SHORT, 0x4A }, //SHR2[19:0]
+	// { 0x3059, 0x00 },
+	// { IMX664_REG_RHS1, 0x40 }, //RHS1[19:0]
+	// { IMX664_REG_RHS1_HIGH, 0x00 },
+	// { IMX664_REG_RHS2, 0x53 }, //RHS2[19:0]
+	{ IMX664_REG_RHS2_HIGH, 0x00 }, { IMX664_REG_XVS_DRV, 0x00 }, //XVS_DRV[1:0]
+	{ IMX664_REG_TUNING_3460, 0x22 }, { IMX664_REG_TUNING_355A, 0x64 }, { 0x3A02, 0x7A }, { 0x3A10, 0xEC },
     { 0x3A12, 0x71 }, { 0x3A14, 0xDE }, { 0x3A20, 0x2B }, { 0x3A24, 0x22 },
     { 0x3A25, 0x25 }, { 0x3A26, 0x2A }, { 0x3A27, 0x2C }, { 0x3A28, 0x39 },
     { 0x3A29, 0x38 }, { 0x3A30, 0x04 }, { 0x3A31, 0x04 }, { 0x3A32, 0x03 },
@@ -669,24 +732,24 @@ static const struct imx664_reg mode_1920x1080_sdr_binning_regs[] = {
 
 /* mode 17 from datasheet */
 static const struct imx664_reg mode_2688x1520_2dol_all_pixel_regs[] = {
-	{0x3014, 0x04}, /* INCK_SEL 4 -24MHhz */
-	{0x3018, 0x04}, /* 0x3018 (WINMODE [3:0], 0x04) --> window cropping mdoe */
-	{0x303E, 0x80}, /* 0x303E (PIX_HWIDTH [12:0], = 0xA80 = 2688) */
-	{0x303F, 0x0A}, /* 0x303F (0x0A) */ 
-	{0x3046, 0xF0}, /* 0x3046 (PIX_VWIDTH [11:0],0x5F0 = 1520) */
-	{0x3047, 0x05}, /* 0x3047 (0x05) */
-    {0x301A, 0x01},
-    {0x301C, 0x01},
-    {0x3050, 0x18},
-    {0x3051, 0x07},
-    {0x3054, 0x0A},
-    {0x3060, 0x6E},
-    {0x30A6, 0x00},
-    {0x3148, 0x00},
-    {0x3412, 0x01},
-    {0x3460, 0x21},
-    {0x3492, 0x08},
-    {0x3930, 0x01},
+	{IMX664_REG_INCK_SEL, 0x04}, /* INCK_SEL 4 -24MHhz */
+	{IMX664_REG_WINMODE, 0x04}, /* 0x3018 (WINMODE [3:0], 0x04) --> window cropping mdoe */
+	{IMX664_REG_PIX_HWIDTH_LOW, 0x80}, /* 0x303E (PIX_HWIDTH [12:0], = 0xA80 = 2688) */
+	{IMX664_REG_PIX_HWIDTH_HIGH, 0x0A}, /* 0x303F (0x0A) */
+	{IMX664_REG_PIX_VWIDTH_LOW, 0xF0}, /* 0x3046 (PIX_VWIDTH [11:0],0x5F0 = 1520) */
+	{IMX664_REG_PIX_VWIDTH_HIGH, 0x05}, /* 0x3047 (0x05) */
+	{IMX664_REG_WDMODE, 0x01},
+	{IMX664_REG_THIN_V_EN, 0x01},
+	{IMX664_REG_SHUTTER, 0x18},
+	{IMX664_REG_SHR0_HIGH, 0x07},
+	{IMX664_REG_SHUTTER_SHORT, 0x0A},
+	{IMX664_REG_RHS1, 0x6E},
+	{IMX664_REG_XVS_DRV, 0x00},
+	{IMX664_REG_TUNING_3148, 0x00},
+	{IMX664_REG_TUNING_3412, 0x01},
+	{IMX664_REG_TUNING_3460, 0x21},
+	{IMX664_REG_TUNING_3492, 0x08},
+	{IMX664_REG_TUNING_3930, 0x01},
     {0x3B1D, 0x17},
     {0x3C00, 0x0C},
     {0x3C01, 0x0C},
@@ -824,13 +887,17 @@ static const struct imx664_reg mode_2688x1520_2dol_all_pixel_regs[] = {
 
 static const struct imx664_reg imx664_tpg_en_regs[] = {
 	//TPG config
-	{ 0x3042, 0x00 }, //XSIZE_OVERLAP
-	{ 0x30e0, 0x01 }, //TPG_EN_DUOUT
-	{ 0x30e4, 0x13 }, //TPG_COLORWIDTH
+	{ IMX664_REG_XSIZE_OVERLAP, 0x00 }, //XSIZE_OVERLAP
+	{ IMX664_REG_TUNING_30E0, 0x01 }, //TPG_EN_DUOUT
+	{ IMX664_REG_TUNING_30E4, 0x13 }, //TPG_COLORWIDTH
 };
 
 
-/* Supported sensor mode configurations */
+/* Supported sensor mode configurations.
+ * Modes sharing a reg_list must differ only in vblank/frame_interval: the delta lookup
+ * keys on the reg list. Safe - vblank lands as LPFR via the exposure s_ctrl after the
+ * delta, frame_interval has no register. Anything else would come from the reg list.
+ */
 static const struct imx664_mode supported_sdr_modes[] = {
 	{
 	.width = 2688,
@@ -1096,7 +1163,7 @@ static struct v4l2_ctrl_config imx664_custom_ctrls[] = {
 		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
 		.name = "horizontal_span",
 		.step = IMX664_INTEGER_STEP,
-	},	
+	},
 };
 
 static void convert_v4l2_subdev_code_to_sensor_code(struct imx664* imx664, struct v4l2_mbus_framefmt* fmt) {
@@ -1108,7 +1175,7 @@ static void convert_v4l2_subdev_code_to_sensor_code(struct imx664* imx664, struc
 	} else {
 		/* sdr mode: all fmt->code should be 1xnum_bits */
 		return;
-	}	
+	}
 }
 
 static struct v4l2_ctrl_config *get_custom_ctrl_by_id(u32 id) {
@@ -1148,7 +1215,7 @@ static void imx664_setup_custom_ctrl_limits(
 	config->min = min;
 	config->max = max;
 	config->def = def;
-	
+
 	*ctrl = v4l2_ctrl_new_custom(&imx664->ctrl_handler, config, NULL);
 }
 
@@ -1365,7 +1432,7 @@ static int imx664_update_exp_vblank_controls(struct imx664* imx664)
 	memset(&limits, 0, sizeof(struct ExposureLimits_t));
 	calculate_exposure_limits(imx664, &limits);
 
-	ret = __v4l2_ctrl_modify_range(imx664->lef.exp_ctrl, limits.exp_lef_min, 
+	ret = __v4l2_ctrl_modify_range(imx664->lef.exp_ctrl, limits.exp_lef_min,
 		limits.exp_lef_max, IMX664_EXPOSURE_STEP, limits.exp_lef_default);
 	if (ret) {
 		dev_err(imx664->dev, "Failed to modify LEF exposure range. "
@@ -1375,7 +1442,7 @@ static int imx664_update_exp_vblank_controls(struct imx664* imx664)
 	}
 
 	if (imx664->cur_mode->dol >= 2) {
-		ret = __v4l2_ctrl_modify_range(imx664->sef1.exp_ctrl, limits.exp_sef1_min, 
+		ret = __v4l2_ctrl_modify_range(imx664->sef1.exp_ctrl, limits.exp_sef1_min,
 			limits.exp_sef1_max, IMX664_EXPOSURE_SHORT_STEP, limits.exp_sef1_default);
 		if (ret) {
 			dev_err(imx664->dev, "Failed to modify SEF1 exposure range. "
@@ -1386,7 +1453,7 @@ static int imx664_update_exp_vblank_controls(struct imx664* imx664)
 	}
 
 	if (imx664->cur_mode->dol >= 3) {
-		ret = __v4l2_ctrl_modify_range(imx664->sef2.exp_ctrl, limits.exp_sef2_min, 
+		ret = __v4l2_ctrl_modify_range(imx664->sef2.exp_ctrl, limits.exp_sef2_min,
 			limits.exp_sef2_max, IMX664_EXPOSURE_VERY_SHORT_STEP, limits.exp_sef2_default);
 		if (ret) {
 			dev_err(imx664->dev, "Failed to modify SEF2 exposure range. "
@@ -1500,12 +1567,12 @@ static int imx664_update_exp_gain(struct imx664 *imx664, u32 exposure_time, u32 
 			// Minimum number of lines until starting exposure
 			u32 shr0_min_gap = imx664->hdr_enabled ? imx664->cur_mode->rhs2 + IMX664_SHR0_RHS2_GAP : IMX664_SHR0_FSC_GAP;
 			shr0_min_gap = MAX(shr0_min_gap, imx664->cur_mode->vblank_min);
-			
+
 			// The desired fps is blocked by cur_mode->frame_interval (for example 30/1 for 30fps)
 			// Note that this calculation does not take into account HDR - so HDR is broken by this v4l control
 			desired_fps_numerator = CLOCK_FREQ_HZ / imx664->cur_mode->hblank;
 			desired_fps_denominator = exposure_time + shr0_min_gap;
-			
+
 			// Note that frame_interval is in opposite units from fps, so 30fps will be represented by 1/30
 			// This checks if: desired_fps_numerator / desired_fps_denominator > imx664->cur_mode->frame_interval.denominator / imx664->cur_mode->frame_interval.numerator
 			// But accounts for int rounding
@@ -1613,6 +1680,9 @@ static void imx664_set_mode(struct imx664 *imx664, const struct imx664_mode *mod
 {
 	int ret;
 	imx664->cur_mode = mode;
+	imx664->curr_fmt.format.code   = mode->code;
+	imx664->curr_fmt.format.width  = mode->width;
+	imx664->curr_fmt.format.height = mode->height;
 	imx664->vblank = mode->vblank;
 
 	/* set the link freq index and the pixel rate controls */
@@ -1664,7 +1734,7 @@ static int imx664_set_hdr_mode(struct imx664 *imx664, bool enable)
 		imx664->hdr_enabled = enable;
 		prev_mode = imx664->cur_mode;
 
-		imx664_set_mode(imx664, imx664->hdr_enabled ? 
+		imx664_set_mode(imx664, imx664->hdr_enabled ?
 								&supported_hdr_modes[DEFAULT_MODE_IDX] :
 								&supported_sdr_modes[DEFAULT_MODE_IDX]);
 
@@ -1950,7 +2020,7 @@ static int imx664_enum_mbus_code(struct v4l2_subdev *sd,
 		supported_modes = (struct imx664_mode *)supported_hdr_modes;
 	else
 		supported_modes = (struct imx664_mode *)supported_sdr_modes;
-	
+
 	mutex_lock(&imx664->mutex);
 	code->code = supported_modes[DEFAULT_MODE_IDX].code;
 	mutex_unlock(&imx664->mutex);
@@ -2086,11 +2156,11 @@ static int imx664_get_fmt_mode(struct imx664* imx664, struct v4l2_subdev_format*
 		supported_modes = (struct imx664_mode *)supported_sdr_modes;
 		mode_count = sizeof(supported_sdr_modes) / sizeof(struct imx664_mode);
 	}
-	
+
 	convert_v4l2_subdev_code_to_sensor_code(imx664, &fmt->format);
 	for (index = 0; index < mode_count; ++index) {
-		if (supported_modes[index].width == fmt->format.width && 
-		   supported_modes[index].height == fmt->format.height && 
+		if (supported_modes[index].width == fmt->format.width &&
+		   supported_modes[index].height == fmt->format.height &&
 		   supported_modes[index].code == fmt->format.code) {
 			*mode = &supported_modes[index];
 			return 0;
@@ -2117,13 +2187,6 @@ static int imx664_set_pad_format(struct v4l2_subdev *sd,
 	int ret = 0;
 	mutex_lock(&imx664->mutex);
 
-	if (imx664->streaming) {
-		dev_err(imx664->dev,
-			"Cannot set pad format while streaming\n");
-		ret = -EINVAL;
-		goto out;
-	}
-	
 	ret = imx664_get_fmt_mode(imx664, fmt, &mode);
 	if(ret){
 		pr_err("%s - get_fmt failed with %d (format: %dx%d, code: %d)\n", __func__,
@@ -2135,12 +2198,29 @@ static int imx664_set_pad_format(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
-	} else {
-		memcpy(&imx664->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
-		if (compare_imx664_mode(mode, imx664->cur_mode)) {
-			imx664_set_mode(imx664, mode);
-			ret = imx664_update_exp_vblank_controls(imx664);
+		goto out;
+	}
+
+	/*
+	 * While streaming a format that keeps the readout geometry is a no-op;
+	 * the frame rate belongs to s_frame_interval(). Anything else is a
+	 * mode change and is refused.
+	 */
+	if (imx664->streaming) {
+		if (mode->width != imx664->cur_mode->width ||
+		    mode->height != imx664->cur_mode->height ||
+		    mode->code != imx664->cur_mode->code) {
+			dev_err(imx664->dev,
+				"Cannot change the mode while streaming\n");
+			ret = -EBUSY;
 		}
+		goto out;
+	}
+
+	memcpy(&imx664->curr_fmt, fmt, sizeof(struct v4l2_subdev_format));
+	if (compare_imx664_mode(mode, imx664->cur_mode)) {
+		imx664_set_mode(imx664, mode);
+		ret = imx664_update_exp_vblank_controls(imx664);
 	}
 
 out:
@@ -2191,7 +2271,7 @@ static const char *imx664_get_mode_name(struct imx664 *imx664)
 	int fps;
 	int idx;
 
-	fps = imx664->cur_mode->frame_interval.denominator / 
+	fps = imx664->cur_mode->frame_interval.denominator /
 		imx664->cur_mode->frame_interval.numerator;
 
 	switch (imx664->cur_mode->dol) {
@@ -2210,7 +2290,7 @@ static const char *imx664_get_mode_name(struct imx664 *imx664)
             return NULL;
         }
 		idx = search_mode(imx664->cur_mode, NULL);
-		snprintf(mode_str, sizeof(mode_str), "HDR #%d, %dDOL %dfps", 
+		snprintf(mode_str, sizeof(mode_str), "HDR #%d, %dDOL %dfps",
 			idx, imx664->cur_mode->dol, fps);
 		return mode_str;
 	default:
@@ -2218,6 +2298,85 @@ static const char *imx664_get_mode_name(struct imx664 *imx664)
 		return NULL;
 	}
 }
+
+/*
+ * SDR 2688x1520 -> 2DOL 2688x1520: 18 control registers from the 2DOL table
+ * (address < 0x3A00) that differ from SDR defaults.
+ * Skips analog tuning registers (>= 0x3A00) which are identical between modes.
+ */
+static const struct imx664_reg sdr_to_hdr2dol_delta[] = {
+	{ IMX664_REG_WDMODE,        0x01 },	/* DOL 2-frame */
+	{ IMX664_REG_THIN_V_EN,     0x01 },
+	{ IMX664_REG_SHUTTER,       0x18 },	/* SHR0[7:0] */
+	{ IMX664_REG_SHUTTER + 1,   0x07 },	/* SHR0[15:8] */
+	{ IMX664_REG_SHUTTER_SHORT, 0x0A },	/* SHR1[7:0] */
+	{ IMX664_REG_RHS1,          0x6E },
+};
+
+/*
+ * 2DOL 2688x1520 -> SDR 2688x1520: all control registers from SDR table
+ * (address < 0x3A00) plus explicit clears for 2DOL-only registers.
+ * Skips analog tuning registers (>= 0x3A00) which are identical between modes.
+ */
+static const struct imx664_reg hdr2dol_to_sdr_delta[] = {
+	{ IMX664_REG_WINMODE,         0x04 },
+	{ IMX664_REG_WDMODE,          0x00 },	/* normal (SDR) - must explicitly clear */
+	{ IMX664_REG_THIN_V_EN,       0x00 },	/* DOL subsampling off - must explicitly clear */
+	{ IMX664_REG_PIX_HWIDTH_LOW,  0x80 },
+	{ IMX664_REG_PIX_HWIDTH_HIGH, 0x0A },
+	{ IMX664_REG_PIX_VWIDTH_LOW,  0xF0 },
+	{ IMX664_REG_PIX_VWIDTH_HIGH, 0x05 },
+	{ IMX664_REG_SHUTTER,         0x08 },	/* SHR0[7:0] */
+	{ IMX664_REG_SHUTTER + 1,     0x00 },	/* SHR0[15:8] - clear DOL leftover (was 0x07) */
+	{ IMX664_REG_SHUTTER_SHORT,   0x00 },	/* SHR1 - clear DOL leftover (was 0x0A) */
+	{ IMX664_REG_RHS1,            0x00 },	/* RHS1 - clear DOL leftover (was 0x6E) */
+};
+
+static const struct imx664_reg_list sdr_to_hdr2dol_delta_list = {
+	.num_of_regs = ARRAY_SIZE(sdr_to_hdr2dol_delta),
+	.regs = sdr_to_hdr2dol_delta,
+};
+
+static const struct imx664_reg_list hdr2dol_to_sdr_delta_list = {
+	.num_of_regs = ARRAY_SIZE(hdr2dol_to_sdr_delta),
+	.regs = hdr2dol_to_sdr_delta,
+};
+
+/**
+ * imx664_get_mode_delta() - Check if a delta register table exists for this transition
+ * @from: previous mode (or NULL for first boot)
+ * @to: target mode
+ *
+ * Matched on the reg lists, so modes sharing one are indistinguishable here and must
+ * differ only in vblank/frame_interval. See supported_sdr_modes[].
+ *
+ * Return: pointer to delta reg list, or NULL if full reprogram is needed.
+ */
+static const struct hailo_ft_mode_delta imx664_ft_deltas[] = {
+	{ mode_2688x1520_regs, mode_2688x1520_2dol_all_pixel_regs,
+	  &sdr_to_hdr2dol_delta_list },
+	{ mode_2688x1520_2dol_all_pixel_regs, mode_2688x1520_regs,
+	  &hdr2dol_to_sdr_delta_list },
+};
+
+static const struct imx664_reg_list *imx664_get_mode_delta(
+	const struct imx664_mode *from, const struct imx664_mode *to)
+{
+	return hailo_ft_find_delta(imx664_ft_deltas, ARRAY_SIZE(imx664_ft_deltas),
+				   from ? from->reg_list.regs : NULL,
+				   to ? to->reg_list.regs : NULL);
+}
+
+HAILO_FT_DEFINE_REG_OPS(imx664);
+
+static const struct hailo_ft_exp_regs imx664_ft_exp_regs = {
+	.shutter = IMX664_REG_SHUTTER,
+	.shutter_len = 3,
+	.again = IMX664_REG_AGAIN,
+	.again_len = 2,
+	.lpfr = IMX664_REG_LPFR,
+	.lpfr_len = 3,
+};
 
 /**
  * imx664_start_streaming() - Start sensor stream
@@ -2227,44 +2386,42 @@ static const char *imx664_get_mode_name(struct imx664 *imx664)
  */
 static int imx664_start_streaming(struct imx664 *imx664)
 {
-	const struct imx664_reg_list *reg_list;
+	const struct imx664_reg_list *delta;
 	int ret;
+	bool same_mode = (imx664->prev_mode == imx664->cur_mode) &&
+			 (imx664->prev_mode != NULL);
+	const struct hailo_ft_mode_ops ft_ops = {
+		.dev = imx664->dev,
+		.sensor = imx664,
+		.write_regs = imx664_ft_write_regs,
+		.exp_ctrl = imx664->lef.exp_ctrl,
+		.again_ctrl = imx664->lef.again_ctrl,
+		.exp_cache = imx664->exp_cache,
+		.gain_cache = imx664->gain_cache,
+	};
 
-	/* Save all writable control values before handler setup may overwrite them */
-	struct hailo_ctrl_snapshot snap;
+	delta = imx664_get_mode_delta(imx664->prev_mode, imx664->cur_mode);
 
-	hailo_ctrl_snapshot_save(imx664->sd.ctrl_handler, &snap);
-
-	/* Write sensor mode registers */
 	pr_debug("%s - hdr_enabled: %d\n", __func__, imx664->hdr_enabled);
-	reg_list = &imx664->cur_mode->reg_list;
-	ret = imx664_write_regs(imx664, reg_list->regs, reg_list->num_of_regs);
-	if (ret) {
-		dev_err(imx664->dev, "fail to write initial registers");
+
+	ret = hailo_ft_apply_mode(&ft_ops, same_mode, imx664->hdr_enabled,
+				  delta ? delta->regs : NULL,
+				  delta ? delta->num_of_regs : 0,
+				  imx664->cur_mode->reg_list.regs,
+				  imx664->cur_mode->reg_list.num_of_regs);
+	if (ret)
 		return ret;
-	}
 
-	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
-	ret = __v4l2_ctrl_handler_setup(imx664->sd.ctrl_handler);
-	if (ret) {
-		dev_err(imx664->dev, "fail to setup handler (%d)", ret);
+	ret = hailo_ft_push_controls(imx664->dev, imx664->sd.ctrl_handler);
+	if (ret)
 		return ret;
+
+	if (!imx664_skip_standby_toggle(imx664)) {
+		ret = hailo_ft_cancel_standby(imx664->dev, IMX664_REG_MODE_SELECT, IMX664_MODE_STREAMING,
+					      imx664_ft_write_reg, imx664);
+		if (ret)
+			return ret;
 	}
-
-	/* Restore any control values corrupted by handler_setup side effects
-	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
-	hailo_ctrl_snapshot_restore(&snap);
-
-	/* Standby cancel */
-	ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
-			       IMX664_MODE_STREAMING);
-	if (ret) {
-		dev_err(imx664->dev, "Failed to cancel standby on stream start: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait 24ms for internal regulator stabilization */
-	usleep_range(24000, 25000);
 
 	/* Master mode start */
 	ret = imx664_write_reg(imx664, IMX664_REG_XMSTA, 1, 0);
@@ -2276,7 +2433,12 @@ static int imx664_start_streaming(struct imx664 *imx664)
 	imx664->wdr_priming_val = -1;
 	imx664->custom_rhs1_priming_val = -1;
 
-	dev_info(imx664->dev, "imx664: stream started (%s)", imx664_get_mode_name(imx664));
+	/* Track mode for next start -- enables same-mode skip and delta */
+	imx664->prev_mode = imx664->cur_mode;
+
+	dev_info(imx664->dev, "imx664: stream started (%s%s)",
+		 imx664_get_mode_name(imx664),
+		 same_mode ? ", same-mode" : delta ? ", delta" : "");
 	return 0;
 }
 
@@ -2290,12 +2452,19 @@ static int imx664_stop_streaming(struct imx664 *imx664)
 {
 	int ret;
 
-	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
-	ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
-				IMX664_MODE_STANDBY);
-	if (ret) {
-		dev_err(imx664->dev, "Failed to set standby on stream stop: %d\n", ret);
-		return ret;
+	hailo_ft_cache_exposure(imx664->dev, &imx664_ft_exp_regs,
+				imx664->exp_cache, imx664->gain_cache,
+				imx664->hdr_enabled, imx664->cur_mode->dol,
+				imx664_ft_read_reg, imx664);
+
+	if (!imx664_skip_standby_toggle(imx664)) {
+		/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+		ret = imx664_write_reg(imx664, IMX664_REG_MODE_SELECT, 1,
+				       IMX664_MODE_STANDBY);
+		if (ret) {
+			dev_err(imx664->dev, "Failed to set standby on stream stop: %d\n", ret);
+			return ret;
+		}
 	}
 
 	ret = imx664_write_reg(imx664, IMX664_REG_XMSTA, 1, 1);
@@ -2328,16 +2497,26 @@ static int imx664_set_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx664->dev);
-		if (ret < 0)
-			goto error_unlock;
+		if (!imx664->pm_ref_held) {
+			ret = pm_runtime_resume_and_get(imx664->dev);
+			if (ret < 0)
+				goto error_unlock;
+			imx664->pm_ref_held = true;
+		}
 
 		ret = imx664_start_streaming(imx664);
 		if (ret)
 			goto error_power_off;
 	} else {
 		imx664_stop_streaming(imx664);
-		pm_runtime_put(imx664->dev);
+		if (imx664->fast_toggle_state == FAST_TOGGLE_NONE && imx664->pm_ref_held) {
+			pm_runtime_put(imx664->dev);
+			imx664->pm_ref_held = false;
+			/* pm_runtime_put triggers XCLR reset -- all sensor registers
+			 * revert to defaults. Clear prev_mode so the next stream
+			 * does a full register write instead of same_mode/delta skip. */
+			imx664->prev_mode = NULL;
+		}
 	}
 
 	imx664->streaming = enable;
@@ -2347,7 +2526,15 @@ static int imx664_set_stream(struct v4l2_subdev *sd, int enable)
 	return 0;
 
 error_power_off:
-	pm_runtime_put(imx664->dev);
+	/* Drop the reference only if one is actually held, so the count stays
+	 * balanced however fast_toggle_state changed in between. prev_mode is
+	 * cleared either way - a failed start may have written part of the mode,
+	 * so the recorded mode no longer describes the hardware. */
+	if (imx664->pm_ref_held) {
+		pm_runtime_put(imx664->dev);
+		imx664->pm_ref_held = false;
+	}
+	imx664->prev_mode = NULL;
 error_unlock:
 	mutex_unlock(&imx664->mutex);
 
@@ -2509,15 +2696,15 @@ static int check_sensor_id(struct imx664 *imx664, u16 id_reg, u8 sensor_id)
 static int imx664_detect(struct imx664 *imx664)
 {
 	int ret;
-	
+
 	ret = check_sensor_id(imx664, GENERIC_SENSOR_ID_REG, SENSOR_ID_IMX664);
 	if (ret)
 		return ret;
-	
+
 	ret = check_sensor_id(imx664, GENERIC_SENSOR_ID_REG3, IMX664_SENSOR_ID_VAL);
 	if (ret)
 		return ret;
-	
+
 	return 0;
 }
 
@@ -2609,7 +2796,7 @@ done_endpoint_free:
 static int imx664_priming_apply(struct imx664 *imx664, int toggle_type)
 {
 	int ret;
-	
+
 	ret = imx664_set_hdr_mode(imx664, imx664->wdr_priming_val);
 	if (ret) {
 		dev_err(imx664->dev, "Failed to set HDR mode (%d) for priming: %d", imx664->wdr_priming_val, ret);
@@ -2622,30 +2809,20 @@ static int imx664_priming_apply(struct imx664 *imx664, int toggle_type)
 	return 0;
 }
 
-static int imx664_fast_toggle_set_state(struct imx664 *imx664, int toggle_state)
+static int imx664_ft_apply_priming(void *sensor)
 {
-	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
-		dev_err(imx664->dev, "Invalid fast toggle state %d\n", toggle_state);
-		return -EINVAL;
-	}
+	return imx664_priming_apply(sensor, FAST_TOGGLE_APPLY_PRIMING);
+}
 
-	imx664->fast_toggle_state = toggle_state;
-
-	switch (toggle_state) {
-	case FAST_TOGGLE_APPLY_PRIMING:
-		return imx664_priming_apply(imx664, toggle_state);
-	default:
-		// No action needed for other states
-		break;
-	}
-	
-	return 0;
+static int imx664_fast_toggle_set_state(struct imx664 *imx664, struct fast_toggle_data *toggle_data)
+{
+	return hailo_ft_set_state(imx664->dev, toggle_data, &imx664->fast_toggle_state,
+				  &imx664->toggle_type, imx664_ft_apply_priming, imx664);
 }
 
 static long imx664_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx664 *imx664 = to_imx664(sd);
-	int toggle_state;
 	long ret;
 
 	mutex_lock(&imx664->mutex);
@@ -2655,8 +2832,7 @@ static long imx664_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = -EINVAL;
 			break;
 		}
-		toggle_state = *((int*)arg);
-		ret = imx664_fast_toggle_set_state(imx664, toggle_state);
+		ret = imx664_fast_toggle_set_state(imx664, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		ret = -ENOTTY;
@@ -2791,7 +2967,7 @@ static int imx664_init_controls(struct imx664 *imx664)
 				  V4L2_CID_ANALOGUE_GAIN, IMX664_AGAIN_MIN,
 				  IMX664_AGAIN_MAX, IMX664_AGAIN_STEP,
 				  IMX664_AGAIN_DEFAULT);
-	
+
 	v4l2_ctrl_cluster(2, &imx664->lef.exp_ctrl);
 
 	/* Initialize exposure and gain SEF1 */
@@ -2812,7 +2988,7 @@ static int imx664_init_controls(struct imx664 *imx664)
 	imx664_setup_custom_ctrl(imx664, &imx664->shr0_ctrl, IMX664_CID_SHR0);
 	imx664_setup_custom_ctrl(imx664, &imx664->shr1_ctrl, IMX664_CID_SHR1);
 	imx664_setup_custom_ctrl(imx664, &imx664->shr2_ctrl, IMX664_CID_SHR2);
-	
+
 	/* Other read only custom controls */
 	imx664_setup_custom_ctrl(imx664, &imx664->vmax_ctrl, IMX664_CID_VMAX);
 	imx664_setup_custom_ctrl(imx664, &imx664->hmax_ctrl, IMX664_CID_HMAX);
@@ -2841,12 +3017,12 @@ static int imx664_init_controls(struct imx664 *imx664)
 		ctrl_hdlr, &imx664_ctrl_ops, V4L2_CID_TEST_PATTERN,
 		ARRAY_SIZE(imx664_test_pattern_menu) - 1, 0, 0,
 		imx664_test_pattern_menu);
-	
+
 	imx664->mode_sel_ctrl = v4l2_ctrl_new_std(ctrl_hdlr, &imx664_ctrl_ops,
 				V4L2_CID_WIDE_DYNAMIC_RANGE, IMX664_WDR_MIN,
 				IMX664_WDR_MAX, IMX664_WDR_STEP,
 				IMX664_WDR_DEFAULT);
-	
+
 	if (imx664->mode_sel_ctrl) {
 		// Always call callback, even if called with same value
 		// (this is important for fast toggle - which changes WDR mode outside of control framework)

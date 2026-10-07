@@ -1,8 +1,12 @@
+#include <linux/align.h>
 #include <linux/clk.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/sizes.h>
 #include <linux/pm_runtime.h>
 
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_vblank.h>
 #include <drm/drm_fb_helper.h>
@@ -70,20 +74,68 @@
 
 #define SUPPORTED_BYTES_PER_PIXEL (3)
 
+/* A pulse is the width of the DPM datapath; every DPM size counts in pulses. */
+#define DPI_PULSE_BYTES (8)
+
+/* CFG_BURST is programmed as (pulses - 1). */
+#define DPI_BURST_PULSES (64)
+#define DPI_BURST_BYTES (DPI_BURST_PULSES * DPI_PULSE_BYTES)
+
+/* BURST_LENGTH is programmed as (beats - 1). */
+#define DPI_AXI_BURST_BEATS (8)
+
+/*
+ * Padding the stride only prevents 4 KB crossings if a page is a whole number
+ * of bursts, otherwise a page boundary must eventually fall inside one.
+ */
+static_assert(SZ_4K % DPI_BURST_BYTES == 0,
+	      "DPI burst size must divide the 4 KB AXI boundary");
+
+struct hailo_dpi_config {
+	/* The H15 wrapper splits scan-out bursts that cross a 4 KB page. */
+	bool needs_pitch_align;
+};
+
+static const struct hailo_dpi_config hailo15_dpi_config = {
+	.needs_pitch_align = true,
+};
+
+static const struct hailo_dpi_config hailo15l_dpi_config = {
+	.needs_pitch_align = false,
+};
+
 struct hailo_driver_device {
 	void __iomem *regs;
 	struct clk *dsi_sys_clk;
 	struct clk *dsi_p_clk;
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
+	const struct hailo_dpi_config *cfg;
 };
 
 DEFINE_DRM_GEM_CMA_FOPS(fops);
 
+static int hailo_dumb_create(struct drm_file *file, struct drm_device *drm,
+			     struct drm_mode_create_dumb *args)
+{
+	struct hailo_driver_device *priv = drm->dev_private;
+
+	/*
+	 * A stride that is not a whole number of bursts makes scan-out reads
+	 * cross 4 KB pages, which the DDR controller splits and can return
+	 * interleaved. This is relevant for H15 only.
+	 */
+	if (priv->cfg->needs_pitch_align)
+		args->pitch = ALIGN(args->width * SUPPORTED_BYTES_PER_PIXEL,
+				    DPI_BURST_BYTES);
+
+	return drm_gem_cma_dumb_create_internal(file, drm, args);
+}
+
 static const struct drm_driver driver_drm_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &fops,
-	DRM_GEM_CMA_DRIVER_OPS,
+	DRM_GEM_CMA_DRIVER_OPS_WITH_DUMB_CREATE(hailo_dumb_create),
 	.name = "hailo-drm",
 	.desc = "HAILO DRM",
 	.date = "20240319",
@@ -103,24 +155,29 @@ static void hailo_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct drm_device *drm = crtc->dev;
 	struct hailo_driver_device *priv = drm->dev_private;
 	const struct drm_display_mode *mode = &crtc_state->mode;
+	const struct drm_framebuffer *fb = plane_state->fb;
 	uint32_t frame_size_in_8B_pulses, line_size_in_bytes,
 		line_size_in_8B_pulses, frame_duration_ns, frame_cycles;
+	uint32_t pitch_in_8B_pulses;
 	unsigned long dsi_sys_clk;
 	int refresh;
 
 	dsi_sys_clk = clk_get_rate(priv->dsi_sys_clk);
 	refresh = drm_mode_vrefresh(mode);
 	line_size_in_bytes = mode->hdisplay * SUPPORTED_BYTES_PER_PIXEL;
-	line_size_in_8B_pulses = line_size_in_bytes / 8;
-	frame_size_in_8B_pulses = (line_size_in_bytes * mode->vdisplay) / 8;
+	line_size_in_8B_pulses = line_size_in_bytes / DPI_PULSE_BYTES;
+	frame_size_in_8B_pulses = (line_size_in_bytes * mode->vdisplay) /
+				  DPI_PULSE_BYTES;
+
+	pitch_in_8B_pulses = fb->pitches[0] / DPI_PULSE_BYTES;
 	frame_duration_ns = ktime_divns(NSEC_PER_SEC, refresh);
 	frame_cycles = dsi_sys_clk / refresh;
 
-	/* burst_length is AXI Master maximum burst length – 1. i.e. For bursts of 8 beats; set burst_length = 7 */
-	writel(BURST_LENGTH(7) | DSI_HEADER(line_size_in_bytes),
+	writel(BURST_LENGTH(DPI_AXI_BURST_BEATS - 1) |
+		       DSI_HEADER(line_size_in_bytes),
 	       priv->regs + MIPI_TX_WRAPPER_CFG);
 
-	writel(CFG_PITCHES(line_size_in_8B_pulses) | CFG_BURST(63) |
+	writel(CFG_PITCHES(pitch_in_8B_pulses) | CFG_BURST(DPI_BURST_PULSES - 1) |
 		       CFG_MAX_OUTSTANDING_CONFIG(12),
 	       priv->regs + DPM_0);
 
@@ -185,7 +242,33 @@ static void hailo_pipe_update(struct drm_simple_display_pipe *pipe,
 	       priv->regs + PLANE_0_PHYSICAL_BASE_ADD_NEXT_EXT_DATA_OUT);
 }
 
+static int hailo_pipe_check(struct drm_simple_display_pipe *pipe,
+			    struct drm_plane_state *plane_state,
+			    struct drm_crtc_state *crtc_state)
+{
+	struct drm_device *drm = pipe->crtc.dev;
+	struct hailo_driver_device *priv = drm->dev_private;
+	uint32_t pitch_in_bytes = plane_state->fb->pitches[0];
+
+	/*
+	 * A stride that is not a whole number of bursts makes scan-out reads
+	 * cross 4 KB pages, which the DDR controller splits and can return
+	 * interleaved. This is relevant for H15 only.
+	 */
+	if (!priv->cfg->needs_pitch_align)
+		return 0;
+
+	if (!IS_ALIGNED(pitch_in_bytes, DPI_BURST_BYTES)) {
+		drm_dbg_kms(drm, "pitch %u is not a multiple of %u\n",
+			    pitch_in_bytes, DPI_BURST_BYTES);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static const struct drm_simple_display_pipe_funcs hailo_pipe_funcs = {
+	.check = hailo_pipe_check,
 	.update = hailo_pipe_update,
 	.enable = hailo_pipe_enable,
 	DRM_GEM_SIMPLE_DISPLAY_PIPE_SHADOW_PLANE_FUNCS,
@@ -214,6 +297,8 @@ static int driver_probe(struct platform_device *pdev)
 	drm = &priv->drm;
 
 	drm->dev_private = priv;
+
+	priv->cfg = of_device_get_match_data(&pdev->dev);
 
 	priv->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->regs))
@@ -337,9 +422,13 @@ static int __maybe_unused driver_pm_resume(struct device *dev)
 	return 0;
 }
 
-static const struct of_device_id hailo_dt_ids[] = { { .compatible =
-							      "hailo,dsi" },
-						    { /* sentinel */ } };
+static const struct of_device_id hailo_dt_ids[] = {
+	{ .compatible = "hailo,hailo15-dsi", .data = &hailo15_dpi_config },
+	{ .compatible = "hailo,hailo15l-dsi", .data = &hailo15l_dpi_config },
+	/* Deprecated, kept so an older device tree still binds and still pads. */
+	{ .compatible = "hailo,dsi", .data = &hailo15_dpi_config },
+	{ /* sentinel */ }
+};
 MODULE_DEVICE_TABLE(of, hailo_dt_ids);
 
 static const struct dev_pm_ops driver_pm_ops = { SET_SYSTEM_SLEEP_PM_OPS(

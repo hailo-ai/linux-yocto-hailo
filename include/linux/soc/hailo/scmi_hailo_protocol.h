@@ -44,6 +44,8 @@
 #define SCMI_HAILO_GET_IDENTIFICATION_ATTRIBUTES_ID 21
 #define SCMI_HAILO_GET_SKU_ID 22
 #define SCMI_HAILO_SEND_HOST_CURRENT_LIMIT_ID 23
+#define SCMI_HAILO_SET_THROTTLING_THRESHOLDS_ID 24
+#define SCMI_HAILO_GET_THROTTLING_THRESHOLDS_ID 25
 
 /*******************************
  * SCMI-Hailo notification IDs *
@@ -359,6 +361,20 @@ struct scmi_hailo_get_throttling_mode_a2p {
 
 struct scmi_hailo_get_throttling_mode_p2a {
     uint8_t ctrl;
+} __packed;
+
+#define HAILO_THROTTLING_TH_COUNT       4       /* TH0..TH3 = Light/Medium/Heavy/Severe entry */
+#define HAILO_THROTTLING_TH_MIN_MC      5000    /* minimum allowed heating threshold (above cooling formula's -5000mC subtraction to avoid underflow) */
+#define HAILO_THROTTLING_TH_MAX_MC      119000  /* maximum (below hardcoded TH4 streams-off 119C) */
+#define HAILO_THROTTLING_TH_MIN_GAP_MC  5000    /* minimum gap between adjacent THs; prevents cooling-formula degeneracy */
+#define HAILO_THROTTLING_DISABLE_MC 0xFFFFFFFFU /* UINT32_MAX; all 4 THs == this => disable throttling until OVERHEAT (then shutdown) */
+
+struct scmi_hailo_set_throttling_thresholds_a2p {
+    uint32_t th_heating_milli_celsius[HAILO_THROTTLING_TH_COUNT];
+} __packed;
+
+struct scmi_hailo_get_throttling_thresholds_p2a {
+    uint32_t th_heating_milli_celsius[HAILO_THROTTLING_TH_COUNT];
 } __packed;
 
 /***********************************************

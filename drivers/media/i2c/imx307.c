@@ -155,8 +155,8 @@ static const struct imx307_reg imx307_linear_1920x1080_mipi_regs[] = {
 	{0x3005, 0x01}, /* ADBIT: 1 (12 bit) */
 	{0x3007, 0x00}, /* VREVERSE: 0 (0 vertical flip),  HREVERSE: 0 (no horizontal flip) */
 	{0x3009, 0x02}, /* HCG mode */
-	{0x3018, 0x65}, /* VMAX initial value 465 */
-	{0x3019, 0x04}, /* VMAX initial value 465 */
+	{IMX307_REG_VTS_L, 0x65}, /* VMAX initial value 465 */
+	{IMX307_REG_VTS_M, 0x04}, /* VMAX initial value 465 */
 	{0x301C, 0x30}, /* HMAX 1130 / 14A0 */
 	{0x301D, 0x11}, /* HMAX 1130 / 14A0 */
 	{0x3046, 0x01}, /* ODBIT: 1 (12 bit) */

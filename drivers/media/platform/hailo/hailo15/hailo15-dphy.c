@@ -70,10 +70,14 @@ static int hailo15_dphy_rx_band_control_select(u64 data_rate)
 
 	static const int data_rates_mbps_num_elements = ARRAY_SIZE(data_rates_mbps);
 
-	for (i = 0; i < data_rates_mbps_num_elements - 2; i++)
+	for (i = 0; i < data_rates_mbps_num_elements - 1; i++) {
 		if (data_rate_mbps >= data_rates_mbps[i] &&
-			data_rate_mbps < data_rates_mbps[i + 1])
+			data_rate_mbps < data_rates_mbps[i + 1]) {
 			return i;
+		}
+	}
+
+	pr_warn("CSI-DPHY - could not find matching band for data rate %llu", data_rate_mbps);
 	return 0;
 }
 

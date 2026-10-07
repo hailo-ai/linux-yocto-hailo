@@ -2,7 +2,7 @@
 /*
  * dwc-i2s-hailo15l.c - Hailo specific Glue layer for Hailo15l SoC.
  *
- * Copyright (c) 2019-2025 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include <linux/bits.h>
@@ -179,7 +179,8 @@ static int dw_i2s_hailo_probe(struct platform_device *pdev)
 		}
 
 		// Find out child node resource address to match auxdata_lookup
-		if (of_address_to_resource(child, 0, &res)) {
+		ret = of_address_to_resource(child, 0, &res);
+		if (ret) {
 			dev_err(dev, "Failed to read resource address for %s, err %pe\n", child->name, ERR_PTR(ret));
 			continue;
 		}

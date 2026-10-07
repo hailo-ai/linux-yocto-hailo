@@ -241,7 +241,7 @@ static const s64 link_freq[] = {
 
 /* Sensor mode registers */
 static const struct imx334_reg mode_3840x2160_regs[] = {
-	{0x3000, 0x01},
+	{IMX334_REG_MODE_SELECT, 0x01},
 	{0x3002, 0x00},
 	{0x3018, 0x04},
 	{0x37b0, 0x36},
@@ -1274,7 +1274,7 @@ done_endpoint_free:
 	return ret;
 }
 
-static int imx334_fast_toggle_set_state(struct imx334 *imx334, int toggle_state)
+static int imx334_fast_toggle_set_state(struct imx334 *imx334, struct fast_toggle_data *toggle_data)
 {
 	// currently not implemented - no hdr support so nothing to do here...
 	return 0;
@@ -1283,7 +1283,6 @@ static int imx334_fast_toggle_set_state(struct imx334 *imx334, int toggle_state)
 static long imx334_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx334 *imx334 = to_imx334(sd);
-	int toggle_state;
 	long ret;
 
 	mutex_lock(&imx334->mutex);
@@ -1293,8 +1292,7 @@ static long imx334_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = -EINVAL;
 			break;
 		}
-		toggle_state = *((int*)arg);
-		ret = imx334_fast_toggle_set_state(imx334, toggle_state);
+		ret = imx334_fast_toggle_set_state(imx334, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		ret = -ENOTTY;

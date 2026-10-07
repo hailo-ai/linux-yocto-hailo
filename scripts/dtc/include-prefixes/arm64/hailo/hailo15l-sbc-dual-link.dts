@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ *
+ * H15L SBC (Pluto) dual-link mode: the D-PHY drives both CSI2RX bridges at
+ * once. Enabling it touches registers in the rxwrappers and the pixel-mux;
+ * the dphy driver reaches them through these phandles rather than mapping
+ * their addresses directly.
+ *
+ * Applied by U-Boot only when a sensor was found on BOTH ports, and always
+ * together with hailo15l-sbc-2lane.dtbo. With a single camera fitted these
+ * three properties must stay absent, so the right-pad lanes stay parked and
+ * the rxwrapper and pixel-mux writes never happen. That is why the lane split
+ * is a separate overlay from this one.
+ */
+/dts-v1/;
+/plugin/;
+
+&dphy_rx {
+	hailo,enable-2-clock-lane;
+	hailo,rxwrappers = <&rxwrapper0 &rxwrapper1>;
+	hailo,pixel-mux  = <&hailo_pixel_mux>;
+};

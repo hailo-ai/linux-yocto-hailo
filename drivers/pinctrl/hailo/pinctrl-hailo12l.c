@@ -506,14 +506,14 @@ static int hailo12l_gpio_set_strength(struct pinctrl_dev *pctldev,
 }
 
 static int hailo12l_pad_get_strength(struct pinctrl_dev *pctldev,
-				     uint32_t *pad)
+				     uint32_t __iomem *pad)
 {
 	/* Drive-strength reverse lookup is the same as forward lookup */
 	return PADS_CONFIG__DS__GET(readl(pad));
 }
 
 static int hailo12l_pad_set_strength(struct pinctrl_dev *pctldev,
-				     uint32_t *pad,
+				     uint32_t __iomem *pad,
 				    unsigned strength_value)
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
@@ -535,7 +535,7 @@ static int hailo12l_pin_get_strength(struct pinctrl_dev *pctldev, unsigned pin)
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 	switch (pin_data->pad_type) {
 	case H12L_GENERAL_PAD:
 			pad = pinctrl->general_pads_config_base + pin_data->pad_index * sizeof(uint32_t);
@@ -563,7 +563,7 @@ static int hailo12l_pin_set_strength(struct pinctrl_dev *pctldev, unsigned pin,
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	if (strength_value > MAX_DRIVE_STRENGTH) {
 		pr_err("Error: make sure drive strength is supported");
@@ -598,13 +598,13 @@ static int hailo12l_pin_set_strength(struct pinctrl_dev *pctldev, unsigned pin,
 }
 
 static int hailo12l_pad_get_pull_selector(struct pinctrl_dev *pctldev,
-					 uint32_t *pad)
+					 uint32_t __iomem *pad)
 {
 	return PADS_CONFIG__PS__GET(readl(pad))?PIN_CONFIG_BIAS_PULL_UP:PIN_CONFIG_BIAS_PULL_DOWN;
 }
 
 static int hailo12l_pad_set_pull(struct pinctrl_dev *pctldev,
-				 uint32_t *pad,
+				 uint32_t __iomem *pad,
 				enum pin_config_param pull)
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
@@ -736,7 +736,7 @@ static int hailo12l_pin_get_pull_selector(struct pinctrl_dev *pctldev,
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 	switch (pin_data->pad_type) {
 	case H12L_GENERAL_PAD:
 		pad = pinctrl->general_pads_config_base +
@@ -769,7 +769,7 @@ static int hailo12l_pin_set_pull(struct pinctrl_dev *pctldev, unsigned pin,
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 	case H12L_GENERAL_PAD:
@@ -799,12 +799,12 @@ static int hailo12l_pin_set_pull(struct pinctrl_dev *pctldev, unsigned pin,
 }
 
 static int hailo12l_pad_get_pull_enabled(struct pinctrl_dev *pctldev,
-					uint32_t *pad)
+					uint32_t __iomem *pad)
 {;
 	return PADS_CONFIG__PE__GET(readl(pad));
 }
 
-static int hailo12l_pad_bias_disable(struct pinctrl_dev *pctldev, uint32_t *pad)
+static int hailo12l_pad_bias_disable(struct pinctrl_dev *pctldev, uint32_t __iomem *pad)
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	uint32_t data_reg;
@@ -897,7 +897,7 @@ static int hailo12l_pin_get_pull_enabled(struct pinctrl_dev *pctldev,
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 	case H12L_GENERAL_PAD:
@@ -930,7 +930,7 @@ static int hailo12l_pin_bias_disable(struct pinctrl_dev *pctldev, unsigned pin)
 {
 	struct hailo12l_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct h12l_pin_data *pin_data = pinctrl->pins[pin].drv_data;
-	uint32_t *pad;
+	uint32_t __iomem *pad;
 
 	switch (pin_data->pad_type) {
 	case H12L_GENERAL_PAD:

@@ -218,10 +218,18 @@ int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 					&(isp_dev->event_resource), pad, &num_buffers, sizeof(num_buffers));
 }
 
-int hailo15_isp_post_event_fast_toggle(struct hailo15_isp_device *isp_dev, int pad)
+int hailo15_isp_post_event_fast_toggle_priming(struct hailo15_isp_device *isp_dev, int pad)
 {
 	hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
-						 HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE };
+						 HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE_PRIMING };
+	return hailo15_isp_post_event(isp_dev->sd.devnode, meta,
+					&(isp_dev->event_resource), pad, NULL, 0);
+}
+
+int hailo15_isp_post_event_fast_toggle_done(struct hailo15_isp_device *isp_dev, int pad)
+{
+	hailo15_daemon_event_meta_t meta = { HAILO15_DAEMON_ISP_EVENT,
+						 HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE_DONE };
 	return hailo15_isp_post_event(isp_dev->sd.devnode, meta,
 					&(isp_dev->event_resource), pad, NULL, 0);
 }

@@ -39,6 +39,13 @@
 #define HAILO15L_ISP_SP2_ERR_MASK (BIT(23) | BIT(24))
 #define HAILO15_ISP_BUF_DONE_TIMEOUT 1000
 
+/* MP frames to drop after a Mercury HDR-entering toggle; default 3 matches the
+ * measured dark 2DOL-settling window. */
+static int mercury_hdr_settling_drop = 3;
+module_param(mercury_hdr_settling_drop, int, 0644);
+MODULE_PARM_DESC(mercury_hdr_settling_drop,
+	"MP output frames to drop after a Mercury HDR-entering fast-toggle (dark 2DOL settling)");
+
 static const struct isp_wrapper_config hailo15_isp_wrapper_config = {
     .fatal_asf_int_mask_offset = 0x4,
     .fatal_asf_int_mask_value = 0x1,
@@ -244,6 +251,14 @@ hailo15_isp_configure_buffer(struct hailo15_isp_device *isp_dev,
 		trace_isp_mcm_raw_wr_buffer_process(buf->grp_id, buf->vb.vb2_buf.index,
 						    buf->dma[0], ktime_get_ns());
 	} else {
+		/* Keep the pinned MP buffer during a settling-drop: a mid-stream QBUF
+		 * with a different buffer would overwrite and orphan it. The caller
+		 * queues the new buf on return, to be fed once the drop completes. */
+		if (atomic_read(&isp_dev->mp_settling_drop_count) > 0 &&
+		    buf->grp_id == isp_dev->cur_buf_path &&
+		    isp_dev->cur_buf[buf->grp_id] &&
+		    isp_dev->cur_buf[buf->grp_id] != buf)
+			return;
 		isp_dev->cur_buf[buf->grp_id] = buf;
 		/* In MCM mode, defer HW configuration until FE is enabled.
 		 * s_stream will call hailo15_isp_configure_buffer() on cur_buf. */
@@ -437,7 +452,7 @@ static int send_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast_toggle
 	}
 
 	// Call the ioctl on the sensor subdev to apply priming settings
-	ret = v4l2_subdev_call(sensor_sd, core, ioctl, HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS, &(toggle_data->state));
+	ret = v4l2_subdev_call(sensor_sd, core, ioctl, HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS, toggle_data);
 	if (ret) {
 		pr_err("%s - Failed to apply sensor priming: %d\n", __func__, ret);
 		return ret;
@@ -463,6 +478,7 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable);
 static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast_toggle_data *toggle_data)
 {
 	struct hailo15_isp_device *isp_dev = isp_dev_from_v4l2_subdev(sd);
+	int pad = HAILO15_VID_GRP_TO_ISP_SOURCE_PAD(sd->grp_id);
 	int ret;
 	u32 orig_grp_id;
 
@@ -473,6 +489,17 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 
 	isp_dev->fast_toggle_state = toggle_data->state;
 
+	/* Open the daemon's bracket before any subdev is primed. Best-effort:
+	 * a daemon that has not subscribed answers -EINVAL and the toggle
+	 * proceeds regardless, so the result is traced and dropped, never
+	 * mixed into ret. The matching DONE is posted at the end of this
+	 * function, after the NONE fan-out. */
+	if (toggle_data->state == FAST_TOGGLE_PRIMING) {
+		int post_ret = hailo15_isp_post_event_fast_toggle_priming(isp_dev, pad);
+
+		trace_isp_fast_toggle_post_event_state(sd->grp_id, toggle_data->state, post_ret);
+	}
+
 	// If apply priming - do it for this driver, then propagate to other devs
 	if (isp_dev->fast_toggle_state == FAST_TOGGLE_APPLY_PRIMING) {
 		if (isp_dev->mcm_mode_priming >= ISP_MCM_MODE_MAX) {
@@ -481,7 +508,23 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 		}
 		isp_dev->mcm_mode = isp_dev->mcm_mode_priming;
 		isp_dev->mcm_mode_priming = ISP_MCM_MODE_MAX;
+
+		/* Request the settling-drop for Mercury HDR entry only. Not for pre-ISP
+		 * denoise entry: it also starts MCM_IN/video10 but must keep every
+		 * frame. Not for Pluto HDR entry: nothing blocks it on this layer, but
+		 * the dark-frame count there is unmeasured (3 is a Mercury figure).
+		 * Only a request: the live counter is armed when the MP stream enables,
+		 * so the priming buffer is never refused and a toggle that fails
+		 * before stream-on leaves nothing behind. */
+		isp_dev->mp_settling_drop_pending =
+			(toggle_data->type == TOGGLE_MERCURY_SDR_HDR ||
+			 toggle_data->type == TOGGLE_MERCURY_PREISP_HDR) ?
+			mercury_hdr_settling_drop : 0;
 	}
+
+	/* Toggle over (completed or failed): an uncommitted request is stale. */
+	if (isp_dev->fast_toggle_state == FAST_TOGGLE_NONE)
+		isp_dev->mp_settling_drop_pending = 0;
 
 	// Stream teardown handle - stop vid10 stream if needed
 	if (isp_dev->fast_toggle_state == FAST_TOGGLE_TEARDOWN) {
@@ -502,12 +545,19 @@ static int hailo15_isp_fast_toggle_set_state(struct v4l2_subdev *sd, struct fast
 
 	// pass state change to rest of the subdevs
 	ret = send_fast_toggle_set_state(&isp_dev->sd, toggle_data);
-	if (ret) {
+	if (ret)
 		pr_err("%s - Failed to send status to subdevs: %d\n", __func__, ret);
-		return ret;
+
+	/* Close the bracket only after every subdev has been told NONE, whether
+	 * or not that propagation succeeded, so DONE means the kernel side of
+	 * the toggle is fully idle and the daemon always sees a close. */
+	if (toggle_data->state == FAST_TOGGLE_NONE) {
+		int post_ret = hailo15_isp_post_event_fast_toggle_done(isp_dev, pad);
+
+		trace_isp_fast_toggle_post_event_state(sd->grp_id, toggle_data->state, post_ret);
 	}
 
-	return 0;
+	return ret;
 }
 
 /*
@@ -1157,6 +1207,7 @@ static int hailo15_isp_refcnt_dec_disable(struct hailo15_isp_device *isp_dev)
 	ret = 0;
 	mutex_lock(&isp_dev->mlock);
 	if (isp_dev->refcnt == 0) {
+		pr_err("%s: refcnt underflow (already 0)\n", __func__);
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1176,15 +1227,17 @@ out:
 	return ret;
 }
 
-static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
-				      unsigned int sink_pad_index)
+/* Free every raw buffer this sink pad still owns: its full and empty queues and
+ * cur_raw_buf. cur_rdma_buf is only dropped here when it aliases one of them,
+ * so the caller can tell an orphaned RDMA buffer from a queued one. */
+static int hailo15_isp_release_pad_raw_bufs(struct hailo15_isp_device *isp_dev,
+					    unsigned int sink_pad_index)
 {
 	struct hailo15_isp_raw_buf *pos, *npos;
 	struct list_head *empty_queue;
 	struct list_head *full_queue;
 	struct mutex *full_lock;
 	struct mutex *empty_lock;
-	int ret = 0;
 
 	empty_queue = hailo15_isp_get_empty_queue(isp_dev, sink_pad_index);
 	if (!empty_queue) {
@@ -1209,10 +1262,8 @@ static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
 
 	mutex_lock(full_lock);
 	list_for_each_entry_safe(pos, npos, full_queue, list) {
-		/* If cur_rdma_buf is in the full queue, clear it to avoid double-free */
-		if (isp_dev->cur_rdma_buf == pos) {
+		if (isp_dev->cur_rdma_buf == pos)
 			isp_dev->cur_rdma_buf = NULL;
-		}
 		trace_isp_raw_buffer_full_q_out(sink_pad_index, pos->index, pos->phys_addr);
 		list_del(&pos->list);
 		dma_free_coherent(isp_dev->dev, pos->size,
@@ -1225,10 +1276,8 @@ static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
 
 	mutex_lock(empty_lock);
 	list_for_each_entry_safe(pos, npos, empty_queue, list) {
-		/* If cur_rdma_buf is in the empty queue, clear it to avoid double-free */
-		if (isp_dev->cur_rdma_buf == pos) {
+		if (isp_dev->cur_rdma_buf == pos)
 			isp_dev->cur_rdma_buf = NULL;
-		}
 		trace_isp_raw_buffer_empty_q_out(sink_pad_index, pos->index, pos->phys_addr);
 		list_del(&pos->list);
 		dma_free_coherent(isp_dev->dev, pos->size,
@@ -1247,52 +1296,60 @@ static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
 		fakebuf_arr[PLANE_Y] = isp_dev->fakebuf_phys;
 		hailo15_isp_configure_mcm_raw_frame_base(isp_dev, fakebuf_arr, sink_pad_index);
 
-		/* If cur_rdma_buf points to the same buffer, clear it to avoid double-free */
-		if (isp_dev->cur_rdma_buf == isp_dev->cur_raw_buf[sink_pad_index]) {
+		if (isp_dev->cur_rdma_buf == isp_dev->cur_raw_buf[sink_pad_index])
 			isp_dev->cur_rdma_buf = NULL;
-		}
 		dma_free_coherent(isp_dev->dev, isp_dev->cur_raw_buf[sink_pad_index]->size,
 				isp_dev->cur_raw_buf[sink_pad_index]->virt_addr, isp_dev->cur_raw_buf[sink_pad_index]->phys_addr);
 		kfree(isp_dev->cur_raw_buf[sink_pad_index]);
 		isp_dev->cur_raw_buf[sink_pad_index] = NULL;
 	}
 
-	/* Check if cur_rdma_buf belongs to this sink_pad_index and free it if so.
-	 * cur_rdma_buf can point to a buffer that's not in any queue when stream stops.
-	 * This happens when RDMA is actively processing a buffer that hasn't been returned
-	 * to the empty queue yet. We can only safely free it when:
-	 * 1. RDMA is disabled (rdma_enable == 0), meaning all streams are stopping
-	 * 2. All streams are disabled (both sensors stopped)
-	 * 3. It belongs to this sink_pad_index (check via fe_switch.next_vdid[0])
-	 * 4. It's not the same as cur_raw_buf (already handled above)
-	 *
-	 * Note: We must ensure workqueues are drained and all streams are stopped before
-	 * freeing to avoid freeing a buffer that's still being processed by hardware.
-	 */
-	if (isp_dev->cur_rdma_buf &&
-	    !isp_dev->rdma_enable) {
-		unsigned long flags;
-		bool all_streams_stopped;
+	return 0;
+}
 
-		spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
-		all_streams_stopped = !isp_dev->stream_enabled[HAILO15_ISP_SINK_PAD_S0] &&
-				      !isp_dev->stream_enabled[HAILO15_ISP_SINK_PAD_S1];
-		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
+static int hailo15_isp_clear_raw_bufs(struct hailo15_isp_device *isp_dev,
+				      unsigned int sink_pad_index)
+{
+	unsigned long flags;
+	bool all_streams_stopped;
+	unsigned int pad;
+	int ret;
 
-		if (all_streams_stopped &&
-		    isp_dev->fe_switch.next_vdid[0] == sink_pad_index &&
-		    isp_dev->cur_rdma_buf != isp_dev->cur_raw_buf[sink_pad_index]) {
-			trace_isp_raw_buffer_empty_q_out(sink_pad_index,
-				isp_dev->cur_rdma_buf->index,
-				isp_dev->cur_rdma_buf->phys_addr);
-			dma_free_coherent(isp_dev->dev, isp_dev->cur_rdma_buf->size,
-					isp_dev->cur_rdma_buf->virt_addr, isp_dev->cur_rdma_buf->phys_addr);
-			kfree(isp_dev->cur_rdma_buf);
-			isp_dev->cur_rdma_buf = NULL;
-		}
+	ret = hailo15_isp_release_pad_raw_bufs(isp_dev, sink_pad_index);
+	if (ret)
+		return ret;
+
+	/* While another sensor still streams, RDMA may be reading cur_rdma_buf;
+	 * leave it for the last stop below. */
+	if (isp_dev->rdma_enable)
+		return 0;
+
+	spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
+	all_streams_stopped = !isp_dev->stream_enabled[HAILO15_ISP_SINK_PAD_S0] &&
+			      !isp_dev->stream_enabled[HAILO15_ISP_SINK_PAD_S1];
+	spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
+	if (!all_streams_stopped)
+		return 0;
+
+	/* All streams are stopped and the workqueues are drained, so no raw
+	 * buffer is in flight any more and cur_rdma_buf can be released. It may
+	 * still sit in the other pad's empty queue, so sweep that pad first. */
+	for (pad = 0; pad < HAILO15_ISP_SINK_PAD_MAX; pad++) {
+		if (pad != sink_pad_index)
+			hailo15_isp_release_pad_raw_bufs(isp_dev, pad);
 	}
 
-	return ret;
+	if (isp_dev->cur_rdma_buf) {
+		trace_isp_raw_buffer_empty_q_out(sink_pad_index,
+			isp_dev->cur_rdma_buf->index,
+			isp_dev->cur_rdma_buf->phys_addr);
+		dma_free_coherent(isp_dev->dev, isp_dev->cur_rdma_buf->size,
+				isp_dev->cur_rdma_buf->virt_addr, isp_dev->cur_rdma_buf->phys_addr);
+		kfree(isp_dev->cur_rdma_buf);
+		isp_dev->cur_rdma_buf = NULL;
+	}
+
+	return 0;
 }
 
 static void hailo15_isp_start_mcm_in(struct hailo15_isp_device *isp_dev) {
@@ -1301,8 +1358,7 @@ static void hailo15_isp_start_mcm_in(struct hailo15_isp_device *isp_dev) {
 	/* Seed the feed-liveness clock so a new stream isn't gated by a stale timestamp. */
 	for (sink_pad = 0; sink_pad < HAILO15_ISP_SINK_PAD_MAX; sink_pad++) {
 		isp_dev->mcm_in_last_frame_ktime[sink_pad] = ktime_get();
-		if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
-			isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, sink_pad);
+		isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, sink_pad);
 	}
 
 	isp_dev->rdma_enable = 1;
@@ -1429,8 +1485,7 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 			/* Seed the feed-liveness clock so a new stream isn't gated by a stale timestamp. */
 			for (pad_index = 0; pad_index < HAILO15_ISP_SINK_PAD_MAX; pad_index++) {
 				isp_dev->mcm_in_last_frame_ktime[pad_index] = ktime_get();
-				if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
-					isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, pad_index);
+				isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, pad_index);
 			}
 
 			/* if this is the first stream, do initializations */
@@ -1554,6 +1609,14 @@ static int hailo15_isp_s_stream(struct v4l2_subdev *sd, int enable)
 	if (enable) {
 		spin_lock_irqsave(&isp_dev->stream_state_lock, flags);
 		isp_dev->stream_enabled[sink_pad_index] = 1;
+		/* Arm the settling-drop together with stream_enabled: frame_rx
+		 * skips every frame until that flag is set, so no dropped frame
+		 * can be consumed early and none can slip past afterwards. */
+		if (path == ISP_MP) {
+			atomic_set(&isp_dev->mp_settling_drop_count,
+				   isp_dev->mp_settling_drop_pending);
+			isp_dev->mp_settling_drop_pending = 0;
+		}
 		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 
 		/* if this is not the first stream, toggle the sensors */
@@ -1617,12 +1680,27 @@ disable:
 		isp_dev->stream_enabled[sink_pad_index] = 0;
 		spin_unlock_irqrestore(&isp_dev->stream_state_lock, flags);
 
-		/* Drain miv2_mis workqueue immediately after disabling stream.
+		/* The ISP IRQ samples stream_enabled on entry and queues work later
+		 * in the same handler, so a handler already running on another CPU
+		 * can still queue after the clear above. Wait for it to finish. */
+		synchronize_irq(isp_dev->irq[0]);
+
+		/*
+		 * Multi-sensor miv2 work sleeps on raw_frame_available_wait_q until
+		 * stream_enabled clears, so wake it before flushing.
+		 */
+		if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR)
+			wake_up_interruptible_all(&isp_dev->raw_frame_available_wait_q);
+
+		/* Flush miv2_mis workqueue immediately after disabling stream.
 		 * In-flight work items will either complete normally (if already
 		 * past the stream_enabled check) or skip buffer processing (if
-		 * they haven't started yet). After drain returns, no work items
-		 * are running, so it's safe to clean up buffers below. */
-		drain_workqueue(isp_dev->miv2_mis_wq);
+		 * they haven't started yet). After the flush returns, no work items
+		 * are running, so it's safe to clean up buffers below.
+		 * Not drain_workqueue: the other sensor may still be streaming and
+		 * queueing from the IRQ, and queueing onto a draining workqueue
+		 * WARNs and drops the frame. */
+		flush_workqueue(isp_dev->miv2_mis_wq);
 
 		/* if we disable a stream in multi sensor mode, and we are in toggle state,
 		   we need to wait for the toggle to be disabled at the right time before actually stopping the stream */
@@ -1650,6 +1728,11 @@ disable:
 		/* these resets are only neccessary for mcm mode
 		   when using vid-out, rdma_enable set to zero only when closing the stream on the vid-out */
 disable_rdma:
+		/* Clear any unconsumed settling-drop budget so it can't bleed into
+		 * a later stream. Both the main and MCM/injection streamoff paths
+		 * pass through here. */
+		atomic_set(&isp_dev->mp_settling_drop_count, 0);
+
 		if ((stream_cnt <= 1 && isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) ||
 			(path == ISP_MCM_IN)) {
 			isp_dev->rdma_enable = 0;
@@ -1659,30 +1742,39 @@ disable_rdma:
 		}
 
 		if (path == ISP_MCM_IN) {
+			LIST_HEAD(detached);
+
 			mutex_lock(&isp_dev->ready_lock);
 			isp_dev->mcm_waiting = 0;
 			mutex_unlock(&isp_dev->ready_lock);
 
 			mutex_lock(&isp_dev->mcm_lock);
-			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_queue, irqlist){
+			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_queue, irqlist) {
+				hailo15_buf_list_del(pos);
+				hailo15_buf_list_add_tail(pos, &detached);
+			}
+			cur_tmp = isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN];
+			isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN] = NULL;
+			mutex_unlock(&isp_dev->mcm_lock);
+
+			/*
+			 * miv2 work reads cur_buf[MCM_IN] without mcm_lock, so wait for
+			 * work that may still hold the detached buffers before completing
+			 * them. MP may still be streaming, so flush rather than drain.
+			 */
+			flush_workqueue(isp_dev->miv2_mis_wq);
+
+			list_for_each_entry_safe(pos, npos, &detached, irqlist) {
 				hailo15_buf_list_del(pos);
 				trace_isp_mcm_in_buffer_dequeue(sd->grp_id, pos->vb.vb2_buf.index,
 							       pos->dma[0], ktime_get_ns());
 				hailo15_dma_buffer_done(ctx, sd->grp_id, pos);
 			}
-
-			cur_tmp = isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN];
-			isp_dev->cur_buf[HAILO15_VID_GRP_MCM_IN] = NULL;
 			if (cur_tmp) {
 				trace_isp_mcm_in_buffer_dequeue(sd->grp_id, cur_tmp->vb.vb2_buf.index,
 								cur_tmp->dma[0], ktime_get_ns());
 			}
 			hailo15_dma_buffer_done(ctx, sd->grp_id, cur_tmp);
-			mutex_unlock(&isp_dev->mcm_lock);
-
-			/* Drain deferred ISP work to prevent in-flight work items
-			 * from calling buffer_done after vb2_queue is released */
-			drain_workqueue(isp_dev->miv2_mis_wq);
 
 			/* Symmetric clear for hailo15_isp_start_mcm_in: only MCM_IN
 			 * was streaming, so no other STREAMOFF will clear fe_enable. */
@@ -1695,23 +1787,31 @@ disable_rdma:
 		}
 
 		if (path == ISP_MCM_RAW_OUT) {
-			/* Drain workqueue before clearing cur_buf to prevent
-			 * work items from accessing freed buffers */
-			if (isp_dev->mcm_wr_raw_wq) {
-				drain_workqueue(isp_dev->mcm_wr_raw_wq);
-			}
+			LIST_HEAD(detached);
 
-			/* Clear cur_buf and queue. Return all buffers to userspace */
 			mutex_lock(&isp_dev->mcm_raw_wr_lock);
-			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_raw_wr_queue, irqlist){
+			list_for_each_entry_safe(pos, npos, &isp_dev->mcm_raw_wr_queue, irqlist) {
 				hailo15_buf_list_del(pos);
-				trace_isp_mcm_raw_wr_buffer_dequeue(sd->grp_id, pos->vb.vb2_buf.index,
-								    pos->dma[0], ktime_get_ns());
-				hailo15_dma_buffer_done(ctx, sd->grp_id, pos);
+				hailo15_buf_list_add_tail(pos, &detached);
 			}
 			cur_tmp = isp_dev->cur_buf[HAILO15_VID_GRP_MCM_RAW_WR];
 			isp_dev->cur_buf[HAILO15_VID_GRP_MCM_RAW_WR] = NULL;
 			mutex_unlock(&isp_dev->mcm_raw_wr_lock);
+
+			/*
+			 * MP may still be streaming and queueing raw-write work, so flush
+			 * rather than drain before returning the detached buffers.
+			 */
+			if (isp_dev->mcm_wr_raw_wq)
+				flush_workqueue(isp_dev->mcm_wr_raw_wq);
+
+			list_for_each_entry_safe(pos, npos, &detached, irqlist) {
+				hailo15_buf_list_del(pos);
+				trace_isp_mcm_raw_wr_buffer_dequeue(sd->grp_id,
+								    pos->vb.vb2_buf.index,
+								    pos->dma[0], ktime_get_ns());
+				hailo15_dma_buffer_done(ctx, sd->grp_id, pos);
+			}
 			if (cur_tmp) {
 				trace_isp_mcm_raw_wr_buffer_dequeue(sd->grp_id, cur_tmp->vb.vb2_buf.index,
 								    cur_tmp->dma[0], ktime_get_ns());
@@ -1733,20 +1833,23 @@ disable_rdma:
 		memset(&isp_dev->input_fmt[sink_pad_index], 0, sizeof(isp_dev->input_fmt[sink_pad_index]));
 
 		if (stream_cnt <= 1) {
-			drain_workqueue(isp_dev->isp_mis_wq);
-			if(isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR) {
-				wake_up_interruptible_all(&isp_dev->raw_frame_available_wait_q);
-				drain_workqueue(isp_dev->mcm_wr_raw_wq);
-			}
+			/*
+			 * No stream is enabled and synchronize_irq() above has run, so the
+			 * IRQ no longer queues isp_mis, AF, raw-write or miv2 work.
+			 */
+			flush_workqueue(isp_dev->isp_mis_wq);
+			flush_workqueue(isp_dev->af_wq);
+			if (isp_dev->mcm_mode == ISP_MCM_MODE_MULTI_SENSOR)
+				flush_workqueue(isp_dev->mcm_wr_raw_wq);
 
-			/* in multi sensor, miv2_mis work can wait on raw_frame_available_wait_q
-			so flush only after raw_frame_available_wait_q is woken up */
-			drain_workqueue(isp_dev->miv2_mis_wq);
-
+			/*
+			 * Stitcher stats are queued on stitcher_stats_enable, which the AE
+			 * control can set at any time, so mask the IRQ source first.
+			 */
 			hailo15_isp_stitcher_hw_disable(isp_dev);
-
 			WRITE_ONCE(isp_dev->stitcher_stats_enable, false);
-			drain_workqueue(isp_dev->stitcher_stats_wq);
+			synchronize_irq(isp_dev->irq[0]);
+			cancel_work_sync(&isp_dev->stitcher_stats_work);
 			mutex_lock(&isp_dev->stitcher_stats_lock);
 			memset(isp_dev->stitcher_stats_buf, 0,
 			       sizeof(isp_dev->stitcher_stats_buf));
@@ -2274,8 +2377,8 @@ inline void hailo15_isp_buffer_done(struct hailo15_isp_device *isp_dev,
 			isp_dev->current_vsm_index[grp_id] < HAILO15_MAX_BUFFERS) {
 			isp_dev->vsm_list[isp_dev->current_vsm_index[grp_id]][grp_id] =
 				isp_dev->current_vsm;
-			memset(&isp_dev->current_vsm, 0, sizeof(struct hailo15_vsm));
 		}
+		memset(&isp_dev->current_vsm, 0, sizeof(struct hailo15_vsm));
 
 		if (buf) {
 			isp_dev->current_vsm_index[grp_id] = buf->vb.vb2_buf.index;
@@ -2434,6 +2537,18 @@ static int hailo15_isp_get_vsm(struct hailo15_dma_ctx *ctx, int grp_id,
 	return 0;
 }
 
+static int hailo15_isp_get_scratch_buf(struct hailo15_dma_ctx *ctx, dma_addr_t *phys)
+{
+	struct hailo15_isp_device *isp_dev =
+		(struct hailo15_isp_device *)ctx->dev;
+
+	if (!isp_dev->null_addr)
+		return -ENODEV;
+
+	*phys = (dma_addr_t)isp_dev->null_addr;
+	return 0;
+}
+
 static int hailo15_isp_queue_empty(struct hailo15_dma_ctx *ctx, int grp_id)
 {
 	struct hailo15_isp_device *isp_dev =
@@ -2476,6 +2591,7 @@ static struct hailo15_buf_ops hailo15_isp_buf_ops = {
 	.get_private_data = hailo15_isp_get_private_data,
 	.get_vsm = hailo15_isp_get_vsm,
 	.queue_empty = hailo15_isp_queue_empty,
+	.get_scratch_buf = hailo15_isp_get_scratch_buf,
 	.fast_toggle_stream = hailo15_isp_fast_toggle_stream,
 };
 

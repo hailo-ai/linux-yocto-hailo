@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ *
+ * H15L SBC (Pluto) dual-kit lane wiring: the single D-PHY is split 2+2 across
+ * the two CSI2RX bridges, so a camera on either port runs on two lanes -- and
+ * on two lanes whether or not a second camera is fitted, because the wiring is
+ * a property of the board, not of what is plugged into it. The base DT (via
+ * hailo15-vision.dtsi) declares four.
+ *
+ * Applied by U-Boot after the per-port sensor overlays, so these win. It says
+ * nothing about which sensor is fitted: it is deliberately model-independent,
+ * so a new sensor needs no new wiring overlay.
+ *
+ * The bridge INPUT endpoints must match the sensor OUTPUT endpoints, hence all
+ * four nodes.
+ */
+/dts-v1/;
+/plugin/;
+
+&sensor_out_csi2rx {
+	data-lanes = <1 2>;
+};
+
+&csi2rx_in_sensor {
+	data-lanes = <1 2>;
+};
+
+&sensor_out_csi2rx1 {
+	data-lanes = <1 2>;
+};
+
+&csi2rx1_in_sensor {
+	data-lanes = <1 2>;
+};

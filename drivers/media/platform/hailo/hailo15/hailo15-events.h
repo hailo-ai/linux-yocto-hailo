@@ -61,6 +61,11 @@ enum HAILO15_isp_private_event_id {
 	HAILO15_DAEMON_ISP_EVENT_STREAMON_FAST_TOGGLE,
 	HAILO15_DAEMON_ISP_EVENT_STREAMOFF_FAST_TOGGLE,
 	HAILO15_DAEMON_ISP_EVENT_PRE_STREAMOFF,
+	/* Bracket of one fast toggle. PRIMING is posted when the priming ioctl
+	 * arms the toggle, DONE whenever the state returns to FAST_TOGGLE_NONE,
+	 * after a completed toggle and after a failed or unwound one alike. */
+	HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE_PRIMING,
+	HAILO15_DAEMON_ISP_EVENT_FAST_TOGGLE_DONE,
 	HAILO15_DAEMON_ISP_EVENT_MAX,
 };
 

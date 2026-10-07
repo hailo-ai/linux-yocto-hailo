@@ -7,17 +7,9 @@
 #include <linux/of.h>
 #include <linux/soc/hailo/scmi_hailo_ops.h>
 #include <dt-bindings/soc/hailo15_release_version.h>
+#include <dt-bindings/soc/hailo15_scmi_api.h>
 #include <linux/soc/hailo/scmi_hailo_protocol.h>
-
-/* Hailo product ID definitions */
-#define HAILO_SCMI_PRODUCT_ID__INVALID 0
-#define HAILO_SCMI_PRODUCT_ID__15H 1
-#define HAILO_SCMI_PRODUCT_ID__15M 2
-#define HAILO_SCMI_PRODUCT_ID__15L 3
-#define HAILO_SCMI_PRODUCT_ID__10H 4
-#define HAILO_SCMI_PRODUCT_ID__12L 5
-
-#define HAILO10_SCMI_BOARD_SKU_ID__INVALID (0xFFFF)
+#include <linux/soc/hailo/soc-hailo.h>
 
 #define MAX_BOARD_ID_STR_LEN (100)
 #define	SCMI_HAILO_BOOT_SUCCESS_AP_SOFTWARE  1
@@ -85,6 +77,8 @@ struct hailo_soc {
 	char board_id_str[MAX_BOARD_ID_STR_LEN];
 	u32 host_current_limit_mA;
 	bool host_current_limit_sent_flag;
+	u32 thermal_thresholds_mc[HAILO_THROTTLING_TH_COUNT];
+	bool thermal_thresholds_set;
 };
 
 #define H15__SCU_BOOT_BIT_MASK (7)
@@ -341,16 +335,6 @@ static ssize_t product_show(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_RO(product);
 
-void board_sku_id_to_str(u32 board_sku_id, char *name, size_t name_size)
-{
-	if (board_sku_id == HAILO10_SCMI_BOARD_SKU_ID__INVALID) {
-		snprintf(name, name_size, "NA");
-	} else {
-		snprintf(name, name_size, "%u", board_sku_id);
-		}
-}
-EXPORT_SYMBOL_GPL(board_sku_id_to_str);
-
 static ssize_t board_id_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
@@ -443,7 +427,7 @@ static ssize_t jtag_selector_show(struct device *dev, struct device_attribute *a
 static ssize_t jtag_selector_store(struct device *dev, struct device_attribute *attr,
                        const char *buf, size_t count)
 {
-	int value;
+	unsigned int value;
 	int ret;
 
 	if (kstrtouint(buf, 0, &value))
@@ -556,8 +540,7 @@ static int hailo_soc_fill_sku_ids(struct hailo_soc *hailo_soc, const char *compa
 	hailo_soc->product_id = sku_id.product;
 
 	if (strcmp(compat, "hailo,hailo10h") == 0) {
-		board_sku_id_to_str(sku_id.board, hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN);
-		snprintf(hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN, "%s", hailo_soc->board_id_str);
+		hailo_board_sku_id_to_str(sku_id.board, hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN);
 	} else {
 		if (of_property_read_string(of_root, "model", &model) == 0) {
 			snprintf(hailo_soc->board_id_str, MAX_BOARD_ID_STR_LEN, "%s", model);
@@ -665,6 +648,93 @@ static int hailo_soc_fill_identification_attributes_file(struct hailo_identifica
 
 	return 0;
 }
+
+static void hailo_soc_load_thermal_thresholds(struct hailo_soc *hailo_soc, struct device *dev)
+{
+	struct scmi_hailo_get_throttling_thresholds_p2a th_info;
+	unsigned int i;
+	int ret;
+
+	ret = hailo_ops->get_throttling_thresholds(&th_info);
+	if (ret) {
+		dev_warn(dev, "thermal-throttling: failed to read SCU thresholds at probe (ret=%d); show will return 'NA' until first user write\n",
+			 ret);
+		return;
+	}
+
+	for (i = 0; i < HAILO_THROTTLING_TH_COUNT; i++)
+		hailo_soc->thermal_thresholds_mc[i] = th_info.th_heating_milli_celsius[i];
+	hailo_soc->thermal_thresholds_set = true;
+}
+
+/* Forward the 4 heating thresholds to the SCU (the owner that validates them) and cache on success. */
+static int hailo_soc_apply_thermal_thresholds(struct hailo_soc *hailo_soc,
+					      struct device *dev,
+					      const u32 th[HAILO_THROTTLING_TH_COUNT])
+{
+	struct scmi_hailo_set_throttling_thresholds_a2p params;
+	int ret, i;
+
+	for (i = 0; i < HAILO_THROTTLING_TH_COUNT; i++)
+		params.th_heating_milli_celsius[i] = th[i];
+
+	ret = hailo_ops->set_throttling_thresholds(&params);
+	if (ret) {
+		dev_warn(dev, "thermal-throttling: SCU rejected threshold config (ret=%d)\n", ret);
+		return ret;
+	}
+
+	for (i = 0; i < HAILO_THROTTLING_TH_COUNT; i++)
+		hailo_soc->thermal_thresholds_mc[i] = th[i];
+	hailo_soc->thermal_thresholds_set = true;
+
+	return 0;
+}
+
+/* Runtime sysfs interface for the 4 heating thresholds. show returns the cached values (primed from the SCU at probe), or "NA" if that read failed. */
+static ssize_t heating_thresholds_millicelsius_show(struct device *dev,
+						    struct device_attribute *attr, char *buf)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+
+	if (!hailo_soc->thermal_thresholds_set)
+		return sprintf(buf, "NA\n");
+
+	return sprintf(buf, "%u %u %u %u\n",
+		       hailo_soc->thermal_thresholds_mc[0],
+		       hailo_soc->thermal_thresholds_mc[1],
+		       hailo_soc->thermal_thresholds_mc[2],
+		       hailo_soc->thermal_thresholds_mc[3]);
+}
+
+static ssize_t heating_thresholds_millicelsius_store(struct device *dev,
+						     struct device_attribute *attr,
+						     const char *buf, size_t count)
+{
+	struct hailo_soc *hailo_soc = dev_get_drvdata(dev);
+	u32 th[HAILO_THROTTLING_TH_COUNT];
+	int ret;
+
+	if (sscanf(buf, "%u %u %u %u", &th[0], &th[1], &th[2], &th[3]) != HAILO_THROTTLING_TH_COUNT) {
+		dev_err(dev, "thermal-throttling: expected 4 space-separated u32 values in milli-Celsius\n");
+		return -EINVAL;
+	}
+
+	ret = hailo_soc_apply_thermal_thresholds(hailo_soc, dev, th);
+	return ret ? ret : count;
+}
+
+static DEVICE_ATTR_RW(heating_thresholds_millicelsius);
+
+static struct attribute *hailo_thermal_throttling_attrs[] = {
+	&dev_attr_heating_thresholds_millicelsius.attr,
+	NULL,
+};
+
+static const struct attribute_group hailo_thermal_throttling_group = {
+	.name = "thermal_throttling",
+	.attrs = hailo_thermal_throttling_attrs,
+};
 
 static ssize_t nncore_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -864,6 +934,20 @@ static int hailo_soc_probe(struct platform_device *pdev)
 	hailo_soc->soc_dev = soc_dev;
 	dev_set_drvdata(dev, hailo_soc);
 
+	/* thermal_throttling group applies only to Hailo10/Hailo12L; created after dev_set_drvdata since show/store rely on drvdata. */
+	if (hailo_soc->product_id == HAILO_SCMI_PRODUCT_ID__10H ||
+	    hailo_soc->product_id == HAILO_SCMI_PRODUCT_ID__12L) {
+		hailo_soc_load_thermal_thresholds(hailo_soc, &pdev->dev);
+
+		ret = sysfs_create_group(&dev->kobj, &hailo_thermal_throttling_group);
+		if (ret) {
+			dev_err(&pdev->dev, "Failed to create thermal_throttling group\n");
+			goto err_remove_throttling_mode_group;
+		}
+	} else {
+		dev_info(&pdev->dev, "thermal_throttling group not supported for the product\n");
+	}
+
 	/* This is relevent only to Asus = USB(flash) + 10H */
 	if (hailo_soc->product_id == HAILO_SCMI_PRODUCT_ID__10H &&
         (hailo_soc->boot_info.active_boot_image_storage & H15__SCU_BOOT_BIT_MASK) == BOOT_SOURCE_SPI_FLASH) {
@@ -875,6 +959,8 @@ static int hailo_soc_probe(struct platform_device *pdev)
     }
 	return 0;
 
+err_remove_throttling_mode_group:
+	sysfs_remove_group(&dev->kobj, &hailo_throttling_mode_group);
 err_remove_versions_group:
 	sysfs_remove_group(&dev->kobj, &hailo_versions_group);
 err_remove_boot_info_group:

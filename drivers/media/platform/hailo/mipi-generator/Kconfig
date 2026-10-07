@@ -1,0 +1,11 @@
+config VIDEO_HAILO_MIPI_GENERATOR_SV4E
+	tristate "Hailo MIPI generator (Introspect SV4E) virtual sensor driver"
+	depends on VIDEO_V4L2
+	select V4L2_FWNODE
+	help
+	  Virtual V4L2 subdev that represents the Introspect SV4E MIPI
+	  generator as a CSI-2 source. Used on engineering boards where
+	  the generator stands in for a real image sensor for MIPI/ISP
+	  bring-up and testing.
+
+	  If unsure, say N.

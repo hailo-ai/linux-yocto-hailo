@@ -15,6 +15,7 @@
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/usb/gadget.h>
 #include <linux/irq.h>
+#include <linux/workqueue.h>
 
 /* Max number slots - only 1 is allowed. */
 #define CDNSP_DEV_MAX_SLOTS	1
@@ -1153,6 +1154,19 @@ union cdnsp_trb {
 #define TRB_BUFF_LEN_UP_TO_BOUNDARY(addr) (TRB_MAX_BUFF_SIZE - \
 					((addr) & (TRB_MAX_BUFF_SIZE - 1)))
 
+/*
+ * Minimum time (ms) since gadget probe before a port reset is treated
+ * as a host reboot / user-initiated reset signal. Filters out normal
+ * enumeration resets (BIOS-to-OS handoff, host-side enumeration retries)
+ * which all happen within the first few seconds of probe, while still
+ * catching real host reboots and explicit user resets that come later.
+ *
+ * Measured from probe time rather than CONFIGURED-entry time so that
+ * the gate keeps working through re-enumerations triggered by the very
+ * usbreset we want to react to.
+ */
+#define CDNSP_MIN_BOOT_TIME_MS		8000
+
 /**
  * struct cdnsp_segment - segment related data.
  * @trbs: Array of Transfer Request Blocks.
@@ -1425,6 +1439,7 @@ struct cdnsp_device {
 	int may_wakeup;
 	u16 hci_version;
 	bool port_sys_reset_requested;
+	unsigned long boot_jiffies;
 
 	/* data structures */
 	struct cdnsp_device_context_array *dcbaa;
@@ -1462,6 +1477,9 @@ struct cdnsp_device {
 	struct cdnsp_port usb3_port;
 	struct cdnsp_port *active_port;
 	struct work_struct reboot_work;
+	struct work_struct link_recovery_work;
+	bool link_recovery_pending;
+	struct delayed_work boot_recovery_work;
 	u16 test_mode;
 };
 

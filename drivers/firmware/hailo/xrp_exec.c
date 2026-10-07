@@ -398,7 +398,7 @@ long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p)
     ktime_t dsp_start_time, dsp_end_time;
     uint64_t dsp_command_time_us;
     uint8_t current_threads;
-    kernel_perf_stats_t kernel_perf_stats;
+    kernel_perf_stats_t kernel_perf_stats = {0};
     
     rq = kzalloc(sizeof(struct xrp_request), GFP_KERNEL);
     if (!rq) {
@@ -460,6 +460,15 @@ long xrp_ioctl_submit_sync(struct file *filp, struct xrp_ioctl_queue __user *p)
     ret = xrp_wait_for_cmd_completion(xvp, queue);
     if (ret != 0) {
         dev_err(xvp->dev, "%s: failed waiting for command %ld\n", __func__, ret);
+        /*
+         * The request stays mapped on purpose. The DSP never answered, so it
+         * may still be reading from or writing into the request buffers, and
+         * there is no way to tell when it stops. Dropping the references here
+         * would release the buffers back to their exporter for reuse while the
+         * DSP can still corrupt them, and letting an unrelated consumer operate
+         * on unknown data is worse than leaking the mappings. They are held for
+         * the lifetime of the driver.
+         */
         goto mutex_err;
     }
     dsp_end_time = ktime_get();

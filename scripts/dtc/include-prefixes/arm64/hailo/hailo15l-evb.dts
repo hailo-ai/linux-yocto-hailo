@@ -981,3 +981,9 @@
 
     gpio-line-names = GPIO_LINE_NAMES;
 };
+
+/*
+ * U-Boot sensor detection is not supported on this board; keep the
+ * pre-detection candidate list. See hailo15-sensor0-candidates.dtsi.
+ */
+#include "hailo15-sensor0-candidates.dtsi"

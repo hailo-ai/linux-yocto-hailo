@@ -155,6 +155,36 @@ TRACE_EVENT(isp_fast_toggle_apply_prev_reqbufs_start,
 	)
 );
 
+TRACE_EVENT(isp_fast_toggle_post_event_state,
+	TP_PROTO(u32 grp_id, u32 state, int result),
+	TP_ARGS(grp_id, state, result),
+
+	TP_STRUCT__entry(
+		__field(u32, grp_id)
+		__field(u32, state)
+		__field(int, result)
+	),
+
+	TP_fast_assign(
+		__entry->grp_id = grp_id;
+		__entry->state = state;
+		__entry->result = result;
+	),
+
+	TP_printk("grp_id=%u, state=%u, result=%d (posted %s to the daemon)",
+		  __entry->grp_id,
+		  __entry->state,
+		  __entry->result,
+		  /* Numeric values of enum fast_toggle_state (hailo15 common.h), which
+		   * a trace header cannot include. Only NONE and PRIMING reach this
+		   * tracepoint; anything else prints as a raw value rather than being
+		   * mislabelled. */
+		  __print_symbolic(__entry->state,
+				   { 0, "FAST_TOGGLE_DONE" },
+				   { 2, "FAST_TOGGLE_PRIMING" })
+	)
+);
+
 #endif /* if !defined(_TRACE_HAILO15_ISP_FAST_TOGGLE_H) || defined(TRACE_HEADER_MULTI_READ) */
 
 /* This part must be outside protection */

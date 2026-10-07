@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ */
+
+&{/vision_subsys/dphy@0x7c01a000L} {
+    status = "okay";
+};
+
+&{/vision_subsys/dsi@7c018000} {
+    status = "okay";
+};
+
+&{/vision_subsys/dpi@1a98000} {
+    status = "okay";
+};
+
+&{/i2c@105000/lcd@45} {
+    status = "okay";
+};

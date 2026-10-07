@@ -498,29 +498,6 @@ static void hailo15_isp_configure_mcm_rdma(struct hailo15_isp_device *isp_dev, i
 		hailo15_isp_write_control_reg(isp_dev, MCM_RETIMING0, MCM_RETIMING_VSYNC);
 		hailo15_isp_write_control_reg(isp_dev, MCM_RETIMING1, MCM_RETIMING_HSYNC);
 	}
-
-	/* Derive MCM RDMA timeout from the configured retiming + resolution +
-	 * ISP wrapper clock so it adapts to fps/pipeline changes. Read the
-	 * actual register values so paths that don't set MCM_RETIMING (e.g.
-	 * RAW_WRITE, MULTI_SENSOR) and future per-fps retiming logic both
-	 * end up with a correct timeout. */
-	if (isp_dev->fe_dev) {
-		u32 retiming0, retiming1;
-		u64 cycles, duration_us;
-		u32 timeout_ms;
-
-		hailo15_isp_read_control_reg(isp_dev, MCM_RETIMING0, &retiming0);
-		hailo15_isp_read_control_reg(isp_dev, MCM_RETIMING1, &retiming1);
-		cycles = (u64)MCM_RETIMING_VDURATION_CYCLES(retiming0)
-		       + MCM_RETIMING_HPREAMP_CYCLES(retiming1)
-		       + (u64)(width + MCM_RETIMING_HBLANK_CYCLES(retiming1)) * height
-		       + MCM_RETIMING_VBLANK_CYCLES(retiming0);
-		duration_us = DIV_ROUND_UP_ULL(cycles * 1000000ULL, ISP_WRAPPER_CLK_HZ);
-		timeout_ms = (u32)DIV_ROUND_UP_ULL(duration_us + MCM_RDMA_TIMEOUT_SLACK_US, 1000);
-		isp_dev->fe_dev->mcm_rdma_timeout_ms =
-			clamp_t(u32, timeout_ms,
-				MCM_RDMA_TIMEOUT_MIN_MS, MCM_RDMA_TIMEOUT_MAX_MS);
-	}
 }
 
 void hailo15_isp_configure_frame_size(struct hailo15_isp_device *isp_dev,
@@ -1082,6 +1059,16 @@ static void hailo15_isp_handle_frame_rx_mp(struct hailo15_isp_device *isp_dev,
 
 	sink_pad = HAILO15_VID_GRP_TO_ISP_SINK_PAD(isp_dev->cur_buf_path);
 	atomic_set(&isp_dev->frame_received[sink_pad], 1);
+
+	/* Drop the dark 2DOL-settling frames by returning before buffer_done.
+	 * No leak: cur_buf[MP] stays pinned and the ISP overwrites it next frame.
+	 * No frame watchdog timeout: frame_received is already set above.
+	 * MCM_IN keeps flowing: it advances on output_ready, which is set at stream
+	 * start and never per MP frame, so the injection handshake is untouched. */
+	if (atomic_dec_if_positive(&isp_dev->mp_settling_drop_count) >= 0) {
+		trace_isp_mp_settling_drop(isp_dev->cur_buf_path, ktime_get_ns());
+		return;
+	}
 
 	/*do_rx_mp*/
 	hailo15_isp_buffer_done(isp_dev, isp_dev->cur_buf_path);
@@ -1652,8 +1639,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 
 	/* Wake isp_fe_perform_transaction waiters on MCM RDMA completion.
 	 * Before the stream_exists gate so streamoff paths still wake. */
-	if (isp_dev->fe_dev &&
-	    __hailo15_isp_frame_rx_rdma_ready(isp_dev->irq_status.isp_miv2_mis) &&
+	if (__hailo15_isp_frame_rx_rdma_ready(isp_dev->irq_status.isp_miv2_mis) &&
 	    atomic_dec_if_positive(&isp_dev->fe_dev->mcm_rdma_inflight) == 0)
 		wake_up_all(&isp_dev->fe_dev->mcm_rdma_idle_wq);
 
@@ -1671,8 +1657,7 @@ static void hailo15_isp_handle_int(struct hailo15_isp_device *isp_dev)
 
 		if (rx_vdid < HAILO15_ISP_SINK_PAD_MAX) {
 			isp_dev->mcm_in_last_frame_ktime[rx_vdid] = ktime_get();
-			if (isp_dev->fe_dev && isp_dev->fe_dev->record_injection_frame)
-				isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, rx_vdid);
+			isp_dev->fe_dev->record_injection_frame(isp_dev->fe_dev, rx_vdid);
 		}
 	}
 

@@ -173,7 +173,6 @@ struct dwcmshc_priv {
 	int vendor_specific_area1; /* P_VENDOR_SPECIFIC_AREA reg */
 	void *priv; /* pointer to SoC private stuff */
 	bool is_rk3568;
-	bool is_hailo;
 };
 static void dwcmshc_hailo15_phy_config(struct sdhci_host *host);
 /*
@@ -554,6 +553,15 @@ static void hailo15_dwcmshc_hw_reset(struct sdhci_host *host)
 	hailo15_dwcmshc_setup(host);
 }
 
+static void hailo15_dwcmshc_reset(struct sdhci_host *host, u8 mask)
+{
+	sdhci_reset(host, mask);
+
+	/* SDHCI_RESET_ALL clears the vendor PHY block, so rebuild it here. */
+	if (mask & SDHCI_RESET_ALL)
+		hailo15_dwcmshc_setup(host);
+}
+
 static void hailo15_dwcmshc_voltage_switch(struct sdhci_host *host)
 {
 	hailo15_dwcmshc_set_vdd_gpio(host, true);
@@ -615,7 +623,7 @@ static const struct sdhci_ops hailo15_dwcmshc_ops = {
 	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
 	.get_max_clock		= dwcmshc_get_max_clock,
 	.get_min_clock		= hailo15_dwcmshc_get_min_clock,
-	.reset			= sdhci_reset,
+	.reset			= hailo15_dwcmshc_reset,
 	.adma_write_desc	= dwcmshc_adma_write_desc,
 	.hw_reset = hailo15_dwcmshc_hw_reset,
 	.voltage_switch = hailo15_dwcmshc_voltage_switch,
@@ -629,7 +637,7 @@ static const struct sdhci_ops hailo15l_dwcmshc_ops = {
 	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
 	.get_max_clock		= dwcmshc_get_max_clock,
 	.get_min_clock		= hailo15_dwcmshc_get_min_clock,
-	.reset			= sdhci_reset,
+	.reset			= hailo15_dwcmshc_reset,
 	.adma_write_desc	= dwcmshc_adma_write_desc,
 	.hw_reset = hailo15_dwcmshc_hw_reset,
 	.voltage_switch = hailo15l_dwcmshc_voltage_switch,
@@ -1057,7 +1065,6 @@ static int dwcmshc_probe(struct platform_device *pdev)
 		}
 		
 		priv->priv = hailo_priv;
-		priv->is_hailo = true;
 		hailo_priv->is_hailo15l = is_hailo15l;
 		card_clk = devm_clk_get_optional(dev, "card_clk");
 		if (IS_ERR(card_clk)) {
@@ -1191,16 +1198,7 @@ static int dwcmshc_resume(struct device *dev)
 			return ret;
 	}
 
-	ret = sdhci_resume_host(host);
-	if (ret)
-		return ret;
-
-	/* sdhci_resume_host() issues a full controller reset (SDHCI_RESET_ALL via
-	   sdhci_init()), which clears our configuration so we re-apply. */
-	if (priv->is_hailo)
-		hailo15_dwcmshc_setup(host);
-
-	return ret;
+	return sdhci_resume_host(host);
 }
 #endif
 

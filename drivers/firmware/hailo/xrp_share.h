@@ -12,6 +12,7 @@
 #include "xrp_common.h"
 #include "xrp_kernel_defs.h"
 
+#include <linux/dma-direction.h>
 #include <linux/types.h>
 
 struct xrp_shared_allocation {
@@ -57,6 +58,7 @@ struct xrp_mapping {
             struct dma_buf_attachment *attachment;
             struct dma_buf *dmabuf;
             struct sg_table *sgt;
+            enum dma_data_direction direction;
         } dmabuf;
     };
 };

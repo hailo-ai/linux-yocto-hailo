@@ -396,9 +396,13 @@ static int hailo15_video_out_node_release(struct file *file)
 	    file->private_data == vid_node->queue.owner) {
 		ret = hailo15_video_out_node_stream_cancel(vid_node);
 		if (ret) {
-			pr_err("%s - stream_cancel failed returning: %d\n",
-			       __func__, ret);
-			return ret;
+			/* stream_cancel already cleared vid_node->streaming and
+			 * the buffer queue; the only state still pinned by this
+			 * fd is queue.owner. Falling through to vb2_fop_release
+			 * is safe (no HW touches) and necessary: holding owner
+			 * blocks the next open's TRY_FMT with EBUSY. See MSW-16325. */
+			pr_warn("%s: stream_cancel returned %d; releasing queue state anyway\n",
+				__func__, ret);
 		}
 	}
 

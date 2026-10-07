@@ -1226,7 +1226,7 @@ static const struct h15_pin_function h15_pin_functions[] = {
 	H15_PIN_FUNCTION(cpu_trace_data),
 };
 
-struct h15_pin_set h15_pin_sets[H15_PIN_SET_VALUE__COUNT] = {
+static const struct h15_pin_set h15_pin_sets[H15_PIN_SET_VALUE__COUNT] = {
 	H15_PIN_SET(H15_PIN_SET_VALUE__1_0, 10),
 	H15_PIN_SET(H15_PIN_SET_VALUE__3_2, 10),
 	H15_PIN_SET(H15_PIN_SET_VALUE__5_4, 10),
@@ -1238,13 +1238,13 @@ struct h15_pin_set h15_pin_sets[H15_PIN_SET_VALUE__COUNT] = {
 /*
  * The shift in the pads_pinmux_mode for every pins set.
 */
-int pads_pinmux_mode_shift_value[H15_PIN_SET_VALUE__COUNT] = {
+static const int pads_pinmux_mode_shift_value[H15_PIN_SET_VALUE__COUNT] = {
 	[H15_PIN_SET_VALUE__1_0] = 0,	[H15_PIN_SET_VALUE__3_2] = 4,
 	[H15_PIN_SET_VALUE__5_4] = 8,	[H15_PIN_SET_VALUE__7_6] = 12,
 	[H15_PIN_SET_VALUE__15_8] = 16, [H15_PIN_SET_VALUE__31_16] = 20,
 };
 
-int pads_pinmux_mode_reg_mask_value[H15_PIN_SET_VALUE__COUNT] = {
+static const int pads_pinmux_mode_reg_mask_value[H15_PIN_SET_VALUE__COUNT] = {
 	[H15_PIN_SET_VALUE__1_0] = 0xf,	 [H15_PIN_SET_VALUE__3_2] = 0xf,
 	[H15_PIN_SET_VALUE__5_4] = 0xf,	 [H15_PIN_SET_VALUE__7_6] = 0xf,
 	[H15_PIN_SET_VALUE__15_8] = 0x7, [H15_PIN_SET_VALUE__31_16] = 0x7

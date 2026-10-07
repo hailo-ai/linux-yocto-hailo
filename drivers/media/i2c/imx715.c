@@ -318,10 +318,40 @@ struct imx715 {
 	int wdr_priming_val;
 	int custom_rhs1_priming_val;
 	enum fast_toggle_state fast_toggle_state;
+	/*
+	 * Whether this driver currently holds a runtime-PM reference. The put is
+	 * skipped across a fast toggle so the sensor keeps its power - and with it
+	 * its register contents - between the stop and the restart. The matching
+	 * get must then be skipped too, so it is gated on this flag rather than on
+	 * fast_toggle_state: that state can be set while the sensor is stopped and
+	 * already suspended, and gating the get on it would leave the restart
+	 * programming an unpowered sensor.
+	 */
+	bool pm_ref_held;
+	enum fast_toggle_type toggle_type;
+	const struct imx715_mode *prev_mode; /* last successfully streamed mode, or NULL */
+	/*
+	 * Last committed exposure/gain per regime ([0] SDR, [1] HDR). The delta
+	 * path writes the target mode's table defaults, so the operating point the
+	 * regime was last streaming at is restored from here instead.
+	 */
+	u32 exp_cache[2];
+	u32 gain_cache[2];
 };
 
 #define IMX715_LINK_FREQ_720M  720000000LL
 #define IMX715_LINK_FREQ_1782M 1782000000LL
+
+/*
+ * SDR<->PreISP fast toggles keep the sensor in the same mode on both sides,
+ * so the documented STANDBY entry/exit cycle (and its 24 ms regulator
+ * stabilization wait) is unnecessary - pause/resume via XMSTA only.
+ */
+static inline bool imx715_skip_standby_toggle(struct imx715 *imx715)
+{
+	return hailo_ft_skip_standby(imx715->fast_toggle_state, imx715->toggle_type,
+				     HAILO_FT_SKIP_PREISP);
+}
 
 static const s64 link_freq[] = {
 	IMX715_LINK_FREQ_720M, IMX715_LINK_FREQ_1782M,
@@ -329,8 +359,8 @@ static const s64 link_freq[] = {
 
 /* Sensor mode registers -- Tested OK */
 static const struct imx715_reg mode_3840x2160_regs[] = {
-	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
+	{IMX715_REG_MODE_SELECT, 0x01}, // STANDBY					*imx715
+	{IMX715_REG_XMSTA, 0x01}, // XMSTA (started later by start_streaming)
 	/* Hailo Modules are assembled with a 37.125 MHz INCK, modify this section for other oscillators  */
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x7F}, // BC_WAIT_TIME INCK
@@ -347,9 +377,16 @@ static const struct imx715_reg mode_3840x2160_regs[] = {
 	{0x4074, 0x00}, // INCKSEL7 for 1782Mbps
 	/*Mode : linear: 3840x2160p60 12bits */
 	{0x3022, 0x00}, // ADDMODE All-pixel mode
-	{0x3024, 0x94}, // VMAX 4500 (for 30FPS)
-	{0x3025, 0x11}, // VMAX 
-	{0x3028, 0x26}, // HMAX 550
+	/* Linear readout: clear the DOL registers the HDR tables set. Only the
+	 * DOL tables write these, so on a sensor that has not been reset since
+	 * streaming HDR they would otherwise still be set here. */
+	{0x302C, 0x00}, // WDMODE normal (SDR)
+	{0x302D, 0x00}, // WDSEL normal (SDR)
+	{0x30CF, 0x00}, // DOL subsampling off
+	{0x3260, 0x01}, // GAIN_PGC_FIDMD per-frame gain (SDR default)
+	{IMX715_REG_LPFR, 0x94}, // VMAX 4500 (for 30FPS)
+	{0x3025, 0x11}, // VMAX
+	{IMX715_REG_HMAX, 0x26}, // HMAX 550
 	{0x3029, 0x02}, // HMAX 
 	{0x3030, 0x00}, // HREVERSE Normal
 	{0x3031, 0x01}, // ADBIT=12Bit
@@ -408,8 +445,8 @@ static const struct imx715_reg mode_3840x2160_regs[] = {
 
 /* Mode wasn't tested */
 static const struct imx715_reg mode_1920x1080_sdr_binning_regs[] = {
-	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
+	{IMX715_REG_MODE_SELECT, 0x01}, // STANDBY					*imx715
+	{IMX715_REG_XMSTA, 0x01}, // XMSTA (started later by start_streaming)
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x5D}, // BC_WAIT_TIME
 	{0x300A, 0x42}, // CP_WAIT_TIME
@@ -429,9 +466,15 @@ static const struct imx715_reg mode_1920x1080_sdr_binning_regs[] = {
 	{0x3022, 0x01}, // binning
 	{0x30D9, 0x02}, // binning
 	{0x30DA, 0x01}, // binning
-	{0x3024, 0xCA}, // VMAX 2250
+	/* Linear readout: clear the DOL registers the HDR tables set - see
+	 * mode_3840x2160_regs. */
+	{0x302C, 0x00}, // WDMODE normal (SDR)
+	{0x302D, 0x00}, // WDSEL normal (SDR)
+	{0x30CF, 0x00}, // DOL subsampling off
+	{0x3260, 0x01}, // GAIN_PGC_FIDMD per-frame gain (SDR default)
+	{IMX715_REG_LPFR, 0xCA}, // VMAX 2250
 	{0x3025, 0x08}, // VMAX 
-	{0x3028, 0x26}, // HMAX 550
+	{IMX715_REG_HMAX, 0x26}, // HMAX 550
 	{0x3029, 0x02}, // HMAX 
 	{0x3030, 0x00}, // HREVERSE Normal
 	{0x3031, 0x00}, // ADBIT=10Bit
@@ -490,7 +533,7 @@ static const struct imx715_reg mode_1920x1080_sdr_binning_regs[] = {
 
 /* Mode wasn't tested */
 static const struct imx715_reg mode_1920x1080_3dol_binning_8fps_regs[] = {
-	{0x3002, 0x01}, // XMSTA Master mode operation start		*imx715
+	{IMX715_REG_XMSTA, 0x01}, // XMSTA Master mode operation start		*imx715
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x5D}, // BC_WAIT_TIME
 	{0x300A, 0x42}, // CP_WAIT_TIME
@@ -515,9 +558,9 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_8fps_regs[] = {
 	{0x3022, 0x01}, // binning
 	{0x30D9, 0x02}, // binning
 	{0x30DA, 0x01}, // binning
-	{0x3024, 0xCA}, // VMAX 2250 
+	{IMX715_REG_LPFR, 0xCA}, // VMAX 2250
 	{0x3025, 0x08}, // VMAX 
-	{0x3028, 0x28}, // HMAX 1320
+	{IMX715_REG_HMAX, 0x28}, // HMAX 1320
 	{0x3029, 0x05}, // HMAX 
 	{0x3030, 0x00}, // HREVERSE Normal
 	{0x3031, 0x00}, // ADBIT=10Bit
@@ -577,7 +620,7 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_8fps_regs[] = {
 
 /* Mode wasn't tested */
 static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
-	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
+	{IMX715_REG_XMSTA, 0x01}, // XMSTA (started later by start_streaming)
 	/* data rate: 1782Mbps/lane */
 	{0x3008, 0x5D}, // BC_WAIT_TIME
 	{0x300A, 0x42}, // CP_WAIT_TIME
@@ -597,9 +640,9 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 	{0x3022, 0x01}, // binning
 	{0x30D9, 0x02}, // binning
 	{0x30DA, 0x01}, // binning
-	{0x3024, 0xCA}, // VMAX 2250
+	{IMX715_REG_LPFR, 0xCA}, // VMAX 2250
 	{0x3025, 0x08}, // VMAX 
-	{0x3028, 0x26}, // HMAX 550
+	{IMX715_REG_HMAX, 0x26}, // HMAX 550
 	{0x3029, 0x02}, // HMAX 
 	{0x3030, 0x00}, // HREVERSE Normal
 	{0x3031, 0x00}, // ADBIT=10Bit
@@ -658,8 +701,8 @@ static const struct imx715_reg mode_1920x1080_3dol_binning_20fps_regs[] = {
 };
 
 static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
-	{0x3000, 0x01}, // STANDBY					*imx715
-	{0x3002, 0x01}, // XMSTA (started later by start_streaming)
+	{IMX715_REG_MODE_SELECT, 0x01}, // STANDBY					*imx715
+	{IMX715_REG_XMSTA, 0x01}, // XMSTA (started later by start_streaming)
 	{0x3008, 0x7F}, // BCWAIT_TIME 0x07F
 	{0x300A, 0x5B}, // CPWAIT_TIME 0x05B
 	{0x3033, 0x04}, // SYS_MODE = 1782Mbps
@@ -674,7 +717,7 @@ static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x4074, 0x00}, // INCKSEL7 for 1782Mbps
 	{0x300A, 0x42},
 	{0x301C, 0x04}, // WINMODE
-	{0x3024, 0xca}, // VMAX 2250
+	{IMX715_REG_LPFR, 0xca}, // VMAX 2250
 	{0x3025, 0x08}, // VMAX
 	{0x3026, 0x00}, // VMAX
 	{0x3040, 0x00}, // PIX_HST [7:0]
@@ -687,9 +730,9 @@ static const struct imx715_reg mode_4k_2dol_all_pixel[] = {
 	{0x3047, 0x10}, // PIX_VWIDTH_MSB
 	{0x302C, 0x01},
 	{0x302D, 0x01},
-	{0x3050, 0xf4}, // SHR0_LSB SHR0 500
+	{IMX715_REG_SHUTTER, 0xf4}, // SHR0_LSB SHR0 500
 	{0x3051, 0x01}, // SHR0_MSB
-	{0x3054, 0x09},
+	{IMX715_REG_SHUTTER_SHORT, 0x09},
 	{0x3060, 0x1d}, // RHS1_LSB RHS1 285 // must be 4n+1
 	{0x3061, 0x01}, // RHS1_MSB
 	{0x3260, 0x00}, // GAIN_PGC_FIDMD - 0: set individual exposure gains
@@ -1162,16 +1205,12 @@ static int imx715_update_exp_gain(struct imx715 *imx715, u32 exposure, u32 gain,
 					return -EINVAL;
 			}
 
-			// In SDR, increase vblank if needed to fit the requested exposure.
-			// In HDR, keep vblank fixed — AE must work within the existing
+			// In SDR, stretch the frame if needed to fit the requested exposure.
+			// In HDR, keep the frame fixed — AE must work within the existing
 			// VMAX using gain, matching the IMX678 HDR behavior.
-			if (imx715->cur_mode->dol == 1 &&
-			    exposure > (imx715->vblank + imx715->cur_mode->height) - gap) {
-				imx715->vblank = exposure - imx715->cur_mode->height + gap;
-				__v4l2_ctrl_s_ctrl(imx715->vblank_ctrl, imx715->vblank);
-			}
-
 			lpfr = imx715->vblank + imx715->cur_mode->height;
+			if (imx715->cur_mode->dol == 1)
+				lpfr = hailo_ft_lpfr_for_exposure(lpfr, exposure, gap, 1);
 			lpfr += lpfr % 2; // LPFR must be even
 			shutter = NON_NEGATIVE(imx715->cur_mode->dol * (int)lpfr - (int)exposure);
 			// clip to max value
@@ -1485,6 +1524,9 @@ static void imx715_set_mode(struct imx715 *imx715, const struct imx715_mode *mod
 {
 	int ret;
 	imx715->cur_mode = mode;
+	imx715->curr_fmt.format.code   = mode->code;
+	imx715->curr_fmt.format.width  = mode->width;
+	imx715->curr_fmt.format.height = mode->height;
 	imx715->vblank = mode->vblank;
 
 	imx715->mode_idx = search_mode(mode, NULL);
@@ -1521,7 +1563,7 @@ static int imx715_set_hdr_mode(struct imx715 *imx715, bool enable)
 		imx715->hdr_enabled = enable;
 		prev_mode = imx715->cur_mode;
 
-		imx715_set_mode(imx715, imx715->hdr_enabled ? 
+		imx715_set_mode(imx715, imx715->hdr_enabled ?
 								&supported_hdr_modes[DEFAULT_MODE_IDX] :
 								&supported_sdr_modes[DEFAULT_MODE_IDX]);
 
@@ -1976,6 +2018,95 @@ static int imx715_init_pad_cfg(struct v4l2_subdev *sd,
 	return imx715_set_pad_format(sd, sd_state, &fmt);
 }
 
+/*
+ * SDR 4K -> 2DOL 4K: every register the 2DOL table sets to something other than
+ * what the SDR table left behind.
+ */
+static const struct imx715_reg sdr_to_hdr2dol_delta[] = {
+	{ 0x300A,                   0x42 },	/* CP_WAIT_TIME */
+	{ IMX715_REG_LPFR,          0xCA },	/* VMAX 2250 */
+	{ 0x3025,                   0x08 },	/* VMAX */
+	{ 0x3026,                   0x00 },	/* VMAX */
+	{ 0x302C,                   0x01 },	/* WDMODE: DOL */
+	{ 0x302D,                   0x01 },	/* WDSEL: 2 frame */
+	{ 0x3041,                   0x00 },	/* PIX_HST [4:0] */
+	{ 0x3044,                   0x1C },	/* PIX_VST [7:0] */
+	{ 0x3045,                   0x00 },	/* PIX_VST [12:8] */
+	{ IMX715_REG_SHUTTER,       0xF4 },	/* SHR0 500 */
+	{ 0x3051,                   0x01 },	/* SHR0_MSB */
+	{ IMX715_REG_SHUTTER_SHORT, 0x09 },	/* SHR1 */
+	{ 0x3060,                   0x1D },	/* RHS1 285 */
+	{ 0x3061,                   0x01 },	/* RHS1_MSB */
+	{ 0x30CF,                   0x01 },	/* DOL subsampling on */
+	{ 0x3260,                   0x00 },	/* GAIN_PGC_FIDMD: individual exposure gains */
+};
+
+/*
+ * 2DOL 4K -> SDR 4K.
+ *
+ * SHR0/SHR1/RHS1 are deliberately not restored here: with WDMODE cleared the DOL
+ * exposure registers are don't-care, and SHR0 is rewritten by the control push
+ * that follows this table.
+ */
+static const struct imx715_reg hdr2dol_to_sdr_delta[] = {
+	{ 0x300A,          0x5B },	/* CP_WAIT_TIME */
+	{ IMX715_REG_LPFR, 0x94 },	/* VMAX 4500 */
+	{ 0x3025,          0x11 },	/* VMAX */
+	{ 0x302C,          0x00 },	/* WDMODE: normal (SDR) - must explicitly clear */
+	{ 0x302D,          0x00 },	/* WDSEL: normal (SDR) - must explicitly clear */
+	{ 0x3044,          0x00 },	/* PIX_VST [7:0] */
+	{ 0x30CF,          0x00 },	/* DOL subsampling off - must explicitly clear */
+	{ 0x3260,          0x01 },	/* GAIN_PGC_FIDMD: per-frame gain - restore SDR default */
+};
+
+static const struct imx715_reg_list sdr_to_hdr2dol_delta_list = {
+	.num_of_regs = ARRAY_SIZE(sdr_to_hdr2dol_delta),
+	.regs = sdr_to_hdr2dol_delta,
+};
+
+static const struct imx715_reg_list hdr2dol_to_sdr_delta_list = {
+	.num_of_regs = ARRAY_SIZE(hdr2dol_to_sdr_delta),
+	.regs = hdr2dol_to_sdr_delta,
+};
+
+/*
+ * Matched on the reg lists, so modes sharing one are indistinguishable here and
+ * must differ only in vblank/frame_interval. Transitions with no entry (the
+ * binning and 3DOL modes) fall back to a full reprogram.
+ */
+static const struct hailo_ft_mode_delta imx715_ft_deltas[] = {
+	{ mode_3840x2160_regs, mode_4k_2dol_all_pixel,
+	  &sdr_to_hdr2dol_delta_list },
+	{ mode_4k_2dol_all_pixel, mode_3840x2160_regs,
+	  &hdr2dol_to_sdr_delta_list },
+};
+
+/**
+ * imx715_get_mode_delta() - Check if a delta register table exists for this transition
+ * @from: previous mode (or NULL for first boot)
+ * @to: target mode
+ *
+ * Return: pointer to delta reg list, or NULL if full reprogram is needed.
+ */
+static const struct imx715_reg_list *imx715_get_mode_delta(
+	const struct imx715_mode *from, const struct imx715_mode *to)
+{
+	return hailo_ft_find_delta(imx715_ft_deltas, ARRAY_SIZE(imx715_ft_deltas),
+				   from ? from->reg_list.regs : NULL,
+				   to ? to->reg_list.regs : NULL);
+}
+
+HAILO_FT_DEFINE_REG_OPS(imx715);
+
+static const struct hailo_ft_exp_regs imx715_ft_exp_regs = {
+	.shutter = IMX715_REG_SHUTTER,
+	.shutter_len = 3,
+	.again = IMX715_REG_AGAIN,
+	.again_len = 2,
+	.lpfr = IMX715_REG_LPFR,
+	.lpfr_len = 3,
+};
+
 /**
  * imx715_start_streaming() - Start sensor stream
  * @imx715: pointer to imx715 device
@@ -1984,44 +2115,42 @@ static int imx715_init_pad_cfg(struct v4l2_subdev *sd,
  */
 static int imx715_start_streaming(struct imx715 *imx715)
 {
-	const struct imx715_reg_list *reg_list;
+	const struct imx715_reg_list *delta;
 	int ret;
+	bool same_mode = (imx715->prev_mode == imx715->cur_mode) &&
+			 (imx715->prev_mode != NULL);
+	const struct hailo_ft_mode_ops ft_ops = {
+		.dev = imx715->dev,
+		.sensor = imx715,
+		.write_regs = imx715_ft_write_regs,
+		.exp_ctrl = imx715->lef.exp_ctrl,
+		.again_ctrl = imx715->lef.again_ctrl,
+		.exp_cache = imx715->exp_cache,
+		.gain_cache = imx715->gain_cache,
+	};
 
-	/* Save all writable control values before handler setup may overwrite them */
-	struct hailo_ctrl_snapshot snap;
-
-	hailo_ctrl_snapshot_save(imx715->sd.ctrl_handler, &snap);
-
-	/* Write sensor mode registers */
 	pr_debug("%s - hdr_enabled: %d\n", __func__, imx715->hdr_enabled);
-	reg_list = &imx715->cur_mode->reg_list;
-	ret = imx715_write_regs(imx715, reg_list->regs, reg_list->num_of_regs);
-	if (ret) {
-		dev_err(imx715->dev, "fail to write initial registers");
+
+	delta = imx715_get_mode_delta(imx715->prev_mode, imx715->cur_mode);
+
+	ret = hailo_ft_apply_mode(&ft_ops, same_mode, imx715->hdr_enabled,
+				  delta ? delta->regs : NULL,
+				  delta ? delta->num_of_regs : 0,
+				  imx715->cur_mode->reg_list.regs,
+				  imx715->cur_mode->reg_list.num_of_regs);
+	if (ret)
 		return ret;
-	}
 
-	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
-	ret = __v4l2_ctrl_handler_setup(imx715->sd.ctrl_handler);
-	if (ret) {
-		dev_err(imx715->dev, "fail to setup handler (%d)", ret);
+	ret = hailo_ft_push_controls(imx715->dev, imx715->sd.ctrl_handler);
+	if (ret)
 		return ret;
+
+	if (!imx715_skip_standby_toggle(imx715)) {
+		ret = hailo_ft_cancel_standby(imx715->dev, IMX715_REG_MODE_SELECT, IMX715_MODE_STREAMING,
+					      imx715_ft_write_reg, imx715);
+		if (ret)
+			return ret;
 	}
-
-	/* Restore any control values corrupted by handler_setup side effects
-	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
-	hailo_ctrl_snapshot_restore(&snap);
-
-	/* Standby cancel */
-	ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
-			       IMX715_MODE_STREAMING);
-	if (ret) {
-		dev_err(imx715->dev, "Failed to cancel standby on stream start: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait 24ms for internal regulator stabilization */
-	usleep_range(24000, 25000);
 
 	/* Master mode start */
 	ret = imx715_write_reg(imx715, IMX715_REG_XMSTA, 1, 0);
@@ -2029,10 +2158,16 @@ static int imx715_start_streaming(struct imx715 *imx715)
 		dev_err(imx715->dev, "Failed to start master mode on stream start: %d\n", ret);
 		return ret;
 	}
+
 	imx715->wdr_priming_val = -1;
 	imx715->custom_rhs1_priming_val = -1;
 
-	dev_info(imx715->dev, "imx715: stream started (%s)", imx715->mode_string);
+	/* Track mode for next start -- enables same-mode skip and delta */
+	imx715->prev_mode = imx715->cur_mode;
+
+	dev_info(imx715->dev, "imx715: stream started (%s%s)",
+		 imx715->mode_string,
+		 same_mode ? ", same-mode" : delta ? ", delta" : "");
 
 	return 0;
 }
@@ -2047,12 +2182,19 @@ static int imx715_stop_streaming(struct imx715 *imx715)
 {
 	int ret;
 
-	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
-	ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
-				IMX715_MODE_STANDBY);
-	if (ret) {
-		dev_err(imx715->dev, "Failed to set standby on stream stop: %d\n", ret);
-		return ret;
+	hailo_ft_cache_exposure(imx715->dev, &imx715_ft_exp_regs,
+				imx715->exp_cache, imx715->gain_cache,
+				imx715->hdr_enabled, imx715->cur_mode->dol,
+				imx715_ft_read_reg, imx715);
+
+	if (!imx715_skip_standby_toggle(imx715)) {
+		/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+		ret = imx715_write_reg(imx715, IMX715_REG_MODE_SELECT, 1,
+				       IMX715_MODE_STANDBY);
+		if (ret) {
+			dev_err(imx715->dev, "Failed to set standby on stream stop: %d\n", ret);
+			return ret;
+		}
 	}
 
 	ret = imx715_write_reg(imx715, IMX715_REG_XMSTA, 1, 1);
@@ -2085,16 +2227,26 @@ static int imx715_set_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx715->dev);
-		if (ret < 0)
-			goto error_unlock;
+		if (!imx715->pm_ref_held) {
+			ret = pm_runtime_resume_and_get(imx715->dev);
+			if (ret < 0)
+				goto error_unlock;
+			imx715->pm_ref_held = true;
+		}
 
 		ret = imx715_start_streaming(imx715);
 		if (ret)
 			goto error_power_off;
 	} else {
 		imx715_stop_streaming(imx715);
-		pm_runtime_put(imx715->dev);
+		if (imx715->fast_toggle_state == FAST_TOGGLE_NONE && imx715->pm_ref_held) {
+			pm_runtime_put(imx715->dev);
+			imx715->pm_ref_held = false;
+			/* pm_runtime_put triggers XCLR reset -- all sensor registers
+			 * revert to defaults. Clear prev_mode so the next stream
+			 * does a full register write instead of same_mode skip. */
+			imx715->prev_mode = NULL;
+		}
 	}
 
 	imx715->streaming = enable;
@@ -2104,7 +2256,15 @@ static int imx715_set_stream(struct v4l2_subdev *sd, int enable)
 	return 0;
 
 error_power_off:
-	pm_runtime_put(imx715->dev);
+	/* Drop the reference only if one is actually held, so the count stays
+	 * balanced however fast_toggle_state changed in between. prev_mode is
+	 * cleared either way - a failed start may have written part of the mode,
+	 * so the recorded mode no longer describes the hardware. */
+	if (imx715->pm_ref_held) {
+		pm_runtime_put(imx715->dev);
+		imx715->pm_ref_held = false;
+	}
+	imx715->prev_mode = NULL;
 error_unlock:
 	mutex_unlock(&imx715->mutex);
 
@@ -2383,30 +2543,20 @@ static int imx715_priming_apply(struct imx715 *imx715, int toggle_type)
 	return 0;
 }
 
-static int imx715_fast_toggle_set_state(struct imx715 *imx715, int toggle_state)
+static int imx715_ft_apply_priming(void *sensor)
 {
-	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
-		dev_err(imx715->dev, "Invalid fast toggle state %d\n", toggle_state);
-		return -EINVAL;
-	}
+	return imx715_priming_apply(sensor, FAST_TOGGLE_APPLY_PRIMING);
+}
 
-	imx715->fast_toggle_state = toggle_state;
-
-	switch (toggle_state) {
-	case FAST_TOGGLE_APPLY_PRIMING:
-		return imx715_priming_apply(imx715, toggle_state);
-	default:
-		// No action needed for other states
-		break;
-	}
-	
-	return 0;
+static int imx715_fast_toggle_set_state(struct imx715 *imx715, struct fast_toggle_data *toggle_data)
+{
+	return hailo_ft_set_state(imx715->dev, toggle_data, &imx715->fast_toggle_state,
+				  &imx715->toggle_type, imx715_ft_apply_priming, imx715);
 }
 
 static long imx715_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx715 *imx715 = to_imx715(sd);
-	int toggle_state;
 	long ret;
 
 	mutex_lock(&imx715->mutex);
@@ -2416,8 +2566,7 @@ static long imx715_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = -EINVAL;
 			break;
 		}
-		toggle_state = *((int*)arg);
-		ret = imx715_fast_toggle_set_state(imx715, toggle_state);
+		ret = imx715_fast_toggle_set_state(imx715, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		ret = -ENOTTY;

@@ -1,17 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #ifndef HAILO15_SCMI_API_H
 #define HAILO15_SCMI_API_H
 
+#define HAILO_SOC_UNSPECIFIED 0
 #define HAILO_SOC_HAILO15 1
 #define HAILO_SOC_HAILO15L 2
 #define HAILO_SOC_HAILO12L 3
 
-#ifndef HAILO_SOC_TYPE
-#    error "HAILO_SOC_TYPE is not defined"
+#ifdef __DTS__
+#    ifndef HAILO_SOC_TYPE
+#        error "HAILO_SOC_TYPE is not defined"
+#    elif HAILO_SOC_TYPE == HAILO_SOC_UNSPECIFIED
+#        error "HAILO_SOC_TYPE must be a specific SoC"
+#    endif
+#elif !defined(HAILO_SOC_TYPE)
+#    define HAILO_SOC_TYPE HAILO_SOC_UNSPECIFIED
 #endif
 
 /* Hailo product ID */
@@ -128,7 +135,7 @@
 #    define HAILO15_SCMI_CLOCK_IDX_I2S1_CONTROLLER_MODE_MUX 29
 #    define HAILO15_SCMI_CLOCK_IDX_I2S0_BCLK_OUT_PAD 30
 #    define HAILO15_SCMI_CLOCK_IDX_I2S1_BCLK_OUT_PAD 31
-#else
+#elif HAILO_SOC_TYPE != HAILO_SOC_UNSPECIFIED
 #    error "Unsupported HAILO_SOC_TYPE"
 #endif /* HAILO_SOC_TYPE */
 
@@ -161,7 +168,7 @@
 #    define HAILO15_SCMI_RESET_IDX_PCIE 9
 #    define HAILO15_SCMI_RESET_IDX_USB_APB 10
 #    define HAILO15_SCMI_RESET_IDX_USB 11
-#else
+#elif HAILO_SOC_TYPE != HAILO_SOC_UNSPECIFIED
 #    error "Unsupported HAILO_SOC_TYPE"
 #endif /* HAILO_SOC_TYPE */
 
@@ -193,7 +200,7 @@
 #    define HAILO15_SCMI_POWER_DOMAIN_IDX_USB 1
 #    define HAILO15_SCMI_POWER_DOMAIN_IDX_SYSTOP 2
 #    define HAILO15_SCMI_POWER_DOMAIN_COUNT 3
-#else
+#elif HAILO_SOC_TYPE != HAILO_SOC_UNSPECIFIED
 #    error "Unsupported HAILO_SOC_TYPE"
 #endif /* HAILO_SOC_TYPE */
 
@@ -205,7 +212,7 @@
 #    define HAILO15_SCMI_DVFS_DOMAIN_COUNT 3
 #elif HAILO_SOC_TYPE == HAILO_SOC_HAILO12L
 #    define HAILO15_SCMI_DVFS_DOMAIN_COUNT 2
-#else
+#elif HAILO_SOC_TYPE != HAILO_SOC_UNSPECIFIED
 #    error "Unsupported HAILO_SOC_TYPE"
 #endif /* HAILO_SOC_TYPE */
 
@@ -219,7 +226,7 @@
 
 #elif (HAILO_SOC_TYPE == HAILO_SOC_HAILO15)
 /* Not required */
-#else
+#elif HAILO_SOC_TYPE != HAILO_SOC_UNSPECIFIED
 #    error "Unsupported HAILO_SOC_TYPE"
 #endif /* HAILO_SOC_TYPE */
 

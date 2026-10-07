@@ -3,7 +3,7 @@
  * XRP: Linux device driver for Xtensa Remote Processing
  *
  * Copyright (c) 2015 - 2017 Cadence Design Systems, Inc.
- * Copyright (c) 2023 Hailo Technologies Ltd. All rights reserved.
+ * Copyright (c) 2023 - 2026 Hailo Technologies Ltd. All rights reserved.
  */
 
 #include "xrp_share.h"
@@ -175,14 +175,24 @@ static long xvp_copy_virt_to_phys(
         if (phys < allocation->start)
             phys += align;
 
-        if (flags & XRP_FLAG_READ) {
-            if (xrp_copy_user_to_phys(xvp,
-                          vaddr, size, phys,
-                          flags)) {
-                xrp_allocation_put(allocation);
-                xrp_unlock_shared_allocations();
-                return -EFAULT;
-            }
+        /*
+         * The shadow is carved out of the shared CMA pool, which the
+         * allocator does not zero. Seed it with the caller's data for
+         * every access mode: the DSP may write only part of the buffer
+         * while the whole shadow is copied back on completion, so any
+         * byte it leaves untouched would return pool residue to
+         * userspace.
+         *
+         * XRP_FLAG_READ in the sync direction forces a cache clean
+         * instead of the invalidate DMA_FROM_DEVICE would perform, so
+         * the seeded bytes reach memory before the DSP runs.
+         */
+        rc = xrp_copy_user_to_phys(xvp, vaddr, size, phys,
+                       flags | XRP_FLAG_READ);
+        if (rc < 0) {
+            xrp_allocation_put(allocation);
+            xrp_unlock_shared_allocations();
+            return rc;
         }
         shared_allocation = xrp_add_shared_allocation(flags, (void *)vaddr,
             size, allocation);
@@ -744,6 +754,7 @@ long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_
     struct dma_buf_attachment *attach = NULL;
     struct sg_table *sgt = NULL;
     struct scatterlist *sg = NULL;
+    enum dma_data_direction direction = xrp_dma_direction(flags);
     int i;
 
     dev_dbg(xvp->dev, "%s: fd = %d, size = %lu, flags = %d\n", __func__, fd, size, flags);
@@ -762,7 +773,7 @@ long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_
         goto l_buf_get;
     }
 
-    sgt = dma_buf_map_attachment(attach, xrp_dma_direction(flags));
+    sgt = dma_buf_map_attachment(attach, direction);
     if (IS_ERR(sgt)) {
         dev_err(xvp->dev, "%s: dma_buf_map_attachment failed, err=%ld\n", __func__, PTR_ERR(sgt));
         ret = -EINVAL;
@@ -797,11 +808,12 @@ long xrp_share_dmabuf(struct file *filp, int fd, unsigned long size, enum ioctl_
     mapping->dmabuf.attachment = attach;
     mapping->dmabuf.dmabuf = dmabuf;
     mapping->dmabuf.sgt = sgt;
+    mapping->dmabuf.direction = direction;
 
     goto l_exit;
 
 l_buf_map:
-    dma_buf_unmap_attachment(attach, sgt, xrp_dma_direction(flags));
+    dma_buf_unmap_attachment(attach, sgt, direction);
 l_buf_attach:
     dma_buf_detach(dmabuf, attach);
 l_buf_get:
@@ -864,14 +876,11 @@ static long xrp_unshare_dmabuf(struct xvp *xvp, struct xrp_mapping *mapping, enu
     struct dma_buf *dmabuf = mapping->dmabuf.dmabuf;
     struct dma_buf_attachment *attach = mapping->dmabuf.attachment;
     struct sg_table *sgt = mapping->dmabuf.sgt;
-    int direction = xrp_dma_direction(flags);
+    enum dma_data_direction direction = mapping->dmabuf.direction;
 
-    dev_dbg(xvp->dev, "%s: dmabuf = %p, attachment = %p, sgt = %p, flags = %d\n", __func__, dmabuf, attach, sgt, flags);
-    
-    if (direction == DMA_NONE) {
-        // DMA_NONE is illegal direction for dma_buf_unmap_attachment
-        direction = DMA_TO_DEVICE;
-    }
+    dev_dbg(xvp->dev, "%s: dmabuf = %p, attachment = %p, sgt = %p, flags = %d, direction = %d\n", __func__, dmabuf,
+        attach, sgt, flags, direction);
+
     dma_buf_unmap_attachment(attach, sgt, direction);
     dma_buf_detach(dmabuf, attach);
     dma_buf_put(dmabuf);

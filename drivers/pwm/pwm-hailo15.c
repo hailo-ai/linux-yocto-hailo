@@ -37,6 +37,11 @@
 #define PWM_CONFIG__PWMX_COUNTER__FINISH (13)
 #define PWM_CONFIG__PWMX_COUNTER__SHIFT (4)
 #define PWM_CONFIG__SETTINGS__UPDATE (0x20)
+#define PWM_CONFIG__PWM_CH_DIV_BASE (0x44)
+
+#define PWM_CH_DIV_OFFSET(ch) \
+    (((ch) == 0) ? PWM_CONFIG__PWM_CLOCK__DIV_FACTOR \
+                 : PWM_CONFIG__PWM_CH_DIV_BASE + ((ch) - 1) * 4)
 
 #define PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel)                                \
 	(PWM_CONFIG__PWM0_COUNTER +                                            \
@@ -63,6 +68,7 @@ struct hailo15_pwm_chip {
 	struct pwm_chip chip;
 	struct clk *clk;
 	void __iomem *base;
+	bool per_channel_divider;
 	spinlock_t lock;
 	uint32_t channels[PWM_HAILO15__MAX_NPWM_CHANNELS];
 	uint8_t mask_enable_channels;
@@ -103,6 +109,7 @@ static int hailo15_pwm_config(struct pwm_chip *chip, unsigned int pwm_channel,
 	 */
 	struct hailo15_pwm_chip *hpc = to_hailo15_pwm_chip(chip);
 	uint32_t finish_cnt = 0, start_cnt = 1, enable, data_reg;
+	uint32_t div_offset;
 	uint64_t clk_rate_pre, clk_div;
 
 	clk_rate_pre = clk_get_rate(hpc->clk);
@@ -126,7 +133,10 @@ static int hailo15_pwm_config(struct pwm_chip *chip, unsigned int pwm_channel,
 		finish_cnt++;
 	}
 
-	writel(clk_div, hpc->base + PWM_CONFIG__PWM_CLOCK__DIV_FACTOR);
+	div_offset = hpc->per_channel_divider ?
+		     PWM_CH_DIV_OFFSET(pwm_channel) :
+		     PWM_CONFIG__PWM_CLOCK__DIV_FACTOR;
+	writel((clk_div > 0) ? (clk_div - 1) : 0, hpc->base + div_offset);
 
 	data_reg = readl(hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
 
@@ -136,6 +146,7 @@ static int hailo15_pwm_config(struct pwm_chip *chip, unsigned int pwm_channel,
 		   (start_cnt << PWM_CONFIG__PWMX_COUNTER__START) |
 		   (finish_cnt << PWM_CONFIG__PWMX_COUNTER__FINISH);
 	writel(data_reg, hpc->base + PWM_CHANNEL_ADDRESS_OFFSET(pwm_channel));
+	writel(1, hpc->base + PWM_CONFIG__SETTINGS__UPDATE);
 
 	hpc->pwm_module_period_ns = period_ns;
 
@@ -310,6 +321,8 @@ static int hailo15_pwm_probe(struct platform_device *pdev)
 	if (!hpc) {
 		return -ENOMEM;
 	}
+
+	hpc->per_channel_divider = of_machine_is_compatible("hailo,hailo15l");
 
 	hpc->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(hpc->base)) {

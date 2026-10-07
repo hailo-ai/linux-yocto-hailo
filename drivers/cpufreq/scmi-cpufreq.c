@@ -29,7 +29,7 @@ struct scmi_data {
 	struct notifier_block scmi_perf_limits_report_nb;
 	struct cpufreq_policy *policy;
 };
-struct scmi_device *scmi_dev;
+static struct scmi_device *scmi_dev;
 static struct scmi_protocol_handle *ph;
 static const struct scmi_perf_proto_ops *perf_ops;
 static const struct scmi_notify_ops *notify_ops;
@@ -345,10 +345,11 @@ static void scmi_cpufreq_register_em(struct cpufreq_policy *policy)
 				    power_scale_mw);
 }
 
-int	scmi_cpufreq_frequency_table_verify(struct cpufreq_policy_data *policy)
+static int scmi_cpufreq_frequency_table_verify(struct cpufreq_policy_data *policy)
 {
 	struct device *cpu_dev;
-	int domain_id, min, max;
+	int domain_id;
+	unsigned int min, max;
 
 	cpu_dev = get_cpu_device(policy->cpu);
 	if (!cpu_dev) {

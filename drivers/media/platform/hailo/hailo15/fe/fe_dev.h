@@ -376,10 +376,6 @@ struct vvcam_fe_dev {
 	 * Inc on MCM_RAW_RDMA_START kick, dec on MIV2_MCM_DMA_RAW_READY IRQ. */
 	atomic_t mcm_rdma_inflight;
 	wait_queue_head_t mcm_rdma_idle_wq;
-	/* wait_event_timeout value (ms) for the gate above. Derived at MCM
-	 * setup time from MCM_RETIMING + resolution + ISP wrapper clock so
-	 * it adapts to pipeline/fps changes. */
-	u32 mcm_rdma_timeout_ms;
 
 	/* Per-vdid injected-frame arrival time; set via record_injection_frame(). */
 	ktime_t mcm_in_last_frame_ktime[ISP_FE_VIRT_MAXCNT];

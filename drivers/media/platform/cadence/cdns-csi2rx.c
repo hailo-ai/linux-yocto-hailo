@@ -8,6 +8,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
@@ -44,6 +45,23 @@
 
 #define CSI2RX_ERROR_IRQ_OVERFLOW_ERROR_BIT(n) BIT((n) + 16)
 
+/* error_irqs bit decode - Cadence CSI2RX User Guide 9.2.9. */
+static const struct {
+	u32 bit;
+	const char *name;
+} csi2rx_error_bit_names[] = {
+	{ BIT(0),  "front_fifo_overflow (sys_clk too slow)" },
+	{ BIT(4),  "payload_crc" },
+	{ BIT(5),  "header_ecc_unrecoverable" },
+	{ BIT(6),  "header_ecc_corrected" },
+	{ BIT(7),  "data_id" },
+	{ BIT(8),  "invalid_access (host/APB bug)" },
+	{ BIT(9),  "sp_invalid_rcvd" },
+	{ BIT(10), "front_lp_no_payload" },
+	{ BIT(11), "prot_truncated_packet" },
+	{ BIT(12), "front_trunc_hdr" },
+};
+
 #define CSI2RX_DPHY_LANE_CONTROL_REG_OFFSET 0x40
 #define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_RESET 0x1f
 #define CSI2RX_DPHY_LANE_CONTROL_REG_LANES_ENABLE 0x1f01f
@@ -57,8 +75,12 @@
 
 #define CSI2RX_STREAM_STATUS_REG(n) (CSI2RX_STREAM_BASE(n) + 0x004)
 #define CSI2RX_STREAM_STATUS_RUNNING BIT(31)
-#define CSI2RX_STREAM_STATUS_MAX_RETRIES 50 // 1 sec = MAX_RETRIES * SLEEP_MSECS
-#define CSI2RX_STREAM_STATUS_SLEEP_MSECS 20
+/*
+ * A stop lands on the next frame boundary. Long-exposure modes run at a
+ * few fps, so keep the 1 s bound; only the poll interval is fine-grained.
+ */
+#define CSI2RX_STREAM_STOP_TIMEOUT_US USEC_PER_SEC
+#define CSI2RX_STREAM_STOP_POLL_US 200
 
 #define CSI2RX_STREAM_DATA_CFG_REG(n) (CSI2RX_STREAM_BASE(n) + 0x008)
 #define CSI2RX_STREAM_DATA_CFG_EN_VC_SELECT BIT(31)
@@ -178,9 +200,30 @@ struct csi2rx_priv {
 	enum csi2rx_mode priming_mode; // next mode to be applied on fast toggle
 	bool is_fast_toggle_in_progress;
 	enum fast_toggle_state toggle_state;
+	enum fast_toggle_type toggle_type;
+	/* receiver and sensor kept running, outputs stopped, no consumer */
+	bool held_for_toggle;
+	/* the toggling path was the only user of this receiver at TEARDOWN */
+	bool toggle_sole_user;
     int irq;
 	bool pm_enabled;
 };
+
+/*
+ * Skip the receiver DPHY re-init while the sensor keeps its clock lane live -
+ * the transitions on which the sensor also skips STANDBY. Resetting the DPHY
+ * under a live sensor TX corrupts it.
+ */
+static inline bool csi2rx_skip_dphy_reinit_toggle(struct csi2rx_priv *csi2rx)
+{
+	return csi2rx->is_fast_toggle_in_progress &&
+	       (csi2rx->toggle_type == TOGGLE_PLUTO_SDR_PREISP ||
+		csi2rx->toggle_type == TOGGLE_PLUTO_PREISP_SDR ||
+		csi2rx->toggle_type == TOGGLE_PLUTO_SDR_HDR ||
+		csi2rx->toggle_type == TOGGLE_PLUTO_HDR_SDR ||
+		csi2rx->toggle_type == TOGGLE_PLUTO_PREISP_HDR ||
+		csi2rx->toggle_type == TOGGLE_PLUTO_HDR_PREISP);
+}
 
 static const struct csi2rx_fmt csi2rx_formats[] = {
 	{
@@ -222,6 +265,12 @@ static irqreturn_t csi2rx_error_irq_handler(int irq, void *data)
 
     dev_err_ratelimited(csi2rx->dev,
         "CSI2RX error IRQ #%d. error_irqs: 0x%08X\n", irq, errors);
+
+    for (i = 0; i < ARRAY_SIZE(csi2rx_error_bit_names); i++) {
+        if (errors & csi2rx_error_bit_names[i].bit)
+            dev_err_ratelimited(csi2rx->dev, "  - %s\n",
+                                csi2rx_error_bit_names[i].name);
+    }
 
     for (i = 0; i < csi2rx->max_streams; i++) {
         if (errors & CSI2RX_ERROR_IRQ_OVERFLOW_ERROR_BIT(i)) {
@@ -272,6 +321,31 @@ v4l2_subdev_to_csi2rx(struct v4l2_subdev *subdev)
 	return container_of(subdev, struct csi2rx_priv, subdev);
 }
 
+/* Toggles that only move the stream to another consumer. */
+#define CSI2RX_KEEP_SOURCE_TOGGLES (BIT(TOGGLE_PLUTO_SDR_PREISP) | \
+				    BIT(TOGGLE_PLUTO_PREISP_SDR) | \
+				    BIT(TOGGLE_MERCURY_SDR_PREISP) | \
+				    BIT(TOGGLE_MERCURY_PREISP_SDR))
+
+/*
+ * Inside such a toggle the sensor readout is unchanged, so the sensor, D-PHY
+ * and protocol layer stay up and only the stream outputs are cycled around
+ * the pixel-mux redirect. PRIMING is excluded: streaming continues there and
+ * the type is not known yet. So is a receiver shared with another path: the
+ * hold expects the toggle's own target to resume, so it falls back to a
+ * full stop and start.
+ */
+static inline bool csi2rx_should_hold_for_toggle(struct csi2rx_priv *csi2rx)
+{
+	return csi2rx->toggle_sole_user &&
+	       csi2rx->toggle_state != FAST_TOGGLE_NONE &&
+	       csi2rx->toggle_state != FAST_TOGGLE_PRIMING &&
+	       csi2rx->toggle_type < FAST_TOGGLE_TYPE_MAX &&
+	       (CSI2RX_KEEP_SOURCE_TOGGLES & BIT(csi2rx->toggle_type));
+}
+
+static void csi2rx_stop(struct csi2rx_priv *csi2rx);
+
 static int csi2rx_fast_toggle_set_status(struct v4l2_subdev *sd, struct fast_toggle_data *toggle_data)
 {
 	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(sd);
@@ -282,8 +356,14 @@ static int csi2rx_fast_toggle_set_status(struct v4l2_subdev *sd, struct fast_tog
 	}
 
 	csi2rx->toggle_state = toggle_data->state;
+	csi2rx->toggle_type = toggle_data->type;
 
 	switch (toggle_data->state) {
+	case FAST_TOGGLE_TEARDOWN:
+		mutex_lock(&csi2rx->lock);
+		csi2rx->toggle_sole_user = csi2rx->count == 1;
+		mutex_unlock(&csi2rx->lock);
+		break;
 	case FAST_TOGGLE_APPLY_PRIMING:
 		// Apply the priming mode that was set before the fast toggle
 		csi2rx->is_fast_toggle_in_progress = true;
@@ -291,6 +371,15 @@ static int csi2rx_fast_toggle_set_status(struct v4l2_subdev *sd, struct fast_tog
 		break;
 	case FAST_TOGGLE_NONE:
 		csi2rx->is_fast_toggle_in_progress = false;
+		mutex_lock(&csi2rx->lock);
+		/*
+		 * Toggle finished with the sensor held and no path using it:
+		 * stop.
+		 */
+		if (csi2rx->held_for_toggle && !csi2rx->count)
+			csi2rx_stop(csi2rx);
+		csi2rx->toggle_sole_user = false;
+		mutex_unlock(&csi2rx->lock);
 		break;
 	default:
 		// no special operation needed for other states
@@ -383,14 +472,118 @@ static void csi2rx_reset(struct csi2rx_priv *csi2rx)
 	writel(0, csi2rx->base + CSI2RX_SOFT_RESET_REG);
 }
 
+/*
+ * Program and start one stream output. The D-PHY and the sensor must
+ * already be running.
+ */
+static int csi2rx_stream_start(struct csi2rx_priv *csi2rx, unsigned int i)
+{
+	struct v4l2_mbus_framefmt *mfmt = &csi2rx->pad_fmts[i];
+	const struct csi2rx_fmt *fmt = csi2rx_get_fmt_by_code(mfmt->code);
+	u32 csi2rx_stream_cfg_flags;
+	u32 csi2rx_stream_cfg_fifo_fill_level;
+	u32 reg;
+
+	if (!fmt) {
+		dev_err(csi2rx->dev, "fail to get fmt for stream %d\n", i);
+		return -EINVAL;
+	}
+
+	writel(CSI2RX_STREAM_CTRL_SOFT_RESET,
+	       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+
+	csi2rx_stream_cfg_flags = CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF;
+	csi2rx_stream_cfg_flags |= fmt->bpp == 2 ? CSI2RX_STREAM_CFG_2_PPC : 0;
+
+	if (csi2rx->cur_mode == CSI2RX_MODE_HDR_INTERNAL_FIFO && mfmt->code == MEDIA_BUS_FMT_SRGGB12_1X32) {
+		// TODO MSW-4940: support rggb10: generalize csi2rx_stream_cfg_fifo_fill_level calculation
+		/* Set the FIFO_FILL_LEVEL, which is used to hold data in the FIFO until this level is reached
+		before allow data to be pulled. This setting is only used when fifo_mode is set for Large Buffer operation */
+		csi2rx_stream_cfg_fifo_fill_level = (mfmt->width * 3 / 2) << 16;
+		pr_debug("%s - mode hdr set fill level to 0x%x\n",
+			 __func__, csi2rx_stream_cfg_fifo_fill_level);
+		csi2rx_stream_cfg_flags |= csi2rx_stream_cfg_fifo_fill_level;
+	}
+	writel(csi2rx_stream_cfg_flags,
+	       csi2rx->base + CSI2RX_STREAM_CFG_REG(i));
+
+	switch (mfmt->code) {
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		reg = CSI2RX_STREAM_DATA_CFG_DT0_YUV422_8b;
+		break;
+	default:
+		reg = CSI2RX_STREAM_DATA_CFG_DT0_RAW12;
+		break;
+	}
+	writel(CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE | reg,
+	       csi2rx->base + CSI2RX_STREAM_DATA_CFG_REG(i));
+
+	writel(CSI2RX_STREAM_CTRL_START,
+	       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+
+	return 0;
+}
+
+static int csi2rx_stream_stop(struct csi2rx_priv *csi2rx, unsigned int i)
+{
+	u32 ctrl, status;
+	int ret;
+
+	ctrl = readl(csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+	writel(ctrl | CSI2RX_STREAM_CTRL_STOP,
+	       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+
+	ret = readl_poll_timeout(csi2rx->base + CSI2RX_STREAM_STATUS_REG(i),
+				 status,
+				 !(status & CSI2RX_STREAM_STATUS_RUNNING),
+				 CSI2RX_STREAM_STOP_POLL_US,
+				 CSI2RX_STREAM_STOP_TIMEOUT_US);
+	if (ret)
+		dev_err(csi2rx->dev, "%s: stream %u did not stop\n", __func__, i);
+
+	return ret;
+}
+
+/*
+ * Stop only the stream outputs; sensor and receiver keep running for the
+ * next path. If an output will not stop, do the full stop instead.
+ */
+static void csi2rx_hold_for_toggle(struct csi2rx_priv *csi2rx)
+{
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < csi2rx->max_streams; i++)
+		ret |= csi2rx_stream_stop(csi2rx, i);
+	if (ret) {
+		csi2rx_stop(csi2rx);
+		return;
+	}
+	csi2rx->held_for_toggle = true;
+	dev_dbg(csi2rx->dev, "%s: outputs stopped, source kept\n", __func__);
+}
+
+static int csi2rx_resume_from_toggle(struct csi2rx_priv *csi2rx)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < csi2rx->max_streams; i++) {
+		ret = csi2rx_stream_start(csi2rx, i);
+		if (ret)
+			return ret;
+	}
+	csi2rx->held_for_toggle = false;
+	dev_dbg(csi2rx->dev, "%s: outputs restarted on the kept source\n", __func__);
+	return 0;
+}
+
 static int csi2rx_start(struct csi2rx_priv *csi2rx)
 {
 	unsigned int i;
 	unsigned long lanes_used = 0;
 	u32 reg;
 	int ret;
-	u32 csi2rx_stream_cfg_flags = 0;
-	u32 csi2rx_stream_cfg_fifo_fill_level = 0;
 
 	// see if the mode changed before the stream
 	ret = __v4l2_ctrl_handler_setup(csi2rx->subdev.ctrl_handler);
@@ -410,9 +603,11 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 	enable_irq(csi2rx->irq);
 	csi2rx_reset(csi2rx);
 
-	ret = cdns_dphy_rx_init(csi2rx);
-	if (ret)
-		goto err_disable_pclk;
+	if (!csi2rx_skip_dphy_reinit_toggle(csi2rx)) {
+		ret = cdns_dphy_rx_init(csi2rx);
+		if (ret)
+			goto err_disable_pclk;
+	}
 
 	reg = csi2rx->num_lanes << 8;
 	for (i = 0; i < csi2rx->num_lanes; i++) {
@@ -439,6 +634,9 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 	if (ret)
 		goto err_disable_pclk;
 
+	writel(CSI2RX_ERROR_IRQS_MASK,
+	       csi2rx->base + CSI2RX_ERROR_IRQS_MASK_CFG_REG);
+
 	/*
 	 * Create a static mapping between the CSI virtual channels
 	 * and the output stream.
@@ -450,55 +648,15 @@ static int csi2rx_start(struct csi2rx_priv *csi2rx)
 	 * hence the reference counting.
 	 */
 	for (i = 0; i < csi2rx->max_streams; i++) {
-		struct v4l2_mbus_framefmt *mfmt;
-		const struct csi2rx_fmt *fmt;
 		ret = clk_prepare_enable(csi2rx->pixel_clk[i]);
 		if (ret) {
 			dev_err(csi2rx->dev, "fail to enable pixel clock for stream %d, ret: %d\n", i, ret);
 			goto err_disable_pixclk;
 		}
 
-		mfmt = &csi2rx->pad_fmts[i];
-		fmt = csi2rx_get_fmt_by_code(mfmt->code);
-		if (!fmt) {
-			dev_err(csi2rx->dev, "fail to get fmt for stream %d\n", i);
-			ret = -EINVAL;
+		ret = csi2rx_stream_start(csi2rx, i);
+		if (ret)
 			goto err_disable_pixclk;
-		}
-
-		writel(CSI2RX_STREAM_CTRL_SOFT_RESET,
-		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
-
-		csi2rx_stream_cfg_flags = CSI2RX_STREAM_CFG_FIFO_MODE_LARGE_BUF;
-		csi2rx_stream_cfg_flags |= fmt->bpp == 2 ? CSI2RX_STREAM_CFG_2_PPC : 0;
-
-		if (csi2rx->cur_mode == CSI2RX_MODE_HDR_INTERNAL_FIFO && mfmt->code == MEDIA_BUS_FMT_SRGGB12_1X32) {
-			// TODO MSW-4940: support rggb10: generalize csi2rx_stream_cfg_fifo_fill_level calculation
-			/* Set the FIFO_FILL_LEVEL, which is used to hold data in the FIFO until this level is reached
-			before allow data to be pulled. This setting is only used when fifo_mode is set for Large Buffer operation */
-			csi2rx_stream_cfg_fifo_fill_level = (mfmt->width * 3 / 2) << 16;
-			pr_debug("%s - mode hdr set fill level to 0x%x\n", 
-			__func__, csi2rx_stream_cfg_fifo_fill_level);
-			csi2rx_stream_cfg_flags |= csi2rx_stream_cfg_fifo_fill_level;
-		}
-		writel(csi2rx_stream_cfg_flags,
-				csi2rx->base + CSI2RX_STREAM_CFG_REG(i));
-
-		switch (mfmt->code) {
-		case MEDIA_BUS_FMT_YVYU8_2X8:
-			reg = CSI2RX_STREAM_DATA_CFG_DT0_YUV422_8b;
-			break;
-		default:
-			reg = CSI2RX_STREAM_DATA_CFG_DT0_RAW12;
-			break;
-		}
-		writel(CSI2RX_STREAM_DATA_CFG_DT0_PROCESS_ENABLE | reg,
-		       csi2rx->base + CSI2RX_STREAM_DATA_CFG_REG(i));
-
-		writel(CSI2RX_ERROR_IRQS_MASK, csi2rx->base + CSI2RX_ERROR_IRQS_MASK_CFG_REG);
-
-		writel(CSI2RX_STREAM_CTRL_START,
-		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
 	}
 
 	ret = clk_prepare_enable(csi2rx->sys_clk);
@@ -522,32 +680,11 @@ err_disable_pclk:
 static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 {
 	unsigned int i;
-	unsigned int status_reg_val;
-	unsigned int ctrl_reg_val;
-	int retry;
 
 	clk_disable_unprepare(csi2rx->sys_clk);
 
 	for (i = 0; i < csi2rx->max_streams; i++) {
-		ctrl_reg_val = readl(csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
-		writel(ctrl_reg_val | CSI2RX_STREAM_CTRL_STOP,
-		       csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
-
-		retry = 0;
-		status_reg_val =
-			readl(csi2rx->base + CSI2RX_STREAM_STATUS_REG(i));
-		while ((status_reg_val & CSI2RX_STREAM_STATUS_RUNNING) > 0 &&
-		       retry++ < CSI2RX_STREAM_STATUS_MAX_RETRIES) {
-			msleep(CSI2RX_STREAM_STATUS_SLEEP_MSECS);
-			status_reg_val = readl(csi2rx->base +
-					       CSI2RX_STREAM_STATUS_REG(i));
-		}
-
-		if (retry > CSI2RX_STREAM_STATUS_MAX_RETRIES) {
-			dev_err(csi2rx->dev,
-				"Stream stop exceeded number of retries\n");
-		}
-
+		csi2rx_stream_stop(csi2rx, i);
 		clk_disable_unprepare(csi2rx->pixel_clk[i]);
 	}
 	
@@ -560,6 +697,7 @@ static void csi2rx_stop(struct csi2rx_priv *csi2rx)
 	}
 	disable_irq(csi2rx->irq);
 	clk_disable_unprepare(csi2rx->p_clk);
+	csi2rx->held_for_toggle = false;
 }
 
 static int csi2rx_s_stream(struct v4l2_subdev *subdev, int enable)
@@ -575,7 +713,14 @@ static int csi2rx_s_stream(struct v4l2_subdev *subdev, int enable)
 		 * enable the whole controller.
 		 */
 		if (!csi2rx->count) {
-			ret = csi2rx_start(csi2rx);
+			/*
+			 * Sensor still running from the toggle: restart only
+			 * the outputs.
+			 */
+			if (csi2rx->held_for_toggle)
+				ret = csi2rx_resume_from_toggle(csi2rx);
+			else
+				ret = csi2rx_start(csi2rx);
 			if (ret)
 				goto out;
 		}
@@ -591,8 +736,16 @@ static int csi2rx_s_stream(struct v4l2_subdev *subdev, int enable)
 		/*
 		 * Let the last user turn off the lights.
 		 */
-		if (!csi2rx->count)
-			csi2rx_stop(csi2rx);
+		if (!csi2rx->count) {
+			/*
+			 * Same-readout toggle: keep the sensor running, stop
+			 * only the outputs.
+			 */
+			if (csi2rx_should_hold_for_toggle(csi2rx))
+				csi2rx_hold_for_toggle(csi2rx);
+			else
+				csi2rx_stop(csi2rx);
+		}
 	}
 out:
 	mutex_unlock(&csi2rx->lock);
@@ -813,12 +966,23 @@ static int csi2rx_parse_dt(struct csi2rx_priv *csi2rx)
 	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
 	struct v4l2_async_subdev *asd;
 	struct fwnode_handle *fwh;
-	struct device_node *ep;
+	struct device_node *ep, *sensor;
 	int ret;
 
 	ep = of_graph_get_endpoint_by_regs(csi2rx->dev->of_node, 0, 0);
 	if (!ep)
 		return -EINVAL;
+
+	/*
+	 * An empty CSI port is a supported configuration: the sensor node
+	 * stays disabled unless a per-sensor DT overlay enabled it.
+	 */
+	sensor = of_graph_get_remote_port_parent(ep);
+	if (!sensor || !of_device_is_available(sensor))
+		dev_info(csi2rx->dev,
+			 "no enabled sensor on this CSI port (remote node %s); if a camera is fitted, no sensor DT overlay was applied\n",
+			 sensor ? "is disabled" : "is missing");
+	of_node_put(sensor);
 
 	fwh = of_fwnode_handle(ep);
 	ret = v4l2_fwnode_endpoint_parse(fwh, &v4l2_ep);

@@ -128,6 +128,22 @@
 #define IMX662_REG_CHIP_ID_1 0x3cb6
 #define IMX662_REG_CHIP_ID_2 0x3cc4
 
+/* Mode-control registers used by SDR<->2DOL fast-toggle deltas */
+#define IMX662_REG_INCK_SEL          0x3014
+#define IMX662_REG_DATARATE_SEL      0x3015
+#define IMX662_REG_WINMODE           0x3018
+#define IMX662_REG_WDMODE            0x301A   /* 0=SDR, 1=DOL 2-frame */
+#define IMX662_REG_ADDMODE           0x301B
+#define IMX662_REG_THIN_V_EN         0x301C   /* DOL subsampling enable */
+#define IMX662_REG_ADBIT             0x3022
+#define IMX662_REG_MDBIT             0x3023
+#define IMX662_REG_LANEMODE          0x3040
+#define IMX662_REG_XVS_DRV           0x30A6
+#define IMX662_REG_GAIN_PGC_FIDMD    0x3400   /* per-frame gain mode */
+#define IMX662_REG_TUNING_3444       0x3444
+#define IMX662_REG_TUNING_3460       0x3460
+#define IMX662_REG_TUNING_3492       0x3492
+
 /* Custom controls */
 #define IMX662_CID_BASE (V4L2_CID_USER_BASE + 0x2000)
 #define IMX662_CID_EXPOSURE_SHORT (IMX662_CID_BASE + 1)
@@ -270,10 +286,39 @@ struct imx662 {
 	int custom_rhs1_priming_val;
 	struct v4l2_subdev_format curr_fmt;
 	enum fast_toggle_state fast_toggle_state;
+	/*
+	 * Whether this driver currently holds a runtime-PM reference. The put is
+	 * skipped across a fast toggle so the sensor keeps its power - and with it
+	 * its register contents - between the stop and the restart. The matching
+	 * get must then be skipped too, so it is gated on this flag rather than on
+	 * fast_toggle_state: that state can be set while the sensor is stopped and
+	 * already suspended, and gating the get on it would leave the restart
+	 * programming an unpowered sensor.
+	 */
+	bool pm_ref_held;
+	enum fast_toggle_type toggle_type;
+	const struct imx662_mode *prev_mode; /* last successfully streamed mode, or NULL */
+	/* Per-regime (0=SDR, 1=HDR) last-committed LEF exposure in lines + analog gain,
+	 * restored on a fast-toggle delta switch (the delta table's default would
+	 * otherwise brighten the first frame). Exposure rather than SHR0: see
+	 * hailo_ft_cache_exposure(). */
+	u32 exp_cache[2];
+	u32 gain_cache[2];
 
 	/* Active MIPI data lane count parsed from DT endpoint (2 or 4) */
 	u32 lanes;
 };
+
+/*
+ * Skip the documented STANDBY entry/exit cycle (and its 24 ms regulator
+ * stabilization wait) - pause/resume via XMSTA only. Used when the
+ * mode-switch delta touches no S-type registers.
+ */
+static inline bool imx662_skip_standby_toggle(struct imx662 *imx662)
+{
+	return hailo_ft_skip_standby(imx662->fast_toggle_state, imx662->toggle_type,
+				     HAILO_FT_SKIP_PREISP | HAILO_FT_SKIP_2DOL);
+}
 
 /*
  * Xclk 37.125Mhz
@@ -281,13 +326,13 @@ struct imx662 {
  * 1920x1080 4-lane MIPI, 12-bit, SDR
  */
 static const struct imx662_reg imx662_linear_1920x1080_mipi_regs[] = {
-	{0x3014, 0x01}, /* INCK_SEL: 0x01 = 37.125 MHz */
-	{0x3015, 0x07}, /* DATARATE_SEL 594 Mbps */
-	{0x3018, 0x04}, /* WINMODE Crop mode */
-	{0x301b, 0x00}, /* ADDMODE non-binning */
-	{0x3022, 0x01}, /* ADBIT 12 bit */
-	{0x3023, 0x01}, /* MDBIT 12 bit*/
-	{0x3040, 0x03}, /* LANEMODE 4 lanes */
+	{IMX662_REG_INCK_SEL, 0x01}, /* INCK_SEL: 0x01 = 37.125 MHz */
+	{IMX662_REG_DATARATE_SEL, 0x07}, /* DATARATE_SEL 594 Mbps */
+	{IMX662_REG_WINMODE, 0x04}, /* WINMODE Crop mode */
+	{IMX662_REG_ADDMODE, 0x00}, /* ADDMODE non-binning */
+	{IMX662_REG_ADBIT, 0x01}, /* ADBIT 12 bit */
+	{IMX662_REG_MDBIT, 0x01}, /* MDBIT 12 bit*/
+	{IMX662_REG_LANEMODE, 0x03}, /* LANEMODE 4 lanes */
 
 	/* HMAX = 1980 (0x07BC) for 30fps */
 	{IMX662_REG_HMAX_LOW,  IMX662_TO_LOW_BYTE(IMX662_HMAX_DEFAULT)},
@@ -306,15 +351,15 @@ static const struct imx662_reg imx662_linear_1920x1080_mipi_regs[] = {
 	{PIX_VWIDTH_HIGH, IMX662_TO_MID_BYTE(1080)}, /* PIX_VWIDTH = 1080 */
 	{PIX_VWIDTH_LOW,  IMX662_TO_LOW_BYTE(1080)},
 
-	{0x3050, 0x04}, /* SHR0 Normal mode */
-	{0x30A6, 0x00}, /* XVS_DRV_XHS_DRV XVS outtput VHS output*/
-	{0x3070, 0x00}, /* GAIN 0 */
-	{0x3444, 0xAC}, /* Set to 0xAC */
+	{IMX662_SHR0_LOW, 0x04}, /* SHR0 Normal mode */
+	{IMX662_REG_XVS_DRV, 0x00}, /* XVS_DRV_XHS_DRV XVS outtput VHS output*/
+	{IMX662_GAIN_LOW, 0x00}, /* GAIN 0 */
+	{IMX662_REG_TUNING_3444, 0xAC}, /* Set to 0xAC */
 	{0x3A50, 0xFF}, /* Normal mode AD12bit */
 	{0x3A51, 0x03}, /* Normal mode AD12bit */
 	{0x3A52, 0x00}, /* AD12bit */
-	{0x3460, 0x21}, /* Normal mode (non HDR) */
-	{0x3492, 0x08}, /* Set to 0x08 */
+	{IMX662_REG_TUNING_3460, 0x21}, /* Normal mode (non HDR) */
+	{IMX662_REG_TUNING_3492, 0x08}, /* Set to 0x08 */
 	{0x3B00, 0x39}, /* Set to 0x39 */
 	{0x3B23, 0x2D}, /* Set to 0x2D */
 	{0x3B45, 0x04}, /* Set to 0x04 */
@@ -322,8 +367,8 @@ static const struct imx662_reg imx662_linear_1920x1080_mipi_regs[] = {
 	{0x3C0B, 0x1E}, /* Set to 0x1E */
 	{0x3C38, 0x21}, /* Set to 0x21 */
 	{0x3C44, 0x00}, /* Set to 0x00 */
-	{0x3CB6, 0xD8}, /* Set to 0xD8 */
-	{0x3CC4, 0xDA}, /* Set to 0xDA */
+	{IMX662_REG_CHIP_ID_1, 0xD8}, /* Set to 0xD8 */
+	{IMX662_REG_CHIP_ID_2, 0xDA}, /* Set to 0xDA */
 	{0x3E24, 0x79}, /* Set to 0x79 */
 	{0x3E2C, 0x15}, /* Set to 0x15 */
 	{0x3EDC, 0x2D}, /* Set to 0x2D */
@@ -408,15 +453,15 @@ static const struct imx662_reg imx662_linear_1920x1080_mipi_regs[] = {
  * 1920x1080 4-lane MIPI, 12-bit, DOL 2-frame HDR
  */
 static const struct imx662_reg imx662_2dol_1920x1080_30fps_regs[] = {
-	{0x3014, 0x01}, /* INCK_SEL: 0x01 = 37.125 MHz */
-	{0x3015, 0x07}, /* DATARATE_SEL 594 Mbps */
-	{0x3018, 0x04}, /* WINMODE Crop mode */
-	{0x301A, 0x01}, /* WDMODE DOL 2-frame */
-	{0x301B, 0x00}, /* ADDMODE non-binning */
-	{0x301C, 0x01}, /* THIN_V_EN Enable (DOL subsampling) */
-	{0x3022, 0x01}, /* ADBIT 12 bit */
-	{0x3023, 0x01}, /* MDBIT 12 bit */
-	{0x3040, 0x03}, /* LANEMODE 4 lanes */
+	{IMX662_REG_INCK_SEL, 0x01}, /* INCK_SEL: 0x01 = 37.125 MHz */
+	{IMX662_REG_DATARATE_SEL, 0x07}, /* DATARATE_SEL 594 Mbps */
+	{IMX662_REG_WINMODE, 0x04}, /* WINMODE Crop mode */
+	{IMX662_REG_WDMODE, 0x01}, /* WDMODE DOL 2-frame */
+	{IMX662_REG_ADDMODE, 0x00}, /* ADDMODE non-binning */
+	{IMX662_REG_THIN_V_EN, 0x01}, /* THIN_V_EN Enable (DOL subsampling) */
+	{IMX662_REG_ADBIT, 0x01}, /* ADBIT 12 bit */
+	{IMX662_REG_MDBIT, 0x01}, /* MDBIT 12 bit */
+	{IMX662_REG_LANEMODE, 0x03}, /* LANEMODE 4 lanes */
 
 	/* HMAX = 990 (0x03DE) for 30fps DOL 2-frame */
 	{IMX662_REG_HMAX_LOW,  IMX662_TO_LOW_BYTE(IMX662_2DOL_HMAX_VALUE)},
@@ -443,17 +488,17 @@ static const struct imx662_reg imx662_2dol_1920x1080_30fps_regs[] = {
 	{IMX662_RHS1_MID,  0x00},
 	{IMX662_RHS1_HIGH, 0x00},
 
-	{0x3070, 0x00}, /* GAIN 0 */
-	{0x30A6, 0x00}, /* XVS_DRV_XHS_DRV Master mode */
-	{0x3400, 0x00}, /* GAIN_PGC_FIDMD per-frame gain enable */
+	{IMX662_GAIN_LOW, 0x00}, /* GAIN 0 */
+	{IMX662_REG_XVS_DRV, 0x00}, /* XVS_DRV_XHS_DRV Master mode */
+	{IMX662_REG_GAIN_PGC_FIDMD, 0x00}, /* GAIN_PGC_FIDMD per-frame gain enable */
 
 	/* Calibration registers - identical for all modes */
-	{0x3444, 0xAC}, /* Set to 0xAC */
+	{IMX662_REG_TUNING_3444, 0xAC}, /* Set to 0xAC */
 	{0x3A50, 0xFF}, /* Normal mode AD12bit */
 	{0x3A51, 0x03}, /* Normal mode AD12bit */
 	{0x3A52, 0x00}, /* AD12bit */
-	{0x3460, 0x21}, /* Normal mode (DOL HDR) */
-	{0x3492, 0x08}, /* Set to 0x08 */
+	{IMX662_REG_TUNING_3460, 0x21}, /* Normal mode (DOL HDR) */
+	{IMX662_REG_TUNING_3492, 0x08}, /* Set to 0x08 */
 	{0x3B00, 0x39}, /* Set to 0x39 */
 	{0x3B23, 0x2D}, /* Set to 0x2D */
 	{0x3B45, 0x04}, /* Set to 0x04 */
@@ -461,8 +506,8 @@ static const struct imx662_reg imx662_2dol_1920x1080_30fps_regs[] = {
 	{0x3C0B, 0x1E}, /* Set to 0x1E */
 	{0x3C38, 0x21}, /* Set to 0x21 */
 	{0x3C44, 0x00}, /* Set to 0x00 */
-	{0x3CB6, 0xD8}, /* Set to 0xD8 */
-	{0x3CC4, 0xDA}, /* Set to 0xDA */
+	{IMX662_REG_CHIP_ID_1, 0xD8}, /* Set to 0xD8 */
+	{IMX662_REG_CHIP_ID_2, 0xDA}, /* Set to 0xDA */
 	{0x3E24, 0x79}, /* Set to 0x79 */
 	{0x3E2C, 0x15}, /* Set to 0x15 */
 	{0x3EDC, 0x2D}, /* Set to 0x2D */
@@ -562,6 +607,10 @@ static const s64 link_freq[] = {
 	IMX662_LINK_FREQ_594M,
 };
 
+/* Modes sharing a reg_list must differ only in vblank/frame_interval: the delta lookup
+ * keys on the reg list. Safe - vblank lands as LPFR via the exposure s_ctrl after the
+ * delta, frame_interval has no register. Anything else would come from the reg list.
+ */
 static const struct imx662_mode supported_sdr_modes[] = {
 	/* 1920x1080 @ 30fps, 4 lane, 12-bit, SDR */
 	{
@@ -806,22 +855,116 @@ static int imx662_power_off(struct device *dev)
 	return 0;
 }
 
+/*
+ * Symmetric delta tables: list every control register that differs between
+ * the SDR (imx662_linear_1920x1080_mipi_regs) and 2DOL
+ * (imx662_2dol_1920x1080_30fps_regs) init tables, with the appropriate
+ * value for the target mode. Same register set in both directions.
+ * Identical registers (WINMODE, PIX_HST/HWIDTH/VST/VWIDTH, GAIN_LOW) and the
+ * 0x3A00+ analog tuning block are omitted.
+ */
+static const struct imx662_reg sdr_to_hdr2dol_delta[] = {
+	{ IMX662_REG_WDMODE,         0x01 },	/* DOL 2-frame */
+	{ IMX662_REG_THIN_V_EN,      0x01 },	/* DOL subsampling on */
+	{ IMX662_REG_HMAX_LOW,       IMX662_TO_LOW_BYTE(IMX662_2DOL_HMAX_VALUE) },
+	{ IMX662_REG_HMAX_HIGH,      IMX662_TO_MID_BYTE(IMX662_2DOL_HMAX_VALUE) },
+	{ IMX662_SHR0_LOW,           0xE8 },	/* SHR0 = 0x0003E8 (1000) */
+	{ IMX662_SHR0_MID,           0x03 },
+	{ IMX662_SHR0_HIGH,          0x00 },
+	{ IMX662_SHR1_LOW,           0x05 },	/* SHR1 = 5 */
+	{ IMX662_SHR1_MID,           0x00 },
+	{ IMX662_SHR1_HIGH,          0x00 },
+	/* SEF1 readout start. The HW default is 0x95, above the 0x7F the ISP can
+	 * buffer, so entering 2DOL by delta without this leaves the sensor reading
+	 * out at a timing the driver's own exposure limits do not match. */
+	{ IMX662_RHS1_LOW,           IMX662_2DOL_RHS1 },
+	{ IMX662_RHS1_MID,           0x00 },
+	{ IMX662_RHS1_HIGH,          0x00 },
+	{ IMX662_REG_GAIN_PGC_FIDMD, 0x00 },	/* per-frame gain mode */
+};
+
+static const struct imx662_reg hdr2dol_to_sdr_delta[] = {
+	{ IMX662_REG_WDMODE,         0x00 },	/* normal (SDR) */
+	{ IMX662_REG_THIN_V_EN,      0x00 },	/* DOL subsampling off */
+	{ IMX662_REG_HMAX_LOW,       IMX662_TO_LOW_BYTE(IMX662_HMAX_DEFAULT) },
+	{ IMX662_REG_HMAX_HIGH,      IMX662_TO_MID_BYTE(IMX662_HMAX_DEFAULT) },
+	{ IMX662_SHR0_LOW,           0x04 },	/* SHR0 = 0x000004 */
+	{ IMX662_SHR0_MID,           0x00 },	/* clear 2DOL leftover (was 0x03) */
+	{ IMX662_SHR0_HIGH,          0x00 },
+	{ IMX662_REG_GAIN_PGC_FIDMD, 0x01 },	/* restore SDR default */
+};
+
+static const struct imx662_reg_list sdr_to_hdr2dol_delta_list = {
+	.num_of_regs = ARRAY_SIZE(sdr_to_hdr2dol_delta),
+	.regs = sdr_to_hdr2dol_delta,
+};
+
+static const struct imx662_reg_list hdr2dol_to_sdr_delta_list = {
+	.num_of_regs = ARRAY_SIZE(hdr2dol_to_sdr_delta),
+	.regs = hdr2dol_to_sdr_delta,
+};
+
+/**
+ * imx662_get_mode_delta() - Check if a delta register table exists for this transition
+ * @from: previous mode (or NULL for first boot)
+ * @to: target mode
+ *
+ * Matched on the reg lists, so modes sharing one are indistinguishable here and must
+ * differ only in vblank/frame_interval. See supported_sdr_modes[].
+ *
+ * Return: pointer to delta reg list, or NULL if full reprogram is needed.
+ */
+static const struct hailo_ft_mode_delta imx662_ft_deltas[] = {
+	{ imx662_linear_1920x1080_mipi_regs, imx662_2dol_1920x1080_30fps_regs,
+	  &sdr_to_hdr2dol_delta_list },
+	{ imx662_2dol_1920x1080_30fps_regs, imx662_linear_1920x1080_mipi_regs,
+	  &hdr2dol_to_sdr_delta_list },
+};
+
+static const struct imx662_reg_list *imx662_get_mode_delta(
+	const struct imx662_mode *from, const struct imx662_mode *to)
+{
+	return hailo_ft_find_delta(imx662_ft_deltas, ARRAY_SIZE(imx662_ft_deltas),
+				   from ? from->reg_list.regs : NULL,
+				   to ? to->reg_list.regs : NULL);
+}
+
+HAILO_FT_DEFINE_REG_OPS(imx662);
+
+static const struct hailo_ft_exp_regs imx662_ft_exp_regs = {
+	.shutter = IMX662_SHR0_LOW,
+	.shutter_len = 3,
+	.again = IMX662_GAIN_LOW,
+	.again_len = 2,
+	.lpfr = IMX662_REG_LPFR,
+	.lpfr_len = 3,
+};
+
 static int imx662_start_streaming(struct imx662 *imx662)
 {
+	const struct imx662_reg_list *delta;
 	int ret;
+	bool same_mode = (imx662->prev_mode == imx662->cur_mode) &&
+			 (imx662->prev_mode != NULL);
+	const struct hailo_ft_mode_ops ft_ops = {
+		.dev = imx662->dev,
+		.sensor = imx662,
+		.write_regs = imx662_ft_write_regs,
+		.exp_ctrl = imx662->lef.exp_ctrl,
+		.again_ctrl = imx662->lef.again_ctrl,
+		.exp_cache = imx662->exp_cache,
+		.gain_cache = imx662->gain_cache,
+	};
 
-	/* Save all writable control values before handler setup may overwrite them */
-	struct hailo_ctrl_snapshot snap;
+	delta = imx662_get_mode_delta(imx662->prev_mode, imx662->cur_mode);
 
-	hailo_ctrl_snapshot_save(&imx662->ctrl_handler, &snap);
-
-	/* Write sensor mode registers */
-	ret = imx662_write_regs(imx662, imx662->cur_mode->reg_list.regs,
-				imx662->cur_mode->reg_list.num_of_regs);
-	if (ret) {
-		dev_err(imx662->dev, "Failed to write mode registers: %d\n", ret);
+	ret = hailo_ft_apply_mode(&ft_ops, same_mode, imx662->hdr_enabled,
+				  delta ? delta->regs : NULL,
+				  delta ? delta->num_of_regs : 0,
+				  imx662->cur_mode->reg_list.regs,
+				  imx662->cur_mode->reg_list.num_of_regs);
+	if (ret)
 		return ret;
-	}
 
 	/* Override LANEMODE if DT declared 2-lane (boards where the SoC only
 	 * routes 2 data lanes to the CSI bridge, e.g. H15L SBC CSI1). The
@@ -854,26 +997,20 @@ static int imx662_start_streaming(struct imx662 *imx662)
 		}
 	}
 
-	/* Setup handler: pushes all cur.val to hardware via s_ctrl callbacks */
-	ret = __v4l2_ctrl_handler_setup(&imx662->ctrl_handler);
-	if (ret) {
-		dev_err(imx662->dev, "Failed to apply v4l2 controls: %d\n", ret);
+	/* Common path: push all controls, with snapshot save/restore wrapping
+	 * the handler_setup to preserve values corrupted by side effects
+	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure).
+	 */
+	ret = hailo_ft_push_controls(imx662->dev, &imx662->ctrl_handler);
+	if (ret)
 		return ret;
+
+	if (!imx662_skip_standby_toggle(imx662)) {
+		ret = hailo_ft_cancel_standby(imx662->dev, IMX662_REG_STANDBY, IMX662_MODE_STREAMING,
+					      imx662_ft_write_reg, imx662);
+		if (ret)
+			return ret;
 	}
-
-	/* Restore any control values corrupted by handler_setup side effects
-	 * (e.g. VBLANK s_ctrl calling __v4l2_ctrl_modify_range on exposure) */
-	hailo_ctrl_snapshot_restore(&snap);
-
-	/* Standby cancel */
-	ret = imx662_write_reg(imx662, IMX662_REG_STANDBY, IMX662_REG_VALUE_08BIT, IMX662_MODE_STREAMING);
-	if (ret) {
-		dev_err(imx662->dev, "Failed to cancel standby on stream start: %d\n", ret);
-		return ret;
-	}
-
-	/* Wait 24ms for internal regulator stabilization */
-	usleep_range(24000, 25000);
 
 	/* Master mode start */
 	ret = imx662_write_reg(imx662, IMX662_REG_XMSTA, IMX662_REG_VALUE_08BIT, IMX662_MODE_STREAMING);
@@ -882,7 +1019,12 @@ static int imx662_start_streaming(struct imx662 *imx662)
 		return ret;
 	}
 
-	dev_info(imx662->dev, "imx662: stream started");
+	/* Track mode for next start - enables same-mode skip and delta */
+	imx662->prev_mode = imx662->cur_mode;
+
+	dev_info(imx662->dev, "imx662: stream started (%s%s)",
+		 imx662->cur_mode->dol > 1 ? "HDR" : "SDR",
+		 same_mode ? ", same-mode" : delta ? ", delta" : "");
 	return 0;
 }
 
@@ -890,11 +1032,18 @@ static int imx662_stop_streaming(struct imx662 *imx662)
 {
 	int ret;
 
-	/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
-	ret = imx662_write_reg(imx662, IMX662_REG_STANDBY, IMX662_REG_VALUE_08BIT, IMX662_MODE_STANDBY);
-	if (ret) {
-		dev_err(imx662->dev, "Failed to set standby on stream stop: %d\n", ret);
-		return ret;
+	hailo_ft_cache_exposure(imx662->dev, &imx662_ft_exp_regs,
+				imx662->exp_cache, imx662->gain_cache,
+				imx662->hdr_enabled, imx662->cur_mode->dol,
+				imx662_ft_read_reg, imx662);
+
+	if (!imx662_skip_standby_toggle(imx662)) {
+		/* STANDBY=1 then XMSTA=1 per datasheet stop sequence */
+		ret = imx662_write_reg(imx662, IMX662_REG_STANDBY, IMX662_REG_VALUE_08BIT, IMX662_MODE_STANDBY);
+		if (ret) {
+			dev_err(imx662->dev, "Failed to set standby on stream stop: %d\n", ret);
+			return ret;
+		}
 	}
 
 	ret = imx662_write_reg(imx662, IMX662_REG_XMSTA, IMX662_REG_VALUE_08BIT, IMX662_MODE_STANDBY);
@@ -918,22 +1067,45 @@ static int imx662_set_stream(struct v4l2_subdev *sd, int enable)
 		goto unlock_and_return;
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(&client->dev);
-		if (ret < 0)
-			goto unlock_and_return;
+		if (!imx662->pm_ref_held) {
+			ret = pm_runtime_resume_and_get(&client->dev);
+			if (ret < 0)
+				goto unlock_and_return;
+			imx662->pm_ref_held = true;
+		}
 
 		ret = imx662_start_streaming(imx662);
 		if (ret) {
-			pm_runtime_put(&client->dev);
+			/* Drop the reference only if one is actually held, so the
+			 * count stays balanced however fast_toggle_state changed in
+			 * between. prev_mode is cleared either way - a failed start
+			 * may have written part of the mode, so the recorded mode no
+			 * longer describes the hardware. */
+			if (imx662->pm_ref_held) {
+				pm_runtime_put(&client->dev);
+				imx662->pm_ref_held = false;
+			}
+			imx662->prev_mode = NULL;
 			goto unlock_and_return;
 		}
 	} else {
 		ret = imx662_stop_streaming(imx662);
 		if (ret) {
-			pm_runtime_put(&client->dev);
+			if (imx662->pm_ref_held) {
+				pm_runtime_put(&client->dev);
+				imx662->pm_ref_held = false;
+			}
+			imx662->prev_mode = NULL;
 			goto unlock_and_return;
 		}
-		pm_runtime_put(&client->dev);
+		if (imx662->fast_toggle_state == FAST_TOGGLE_NONE && imx662->pm_ref_held) {
+			pm_runtime_put(&client->dev);
+			imx662->pm_ref_held = false;
+			/* pm_runtime_put triggers XCLR reset - all sensor registers
+			 * revert to defaults. Clear prev_mode so the next stream
+			 * does a full register write instead of same_mode/delta skip. */
+			imx662->prev_mode = NULL;
+		}
 	}
 
 	imx662->streaming = enable;
@@ -1201,13 +1373,8 @@ static int imx662_update_exp_gain(struct imx662 *imx662, u32 exposure, u32 gain,
 			imx662->cur_mode->rhs1 + IMX662_2DOL_SHR0_RHS1_GAP :
 			IMX662_2DOL_SHR0_FSC_GAP;
 
-		/* If vblank is too small for the requested exposure, increase it */
-		if (exposure > imx662->cur_mode->dol * (imx662->vblank + imx662->cur_mode->height) - gap) {
-			imx662->vblank = exposure - imx662->cur_mode->dol * imx662->cur_mode->height + gap;
-			__v4l2_ctrl_s_ctrl(imx662->vblank_ctrl, imx662->vblank);
-		}
-
-		lpfr = imx662->vblank + imx662->cur_mode->height;
+		lpfr = hailo_ft_lpfr_for_exposure(imx662->vblank + imx662->cur_mode->height,
+						  exposure, gap, imx662->cur_mode->dol);
 		shutter = NON_NEGATIVE((int)imx662->cur_mode->dol * (int)lpfr - (int)exposure);
 		break;
 	case SEF1:
@@ -1377,12 +1544,22 @@ static int imx662_set_hdr_mode(struct imx662 *imx662, bool enable)
 				&supported_hdr_modes[0] :
 				&supported_sdr_modes[0]);
 
+		/* Keep curr_fmt in sync with cur_mode so an s_frame_interval that
+		 * lands between this call and userspace-side set_pad_format finds
+		 * a match in the new (hdr-or-sdr) supported_modes table. */
+		imx662->curr_fmt.format.code   = imx662->cur_mode->code;
+		imx662->curr_fmt.format.width  = imx662->cur_mode->width;
+		imx662->curr_fmt.format.height = imx662->cur_mode->height;
+
 		ret = imx662_update_exp_vblank_controls(imx662);
 		if (ret) {
 			dev_warn(imx662->dev, "Failed to update exp controls, reverting\n");
 
 			imx662->hdr_enabled = !imx662->hdr_enabled;
 			imx662_set_mode(imx662, prev_mode);
+			imx662->curr_fmt.format.code   = prev_mode->code;
+			imx662->curr_fmt.format.width  = prev_mode->width;
+			imx662->curr_fmt.format.height = prev_mode->height;
 
 			revert_ret = imx662_update_exp_vblank_controls(imx662);
 			if (revert_ret)
@@ -1737,30 +1914,20 @@ static int imx662_priming_apply(struct imx662 *imx662, int toggle_type)
 	return 0;
 }
 
-static int imx662_fast_toggle_set_state(struct imx662 *imx662, int toggle_state)
+static int imx662_ft_apply_priming(void *sensor)
 {
-	if (toggle_state < 0 || toggle_state >= FAST_TOGGLE_STATE_MAX) {
-		dev_err(imx662->dev, "Invalid fast toggle state %d\n", toggle_state);
-		return -EINVAL;
-	}
+	return imx662_priming_apply(sensor, FAST_TOGGLE_APPLY_PRIMING);
+}
 
-	imx662->fast_toggle_state = toggle_state;
-
-	switch (toggle_state) {
-	case FAST_TOGGLE_APPLY_PRIMING:
-		return imx662_priming_apply(imx662, toggle_state);
-	default:
-		/* No action needed for other states */
-		break;
-	}
-
-	return 0;
+static int imx662_fast_toggle_set_state(struct imx662 *imx662, struct fast_toggle_data *toggle_data)
+{
+	return hailo_ft_set_state(imx662->dev, toggle_data, &imx662->fast_toggle_state,
+				  &imx662->toggle_type, imx662_ft_apply_priming, imx662);
 }
 
 static long imx662_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx662 *imx662 = to_imx662(sd);
-	int toggle_state;
 	long ret;
 
 	mutex_lock(&imx662->mutex);
@@ -1770,8 +1937,7 @@ static long imx662_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			ret = -EINVAL;
 			break;
 		}
-		toggle_state = *((int *)arg);
-		ret = imx662_fast_toggle_set_state(imx662, toggle_state);
+		ret = imx662_fast_toggle_set_state(imx662, (struct fast_toggle_data *)arg);
 		break;
 	default:
 		ret = -ENOTTY;

@@ -26,6 +26,15 @@
 #include "cdnsp-gadget.h"
 #include "cdnsp-trace.h"
 
+/* Link-recovery loop pacing (cdnsp_link_recovery_work_handler). */
+#define CDNSP_LINK_RECOVERY_POLL_MS		1000
+#define CDNSP_LINK_RECOVERY_HALT_SETTLE_MS	100
+#define CDNSP_LINK_RECOVERY_RUN_RETRY_MS	1000
+#define CDNSP_LINK_RECOVERY_MAX_ATTEMPTS	300 /* x POLL_MS ~= 5 min */
+
+/* Boot watchdog: how long after gadget init to first check PORT_CONNECT. */
+#define CDNSP_BOOT_RECOVERY_DELAY_MS		1500
+
 unsigned int cdnsp_port_speed(unsigned int port_status)
 {
 	/*Detect gadget speed based on PORTSC register*/
@@ -691,6 +700,191 @@ static void cdnsp_warm_reset_work_handler(struct work_struct *work)
     kernel_restart(NULL);
 }
 
+/*
+ * Link recovery work handler — escapes eSS.Disabled by cycling the
+ * controller until the host responds. Runs from a workqueue (not in
+ * IRQ context) so msleep() is safe.
+ *
+ * Triggered from four call sites:
+ *   - cdnsp_handle_port_status (cdnsp-ring.c) on link state change to
+ *     XDEV_INACTIVE / XDEV_DISABLED
+ *   - cdnsp_handle_port_status on USB3 disconnect (CSC + !CONNECT)
+ *   - cdnsp_boot_recovery_work_handler (this file), the one-shot
+ *     boot watchdog that catches the case where the very first
+ *     Rx.Detect attempts failed before the host was ready
+ *
+ * Per USB 3.1 § 7.5.3.6 the LTSSM reaches eSS.Disabled after 8 failed
+ * Rx.Detect attempts (~80 ms). Per § 7.5.1.2 PLS register writes are
+ * ignored from Disabled — only a controller-level reset clears it.
+ * cdnsp_halt() + cdnsp_run() is that reset; it also resets the LTSSM
+ * 8-attempt counter so each cycle gets a fresh Rx.Detect window. The
+ * loop applies that reset on every poll iteration (~1 s cadence)
+ * until the host eventually responds, or until
+ * CDNSP_LINK_RECOVERY_MAX_ATTEMPTS (~5 min) is reached, at which
+ * point we escalate to a full device reboot via reboot_work.
+ */
+static int cdnsp_run(struct cdnsp_device *pdev, enum usb_device_speed speed);
+
+static void cdnsp_link_recovery_work_handler(struct work_struct *work)
+{
+	struct cdnsp_device *pdev = container_of(work, struct cdnsp_device,
+						 link_recovery_work);
+	enum usb_device_speed max_speed;
+	u32 portsc3;
+	int attempt, ret;
+
+	/*
+	 * Periodic halt+run to escape eSS.Disabled.
+	 *
+	 * The link reaches eSS.Disabled either via the SS.Inactive →
+	 * Recovery → Rx.Detect → Disabled path (host went away while
+	 * connected) or via 8 silent Rx.Detect failures on a fresh boot
+	 * before the host is ready. Once in Disabled (PLS=4), PLS writes
+	 * are ignored per USB 3.1 § 7.5.1.2 — cdnsp_set_link_state()
+	 * alone cannot exit it.
+	 *
+	 * A full halt+run cycle resets the controller and the LTSSM's
+	 * internal 8-attempt counter, giving us a fresh Rx.Detect window:
+	 *   cdnsp_halt()  — clears Run/Stop, resets internal state
+	 *   cdnsp_run()   — re-initializes controller, writes XDEV_RXDETECT
+	 *
+	 * Cycle on every poll iteration (~1 s cadence) until the host
+	 * eventually responds and PORT_CONNECT goes high. The halt+run
+	 * inside the loop is gated on PLS==Disabled && !PORT_CONNECT, so
+	 * a healthy link (CCS=1, PLS=U0) just falls through to the exit
+	 * check on the first iteration and the handler returns.
+	 *
+	 * If the host never returns within CDNSP_LINK_RECOVERY_MAX_ATTEMPTS
+	 * iterations (~5 min), give up retrying and schedule reboot_work
+	 * to do a full device restart as a last resort.
+	 */
+	attempt = 0;
+	do {
+		attempt++;
+
+		portsc3 = readl(&pdev->usb3_port.regs->portsc);
+
+		if ((portsc3 & PORT_PLS_MASK) == XDEV_DISABLED &&
+		    !(portsc3 & PORT_CONNECT)) {
+			dev_dbg(pdev->dev,
+				 "Link recovery [%d]: PLS=Disabled, halt+run cycle\n",
+				 attempt);
+
+			ret = cdnsp_halt(pdev);
+			if (ret)
+				dev_warn(pdev->dev,
+					 "Link recovery: halt failed: %d\n", ret);
+
+			msleep(CDNSP_LINK_RECOVERY_HALT_SETTLE_MS);
+
+			max_speed = pdev->gadget.max_speed;
+			if (pdev->gadget_driver)
+				max_speed = min(max_speed,
+						pdev->gadget_driver->max_speed);
+
+			ret = cdnsp_run(pdev, max_speed);
+			if (ret) {
+				dev_err(pdev->dev,
+					"Link recovery: run failed: %d\n", ret);
+				msleep(CDNSP_LINK_RECOVERY_RUN_RETRY_MS);
+				continue;
+			}
+
+			portsc3 = readl(&pdev->usb3_port.regs->portsc);
+			dev_info(pdev->dev,
+				 "Link recovery [%d]: after halt+run: PORTSC=0x%08x PLS=%s(%d) CCS=%d PP=%d\n",
+				 attempt, portsc3,
+				 cdnsp_portsc_link_state_string(portsc3),
+				 (int)((portsc3 & PORT_PLS_MASK) >> 5),
+				 (int)!!(portsc3 & PORT_CONNECT),
+				 (int)!!(portsc3 & PORT_POWER));
+		}
+
+		msleep(CDNSP_LINK_RECOVERY_POLL_MS);
+
+		portsc3 = readl(&pdev->usb3_port.regs->portsc);
+
+		dev_info(pdev->dev,
+			 "Link recovery [%d]: USB3 PORTSC=0x%08x PLS=%s(%d) CCS=%d PP=%d USB2=0x%08x gadget=%s\n",
+			 attempt, portsc3,
+			 cdnsp_portsc_link_state_string(portsc3),
+			 (int)((portsc3 & PORT_PLS_MASK) >> 5),
+			 (int)!!(portsc3 & PORT_CONNECT),
+			 (int)!!(portsc3 & PORT_POWER),
+			 readl(&pdev->usb2_port.regs->portsc),
+			 usb_state_string(pdev->gadget.state));
+
+		/* Connected and link is good (not SS.Inactive) */
+		if ((portsc3 & PORT_CONNECT) &&
+		    (portsc3 & PORT_PLS_MASK) != XDEV_INACTIVE)
+			break;
+
+	} while (attempt < CDNSP_LINK_RECOVERY_MAX_ATTEMPTS);
+
+	if ((portsc3 & PORT_CONNECT) &&
+	    (portsc3 & PORT_PLS_MASK) != XDEV_INACTIVE) {
+		dev_info(pdev->dev,
+			 "Link recovery: host connected after %d polls\n",
+			 attempt);
+	} else {
+		dev_warn(pdev->dev,
+			 "Link recovery: timed out after %d polls (~%u s), escalating to device reboot\n",
+			 attempt,
+			 (attempt * CDNSP_LINK_RECOVERY_POLL_MS) / 1000);
+		schedule_work(&pdev->reboot_work);
+	}
+
+	pdev->link_recovery_pending = false;
+}
+
+/*
+ * Boot-time recovery watchdog.
+ *
+ * On fresh boot, cdnsp_run() kicks the LTSSM into Rx.Detect. If the host
+ * is not yet ready, 8 Rx.Detect attempts fail (~80 ms) and the link
+ * silently falls to eSS.Disabled (PLS=4). No port-status interrupt fires
+ * for that silent transition, so the normal SS.Inactive / SS.Disabled /
+ * disconnect triggers in cdnsp_handle_port_status never run and
+ * cdnsp_link_recovery_work_handler is never scheduled. The dongle then
+ * sits in eSS.Disabled forever, invisible to the host.
+ *
+ * This watchdog runs once, a short time after gadget init. It reads
+ * PORTSC: if the host already connected (CCS=1), there is nothing to do.
+ * Otherwise it kicks cdnsp_link_recovery_work_handler, whose halt+run
+ * loop will recycle the controller every ~5 s until the host responds.
+ */
+static void cdnsp_boot_recovery_work_handler(struct work_struct *work)
+{
+	struct cdnsp_device *pdev = container_of(work, struct cdnsp_device,
+						 boot_recovery_work.work);
+	u32 portsc;
+
+	portsc = readl(&pdev->usb3_port.regs->portsc);
+	dev_info(pdev->dev,
+		 "Boot recovery: PORTSC=0x%08x PLS=%s(%d) CCS=%d\n",
+		 portsc,
+		 cdnsp_portsc_link_state_string(portsc),
+		 (int)((portsc & PORT_PLS_MASK) >> 5),
+		 (int)!!(portsc & PORT_CONNECT));
+
+	if (portsc & PORT_CONNECT) {
+		dev_info(pdev->dev,
+			 "Boot recovery: host already connected, nothing to do\n");
+		return;
+	}
+
+	if (pdev->link_recovery_pending) {
+		dev_info(pdev->dev,
+			 "Boot recovery: link_recovery_work already scheduled\n");
+		return;
+	}
+
+	dev_info(pdev->dev,
+		 "Boot recovery: not connected, scheduling halt+run\n");
+	pdev->link_recovery_pending = true;
+	schedule_work(&pdev->link_recovery_work);
+}
+
 static void cdnsp_handle_warm_reset(struct cdnsp_device *pdev)
 {
 	struct cdns *cdns = dev_get_drvdata(pdev->dev);
@@ -704,8 +898,15 @@ static void cdnsp_handle_warm_reset(struct cdnsp_device *pdev)
 
 	portsc = readl(&pdev->active_port->regs->portsc);
 
+	dev_info(pdev->dev,
+		 "warm reset eval: PORTSC=0x%08x PRC=%d WRC=%d state=%s sys_reset_req=%d\n",
+		 portsc, !!(portsc & PORT_RC), !!(portsc & PORT_WRC),
+		 usb_state_string(pdev->gadget.state),
+		 pdev->port_sys_reset_requested);
+
 	/* Schedule system reboot if configured and conditions are met */
 	if (pdev->gadget.state == USB_STATE_CONFIGURED && pdev->port_sys_reset_requested) {
+		dev_info(pdev->dev, "warm reset: triggering device reboot\n");
 		schedule_work(&pdev->reboot_work);
 		pdev->port_sys_reset_requested = false;
 	}
@@ -2004,8 +2205,13 @@ static int __cdnsp_gadget_init(struct cdns *cdns)
 	}
 
 	/* Initialize warm reset reboot work */
-    INIT_WORK(&pdev->reboot_work, cdnsp_warm_reset_work_handler);
+	INIT_WORK(&pdev->reboot_work, cdnsp_warm_reset_work_handler);
+	INIT_WORK(&pdev->link_recovery_work, cdnsp_link_recovery_work_handler);
+	pdev->link_recovery_pending = false;
+	INIT_DELAYED_WORK(&pdev->boot_recovery_work,
+			  cdnsp_boot_recovery_work_handler);
 	pdev->port_sys_reset_requested = false;
+	pdev->boot_jiffies = jiffies;
 
 	ret = devm_request_threaded_irq(pdev->dev, cdns->dev_irq,
 					cdnsp_irq_handler,
@@ -2013,6 +2219,9 @@ static int __cdnsp_gadget_init(struct cdns *cdns)
 					dev_name(pdev->dev), pdev);
 	if (ret)
 		goto del_gadget;
+
+	schedule_delayed_work(&pdev->boot_recovery_work,
+			      msecs_to_jiffies(CDNSP_BOOT_RECOVERY_DELAY_MS));
 
 	return 0;
 
@@ -2038,6 +2247,8 @@ static void cdnsp_gadget_exit(struct cdns *cdns)
 
 	devm_free_irq(pdev->dev, cdns->dev_irq, pdev);
 	cancel_work_sync(&pdev->reboot_work);
+	cancel_delayed_work_sync(&pdev->boot_recovery_work);
+	cancel_work_sync(&pdev->link_recovery_work);
 	pm_runtime_mark_last_busy(cdns->dev);
 	pm_runtime_put_autosuspend(cdns->dev);
 	usb_del_gadget_udc(&pdev->gadget);

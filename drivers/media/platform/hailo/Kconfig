@@ -1,2 +1,3 @@
 source "drivers/media/platform/hailo/mem_tracker/Kconfig"
 source "drivers/media/platform/hailo/hailo15/Kconfig"
+source "drivers/media/platform/hailo/mipi-generator/Kconfig"

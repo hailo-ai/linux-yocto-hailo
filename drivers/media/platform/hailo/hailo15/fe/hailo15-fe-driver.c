@@ -790,18 +790,20 @@ static int isp_fe_perform_transaction(struct vvcam_fe_dev *dev, uint8_t vdid,
 		return -EINVAL;
 	}
 
-	/* Wait for any in-flight MCM RDMA before driving an FE DMA, else the
-	 * FE sees overlapping pixel data and raises FE_INT_ISP_VAL_INTERVENE.
-	 * Bites only on paths that bypass the buf_done gate (e.g. daemon ioctls). */
+	/* Gate FE DMA on any in-flight MCM RDMA, else the FE sees overlapping
+	 * pixel data and raises FE_INT_ISP_VAL_INTERVENE. */
 	if (atomic_read(&dev->mcm_rdma_inflight) > 0) {
 		long w = wait_event_timeout(dev->mcm_rdma_idle_wq,
 				atomic_read(&dev->mcm_rdma_inflight) == 0,
-				msecs_to_jiffies(dev->mcm_rdma_timeout_ms));
-		if (w == 0)
-			pr_warn_ratelimited("%s: timed out waiting for MCM RDMA idle (inflight=%d, timeout=%u ms)\n",
+				msecs_to_jiffies(MCM_RDMA_TIMEOUT_MS));
+		if (w == 0) {
+			pr_warn_ratelimited("%s: timed out waiting for MCM RDMA idle (inflight=%d, timeout=%u ms); failing into ERROR\n",
 					    __func__,
 					    atomic_read(&dev->mcm_rdma_inflight),
-					    dev->mcm_rdma_timeout_ms);
+					    MCM_RDMA_TIMEOUT_MS);
+			fe->state = ISP_FE_STATE_ERROR;
+			return -ETIMEDOUT;
+		}
 	}
 
 	reinit_completion(&fe->fe_completion);
@@ -1741,7 +1743,6 @@ int isp_fe_init(struct vvcam_fe_dev *dev)
 	init_completion(&fe->fe_completion);
 	init_waitqueue_head(&dev->mcm_rdma_idle_wq);
 	atomic_set(&dev->mcm_rdma_inflight, 0);
-	dev->mcm_rdma_timeout_ms = MCM_RDMA_TIMEOUT_DEFAULT_MS;
 
 	fe->prev_vdid = VIV_INVALID_VDID;
 	fe->state = ISP_FE_STATE_INIT;

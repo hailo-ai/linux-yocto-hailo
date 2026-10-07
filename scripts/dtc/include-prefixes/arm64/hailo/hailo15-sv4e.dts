@@ -1,0 +1,47 @@
+// SPDX-License-Identifier:     GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ *
+ * DTS overlay: Introspect SV4E MIPI generator on Hailo15-family SBC
+ * boards (H15 / H15L; base must export csi2rx_in_sensor / sensor_0 /
+ * i2c_0, which the hailo15-sbc, -rev3 and hailo15l-sbc bases all do).
+ *
+ * Engineering rigs only. Replaces the IMX i2c sensor on csi2rx0 port@0
+ * with a synthetic mipi_generator subdev driven by the external SV4E
+ * hardware. Apply at boot via U-Boot's ${dtb_overlays} mechanism, e.g.
+ * fw_setenv dtb_overlays '#conf-hailo_hailo15-sv4e.dtbo' (mipi_tool's
+ * board-mode/enable_mipi_generator.sh does this for you).
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+    mipi_generator: mipi_generator@0 {
+        status = "okay";
+        compatible = "mipi_generator,sv4e";
+        reg = <0>;
+        csi-id = <0>;
+        port {
+            mipigen_out_csi2rx: endpoint {
+                data-lanes = <1 2 3 4>;
+                remote-endpoint = <&csi2rx_in_sensor>;
+                link-frequencies = /bits/ 64 <891000000 1440000000 1782000000>;
+            };
+        };
+    };
+};
+
+/* Repoint csi2rx0 port@0 from the IMX sensor to the MIPI generator. */
+&csi2rx_in_sensor {
+    remote-endpoint = <&mipigen_out_csi2rx>;
+};
+
+/* Real i2c sensor is absent on the SV4E rig — disable both nodes. */
+&i2c_0 {
+    status = "disabled";
+};
+
+&sensor_0 {
+    status = "disabled";
+};

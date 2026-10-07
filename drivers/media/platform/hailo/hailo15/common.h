@@ -73,7 +73,7 @@
 
 // Kernel internal ioctl (core ioctl to v4l2_subdev)s (type = 'K'))
 #define HAILO15_INTERNAL_GET_P2A_REGS               	_IOR('K', BASE_VIDIOC_PRIVATE + 0, struct hailo15_p2a_buffer_regs_addr)
-#define HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS	_IOW('K', BASE_VIDIOC_PRIVATE + 1, int)
+#define HAILO15_INTERNAL_SENSOR_FAST_TOGGLE_SET_STATUS	_IOW('K', BASE_VIDIOC_PRIVATE + 1, struct fast_toggle_data)
 #define HAILO15_INTERNAL_CSI2RX_FAST_TOGGLE_SET_STATUS	_IOW('K', BASE_VIDIOC_PRIVATE + 2, struct fast_toggle_data)
 #define HAILO15_INTERNAL_ISP_FAST_TOGGLE_SET_STATUS 	_IOW('K', BASE_VIDIOC_PRIVATE + 3, struct fast_toggle_data)
 #define HAILO15_INTERNAL_RXW_FAST_TOGGLE_SET_STATUS 	_IOW('K', BASE_VIDIOC_PRIVATE + 4, struct fast_toggle_data)
@@ -128,6 +128,9 @@
 
 #define hailo15_video_node_queue_empty(ctx, grp_id)                              \
 	(HAILO15_DMA_CTX_CB(ctx, queue_empty, grp_id,  grp_id))
+
+#define hailo15_video_node_get_scratch_buf(ctx, grp_id, phys)                    \
+	(HAILO15_DMA_CTX_CB(ctx, get_scratch_buf, grp_id, phys))
 
 enum hailo15_fmt_planes {
 	PLANE_Y,
@@ -630,6 +633,8 @@ struct hailo15_buf_ops {
 	int (*queue_empty)(struct hailo15_dma_ctx *ctx,
 			   int grp_id); /* VIDEO -> DMA */
 	int (*fast_toggle_stream)(struct hailo15_dma_ctx *dma_ctx, int grp_id, int toggle_type); /* VIDEO -> DMA */
+	int (*get_scratch_buf)(struct hailo15_dma_ctx *ctx,
+			       dma_addr_t *phys); /* VIDEO -> DMA */
 };
 
 #ifndef ALIGN_UP

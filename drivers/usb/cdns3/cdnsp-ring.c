@@ -60,6 +60,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/irq.h>
+#include <linux/jiffies.h>
 
 #include "cdnsp-trace.h"
 #include "cdnsp-gadget.h"
@@ -817,6 +818,17 @@ new_event:
 	pdev->gadget.speed = cdnsp_port_speed(portsc);
 	link_state = portsc & PORT_PLS_MASK;
 
+	dev_info(pdev->dev,
+		 "Port status: PORTSC=0x%08x link=%s(0x%x) prev_link=%s(0x%x) CCS=%d PLC=%d CSC=%d PRC=%d WRC=%d state=%s port2=%d\n",
+		 portsc,
+		 cdnsp_portsc_link_state_string(portsc), link_state,
+		 cdnsp_portsc_link_state_string(pdev->link_state), pdev->link_state,
+		 !!(portsc & PORT_CONNECT), !!(portsc & PORT_PLC),
+		 !!(portsc & PORT_CSC), !!(portsc & PORT_RC),
+		 !!(portsc & PORT_WRC),
+		 usb_state_string(pdev->gadget.state),
+		 port2);
+
 	/* Port Link State change detected. */
 	if ((portsc & PORT_PLC)) {
 		if (!(pdev->cdnsp_state & CDNSP_WAKEUP_PENDING)  &&
@@ -849,13 +861,50 @@ new_event:
 		if (link_state == XDEV_U3 &&  pdev->link_state != XDEV_U3)
 			cdnsp_suspend_gadget(pdev);
 
+		/*
+		 * SS.Inactive / SS.Disabled recovery: when the host
+		 * disappears (e.g. reboot with VBUS held), the link
+		 * transitions from U0 through Recovery into SS.Inactive
+		 * and may fall further to eSS.Disabled. Without
+		 * intervention the device sits in that dead state
+		 * forever. Schedule cdnsp_link_recovery_work_handler,
+		 * which cycles cdnsp_halt + cdnsp_run to reset the
+		 * LTSSM and re-enter Rx.Detect once the host comes back.
+		 */
+		if (link_state == XDEV_INACTIVE || link_state == XDEV_DISABLED) {
+			dev_info(pdev->dev,
+				 "Link entered %s (PORTSC=0x%08x), scheduling halt+run recovery\n",
+				 link_state == XDEV_INACTIVE ?
+					"SS.Inactive" : "SS.Disabled",
+				 portsc);
+			cdnsp_disconnect_gadget(pdev);
+			if (!pdev->link_recovery_pending) {
+				pdev->link_recovery_pending = true;
+				schedule_work(&pdev->link_recovery_work);
+			}
+		}
+
 		pdev->link_state = link_state;
 	}
 
 	if (portsc & PORT_CSC) {
 		/* Detach device. */
-        if (pdev->gadget.connected && !(portsc & PORT_CONNECT)) {
-            cdnsp_disconnect_gadget(pdev);
+		if (pdev->gadget.connected && !(portsc & PORT_CONNECT)) {
+			dev_info(pdev->dev,
+				 "USB disconnect detected (PORTSC=0x%08x, port2=%d, link_state=0x%x)\n",
+				 portsc, port2, link_state);
+			cdnsp_disconnect_gadget(pdev);
+			/*
+			 * USB3 disconnect: schedule the halt+run recovery
+			 * loop so the controller re-enters Rx.Detect from
+			 * a clean state when the host comes back.
+			 */
+			if (!port2 && !pdev->link_recovery_pending) {
+				dev_info(pdev->dev,
+					 "Scheduling halt+run recovery after USB3 disconnect\n");
+				pdev->link_recovery_pending = true;
+				schedule_work(&pdev->link_recovery_work);
+			}
 		}
 
 		/* Attach device. */
@@ -888,8 +937,22 @@ new_event:
              !!(portsc & PORT_RC),
              !!(portsc & PORT_WRC),
              !!(portsc & PORT_WR));
-		if (pdev->gadget.state == USB_STATE_CONFIGURED)
-			pdev->port_sys_reset_requested = true;
+		if (pdev->gadget.state == USB_STATE_CONFIGURED) {
+			unsigned int boot_ms =
+				jiffies_to_msecs(jiffies - pdev->boot_jiffies);
+
+			if (boot_ms > CDNSP_MIN_BOOT_TIME_MS) {
+				dev_info(pdev->dev,
+					 "Port reset after %u ms since probe - arming reboot\n",
+					 boot_ms);
+				pdev->port_sys_reset_requested = true;
+			} else {
+				dev_info(pdev->dev,
+					 "Port reset: boot_ms=%u below %u ms threshold - not arming reboot\n",
+					 boot_ms,
+					 CDNSP_MIN_BOOT_TIME_MS);
+			}
+		}
 		cdnsp_irq_reset(pdev);
 		pdev->u1_allowed = 0;
 		pdev->u2_allowed = 0;

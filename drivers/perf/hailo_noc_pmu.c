@@ -115,7 +115,7 @@ struct hailo_pmu_aux_buffer {
 struct hailo_pmu {
 	struct pmu pmu;
 	struct platform_device *pdev;
-	void *scu_buf;
+	void __iomem *scu_buf;
 
 	/*
 		The NOC measurements are recorded by the SCU processor, and we treat it as a HW PMU, and thus we use the aux buffer interface of the perf framework.
@@ -173,7 +173,7 @@ struct hailo_pmu_scmi_measurement_ended_work
 	struct scmi_hailo_noc_measurement_ended_notification report;
 };
 
-void hailo_pmu_scmi_halt(struct hailo_pmu *hailo_pmu)
+static void hailo_pmu_scmi_halt(struct hailo_pmu *hailo_pmu)
 {
 	if (hailo_pmu->ended_handled_count == hailo_pmu->started_initiated_count) {
 		BUG_ON(!hailo_pmu->scmi_busy);
@@ -182,7 +182,7 @@ void hailo_pmu_scmi_halt(struct hailo_pmu *hailo_pmu)
 	}
 }
 
-void hailo_pmu_scmi_start_measure(struct hailo_pmu *hailo_pmu)
+static void hailo_pmu_scmi_start_measure(struct hailo_pmu *hailo_pmu)
 {
 	int ret = 0;
 
@@ -197,7 +197,7 @@ void hailo_pmu_scmi_start_measure(struct hailo_pmu *hailo_pmu)
 	hailo_pmu->started_initiated_count++;
 }
 
-void hailo_pmu_scmi_start_work_handle(struct work_struct *work)
+static void hailo_pmu_scmi_start_work_handle(struct work_struct *work)
 {
 	struct hailo_pmu *hailo_pmu = (struct hailo_pmu *)container_of(work, struct hailo_pmu, scmi_start_work);
 	int i;
@@ -221,7 +221,7 @@ void hailo_pmu_scmi_start_work_handle(struct work_struct *work)
 	hailo_pmu_scmi_start_measure(hailo_pmu);
 }
 
-void hailo_pmu_scmi_stop_work_handle(struct work_struct *work)
+static void hailo_pmu_scmi_stop_work_handle(struct work_struct *work)
 {
 	struct hailo_pmu *hailo_pmu = (struct hailo_pmu *)container_of(work, struct hailo_pmu, scmi_stop_work);
 	bool measurement_was_running;
@@ -238,7 +238,7 @@ void hailo_pmu_scmi_stop_work_handle(struct work_struct *work)
 }
 
 // this function is called from SCMI context, so we disable IRQs and lock the pmu_lock to be in PMU atomic context
-void hailo_pmu_fill_aux(struct hailo_pmu *hailo_pmu, const volatile void __iomem *scu_buf, unsigned int number_of_samples, unsigned int *actually_written)
+static void hailo_pmu_fill_aux(struct hailo_pmu *hailo_pmu, const volatile void __iomem *scu_buf, unsigned int number_of_samples, unsigned int *actually_written)
 {
 	unsigned long flags;
 	unsigned long aux_buf_remaining_size;
@@ -286,13 +286,13 @@ unlock:
 	local_irq_restore(flags);
 }
 
-void hailo_pmu_scmi_measurement_ended_work_handle(struct work_struct *work) {
+static void hailo_pmu_scmi_measurement_ended_work_handle(struct work_struct *work) {
 	struct hailo_pmu_scmi_measurement_ended_work *measurement_ended_work = (struct hailo_pmu_scmi_measurement_ended_work *)container_of(work, struct hailo_pmu_scmi_measurement_ended_work, work);
 	struct hailo_pmu *hailo_pmu = measurement_ended_work->hailo_pmu;
 	struct scmi_hailo_noc_measurement_ended_notification *report = &measurement_ended_work->report;
 	unsigned int number_of_samples;
 	unsigned int written_samples;
-	void* scu_buf;
+	void __iomem *scu_buf;
 
 	BUG_ON(hailo_pmu->ended_handled_count + 1 != hailo_pmu->started_initiated_count);
 	BUG_ON(!hailo_pmu->scmi_busy);
@@ -316,7 +316,7 @@ void hailo_pmu_scmi_measurement_ended_work_handle(struct work_struct *work) {
 		}
 	}
 
-	scu_buf = (void *)((char *)(hailo_pmu->scu_buf) + (hailo_pmu->sample_size * report->sample_start_index));
+	scu_buf = (char __iomem *)(hailo_pmu->scu_buf) + (hailo_pmu->sample_size * report->sample_start_index);
 	hailo_pmu_fill_aux(hailo_pmu, scu_buf, number_of_samples, &written_samples);
 
 	if (hailo_pmu->active_params.limit_samples) {
@@ -857,9 +857,9 @@ static ssize_t csm_enabled_store(struct device *dev,
 
 	return count;
 }
-struct device_attribute dev_attr_csm_enabled =
+static struct device_attribute dev_attr_csm_enabled =
 	__ATTR(enabled, 0600, csm_enabled_show, csm_enabled_store);
-struct attribute *hailo_pmu_csm_counter_attrs[] = {
+static struct attribute *hailo_pmu_csm_counter_attrs[] = {
 	&dev_attr_csm_enabled.attr,
 	NULL,
 };
@@ -893,9 +893,9 @@ static ssize_t dsm_rx_enabled_store(struct device *dev,
 
 	return count;
 }
-struct device_attribute dev_attr_dsm_rx_enabled =
+static struct device_attribute dev_attr_dsm_rx_enabled =
 	__ATTR(enabled, 0600, dsm_rx_enabled_show, dsm_rx_enabled_store);
-struct attribute *hailo_pmu_dsm_rx_counter_attrs[] = {
+static struct attribute *hailo_pmu_dsm_rx_counter_attrs[] = {
 	&dev_attr_dsm_rx_enabled.attr,
 	NULL,
 };
@@ -929,9 +929,9 @@ static ssize_t dsm_tx_enabled_store(struct device *dev,
 
 	return count;
 }
-struct device_attribute dev_attr_dsm_tx_enabled =
+static struct device_attribute dev_attr_dsm_tx_enabled =
 	__ATTR(enabled, 0600, dsm_tx_enabled_show, dsm_tx_enabled_store);
-struct attribute *hailo_pmu_dsm_tx_counter_attrs[] = {
+static struct attribute *hailo_pmu_dsm_tx_counter_attrs[] = {
 	&dev_attr_dsm_tx_enabled.attr,
 	NULL,
 };
@@ -988,7 +988,7 @@ static int hailo_pmu_scmi_trigger_notifier(struct notifier_block *nb, unsigned l
 	return NOTIFY_OK;
 }
 
-struct contexted_notifier_block trigger_nb = {
+static struct contexted_notifier_block trigger_nb = {
 	.notifier_block = {
 		.notifier_call = hailo_pmu_scmi_trigger_notifier,
 	},
@@ -1008,7 +1008,7 @@ static int hailo_pmu_scmi_ended_notifier(struct notifier_block *nb, unsigned lon
 	return NOTIFY_OK;
 }
 
-struct contexted_notifier_block ended_nb = {
+static struct contexted_notifier_block ended_nb = {
 	.notifier_block = {
 		.notifier_call = hailo_pmu_scmi_ended_notifier,
 	},

@@ -253,7 +253,7 @@ static void cdns3_hailo_irq_unmask(struct irq_data *d)
 }
 
 
-struct irq_chip cdns3_hailo_irq_chip = {
+static struct irq_chip cdns3_hailo_irq_chip = {
 	.name		= "cdns3-hailo-irqchip",
 	.irq_mask	= cdns3_hailo_irq_mask,
 	.irq_unmask	= cdns3_hailo_irq_unmask,
@@ -301,7 +301,7 @@ static irqreturn_t cdns_hailo_irq_handler(int irq, void *dev_id)
     return IRQ_HANDLED;
 }
 
-void cdns_hailo_init(struct cdns_hailo *data)
+static void cdns_hailo_init(struct cdns_hailo *data)
 {
 	u32 usb_config, usb_mode_strap, phy_config;
 

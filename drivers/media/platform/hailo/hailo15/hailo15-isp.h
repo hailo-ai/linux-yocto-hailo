@@ -319,6 +319,10 @@ struct hailo15_isp_device {
 	 * FE-switch stall guard in hailo15_isp_configure_rdma_frame_base(). */
 	ktime_t mcm_in_last_frame_ktime[HAILO15_ISP_SINK_PAD_MAX];
 	int output_ready;
+	/* Settling-drop request: recorded at APPLY_PRIMING, moved into the
+	 * live counter when the MP stream actually enables. */
+	int mp_settling_drop_pending;
+	atomic_t mp_settling_drop_count;
 	struct mutex ready_lock;
 	spinlock_t stream_state_lock;
 	struct workqueue_struct* isp_mis_wq;
@@ -369,7 +373,8 @@ int hailo15_isp_post_event_stop_stream(struct hailo15_isp_device *isp_dev, int p
 int hailo15_isp_post_event_pre_stop_stream(struct hailo15_isp_device *isp_dev, int pad);
 int hailo15_isp_post_event_requebus(struct hailo15_isp_device *isp_dev,
 				      int pad, uint32_t num_buffers);
-int hailo15_isp_post_event_fast_toggle(struct hailo15_isp_device *isp_dev, int pad);
+int hailo15_isp_post_event_fast_toggle_priming(struct hailo15_isp_device *isp_dev, int pad);
+int hailo15_isp_post_event_fast_toggle_done(struct hailo15_isp_device *isp_dev, int pad);
 int hailo15_isp_s_stream_event(struct hailo15_isp_device *isp_dev, int pad, uint32_t status, bool is_fast_toggle);
 int hailo15_isp_s_ctrl_event(struct hailo15_isp_device *isp_dev, int pad,
 			     struct v4l2_ctrl *ctrl);

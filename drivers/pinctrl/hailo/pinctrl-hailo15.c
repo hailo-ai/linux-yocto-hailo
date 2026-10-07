@@ -18,7 +18,7 @@ static const unsigned char drive_strength_lookup[16] = {
 	0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf,
 };
 
-enum h15_pin_set_value hailo15_get_pin_set(unsigned int pin_number)
+static enum h15_pin_set_value hailo15_get_pin_set(unsigned int pin_number)
 {
 	enum h15_pin_set_value set;
 	if (pin_number <= 1) {

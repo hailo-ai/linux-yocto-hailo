@@ -80,7 +80,10 @@ command results in a shift count error.'
     NPROC=1
 else
     ONLINE=0
-    if [ "$KBUILD_EXTMOD" = "" ] ; then
+    if [ -n "$COCCI_FILES" ] ; then
+        # COCCI_FILES: path to a text file with one C source per line.
+        OPTIONS="$COCCIINCLUDE $(cat "$COCCI_FILES")"
+    elif [ "$KBUILD_EXTMOD" = "" ] ; then
         OPTIONS="--dir $srctree $COCCIINCLUDE"
     else
         OPTIONS="--dir $KBUILD_EXTMOD $COCCIINCLUDE"

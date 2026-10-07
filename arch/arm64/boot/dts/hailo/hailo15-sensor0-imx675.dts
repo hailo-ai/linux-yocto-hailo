@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ */
+/dts-v1/;
+/plugin/;
+
+&sensor_0 {
+    status = "okay";
+    compatible = "sony,imx675";
+    clock-frequency = <24000000>;
+};
+
+&sensor_out_csi2rx {
+    link-frequencies = /bits/ 64 <720000000 1188000000>;
+};

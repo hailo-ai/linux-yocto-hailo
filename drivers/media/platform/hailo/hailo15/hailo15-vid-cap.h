@@ -68,6 +68,9 @@ struct hailo15_video_node {
 	enum fast_toggle_state fast_toggle_state;
 	struct hailo15_buffer *fast_toggle_priming_buf; // on fast toggle, one buffer must be available immediately - this is it
 	bool drop_prev_buf; // fast toggle: drop stale prev_buf instead of returning to userspace
+	struct hailo15_buffer scratch_priming_buf;
+	dma_addr_t scratch_priming_phys;
+	bool scratch_priming_in_flight; /* protected by qlock */
 };
 
 struct hailo15_vid_cap_device {

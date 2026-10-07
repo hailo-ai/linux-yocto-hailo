@@ -129,6 +129,9 @@ static int scmi_hwmon_sensor_trip_point_cb(struct notifier_block *nb,
 	const struct scmi_sensor_info *sensor_info = sensor_ops->info_get(
 		scmi_sensors->ph, trip_point_report->sensor_id);
 
+	if (IS_ERR_OR_NULL(scmi_sensors->hwdev))
+		return NOTIFY_OK;
+
 	trip_point_id = (trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_ID_MASK);
 	if (trip_point_report->trip_point_desc & SCMI_SENSOR_TRIP_POINT_EV__TRIP_DIR_MASK) {
 		trip_dir = TRIP_DIR_UP;
@@ -345,18 +348,6 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 			return -ENOMEM;
 	}
 
-	scmi_sensors->notifier_block.notifier_call = scmi_hwmon_sensor_trip_point_cb;
-	ret = notify_ops->devm_event_notifier_register(sdev,
-				SCMI_PROTOCOL_SENSOR, SCMI_EVENT_SENSOR_TRIP_POINT_EVENT,
-				NULL, //&sensor->id,
-				&scmi_sensors->notifier_block);
-	if (ret) {
-		dev_err(dev,
-			"Error in registering sensor update notifier for sensor %s err %d",
-			sdev->name, ret);
-		return ret;
-	}
-
 	for (i = nr_sensors - 1; i >= 0 ; i--) {
 		sensor = sensor_ops->info_get(ph, i);
 		if (!sensor)
@@ -378,9 +369,24 @@ static int scmi_hwmon_probe(struct scmi_device *sdev)
 	hwdev = devm_hwmon_device_register_with_info(dev, "scmi_sensors",
 						     scmi_sensors, chip_info,
 						     NULL);
+	if (IS_ERR(hwdev)) {
+		dev_err(dev, "Failed to register hwmon device: %pe\n", hwdev);
+		return PTR_ERR(hwdev);
+	}
 	scmi_sensors->hwdev = hwdev;
 
-	return PTR_ERR_OR_ZERO(hwdev);
+	scmi_sensors->notifier_block.notifier_call = scmi_hwmon_sensor_trip_point_cb;
+	ret = notify_ops->devm_event_notifier_register(sdev,
+				SCMI_PROTOCOL_SENSOR, SCMI_EVENT_SENSOR_TRIP_POINT_EVENT,
+				NULL, &scmi_sensors->notifier_block);
+	if (ret) {
+		dev_err(dev,
+			"Error registering sensor trip-point notifier for %s err %d",
+			sdev->name, ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 static const struct scmi_device_id scmi_id_table[] = {

@@ -317,3 +317,7 @@
         reg = <0x7c0581E0 0x20>;
     };
 };
+
+&dpi0 {
+    compatible = "hailo,hailo15l-dsi";
+};

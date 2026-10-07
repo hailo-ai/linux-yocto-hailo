@@ -576,6 +576,8 @@ struct scmi_hailo_proto_ops {
 	int (*get_mbist_subservers_status)(const struct scmi_protocol_handle *ph, struct scmi_hailo_mbist_subservers_status_p2a *params);
 	int (*set_throttling_mode)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_throttling_mode_a2p *params);
 	int (*get_throttling_mode)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+	int (*set_throttling_thresholds)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_throttling_thresholds_a2p *params);
+	int (*get_throttling_thresholds)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_throttling_thresholds_p2a *info);
 	int (*set_source_clock)(const struct scmi_protocol_handle *ph, struct scmi_hailo_set_source_clock_a2p *params);
 	int (*get_source_clock)(const struct scmi_protocol_handle *ph, struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
 	int (*get_identification_attributes)(const struct scmi_protocol_handle *ph, struct scmi_hailo_identification_attributes_p2a *params);

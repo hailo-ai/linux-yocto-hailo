@@ -95,9 +95,8 @@ static void mem_priv_release(struct kref *kref)
 	
 	priv = container_of(kref, struct mem_priv, kref);
 	
-	if (priv && priv->free_priv)
+	if (priv->free_priv)
 		priv->free_priv(priv->data);
-	priv->data = NULL;
 	kfree(priv);
 }
 
@@ -409,7 +408,7 @@ static void fill_history_record_alloc(struct mem_tracker *tracker,
 	memcpy(hist->alloc_comm, alloc_rec->comm, TASK_COMM_LEN);
 	hist->alloc_timestamp = alloc_rec->timestamp;
 
-	if (alloc_rec->nr_stack_entries > 0 && alloc_rec->stack_entries) {
+	if (alloc_rec->nr_stack_entries > 0) {
 		memcpy(hist->alloc_stack, alloc_rec->stack_entries,
 			alloc_rec->nr_stack_entries * sizeof(unsigned long));
 		hist->nr_alloc_stack = alloc_rec->nr_stack_entries;
@@ -441,7 +440,7 @@ static void fill_history_record_free(struct mem_tracker *tracker,
 	hist->free_timestamp = free_event->timestamp;
 	memcpy(hist->free_comm, free_event->comm, TASK_COMM_LEN);
 
-	if (free_event->nr_stack_entries > 0 && free_event->stack_entries) {
+	if (free_event->nr_stack_entries > 0) {
 		memcpy(hist->free_stack, free_event->stack_entries,
 			free_event->nr_stack_entries * sizeof(unsigned long));
 		hist->nr_free_stack = free_event->nr_stack_entries;
@@ -1774,8 +1773,7 @@ void mem_tracker_unregister(struct mem_tracker *tracker)
 	tracker->initialized = false;
 	
 	/* Remove debugfs entries (if debugfs was available) */
-	if (tracker->debugfs_dir)
-		debugfs_remove_recursive(tracker->debugfs_dir);
+	debugfs_remove_recursive(tracker->debugfs_dir);
 	
 	/* Free all active allocations */
 	spin_lock_irqsave(&tracker->alloc_lock, flags);

@@ -25,12 +25,10 @@
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 #include <linux/usb/gadget.h>
+#include <linux/soc/hailo/soc-hailo.h>
 
 #include "u_hailo_rfs_load.h"
 #include "u_f.h"
-
-/* External function to get board SKU ID from soc-hailo driver */
-extern void board_sku_id_to_str(u32 board_sku_id, char *name, size_t name_size);
 
 /* External function to get board SKU ID via SCMI from hailo gadget driver */
 extern int hailo_gadget_get_board_sku_id(u32 *board_sku_id);
@@ -927,7 +925,7 @@ rfs_load_ack:
                 req->length = strlen("SKU_ID_ERROR") + 1;
             } else {
                 /* Get board description string */
-                board_sku_id_to_str(board_sku_id, (char *)req->buf, length);
+                hailo_board_sku_id_to_str(board_sku_id, (char *)req->buf, length);
                 req->length = min_t(unsigned, length, strlen((char *)req->buf) + 1);
                 req->length = min_t(unsigned, req->length, hailo_rfs_load_get_ep0_maxpacket(cdev));
             }

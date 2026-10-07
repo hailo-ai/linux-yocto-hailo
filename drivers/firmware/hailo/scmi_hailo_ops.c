@@ -5,10 +5,6 @@
 
 #include "scmi_hailo.h"
 
-extern struct scmi_hailo_proto_ops *hailo_ops;
-extern struct scmi_notify_ops *hailo_notify_ops;
-extern struct scmi_protocol_handle *ph;
-
 static struct scmi_device *hailo_sdev = NULL;
 
 /* Hailo SCMI command definitions */
@@ -30,13 +26,15 @@ static int scmi_hailo_set_i2s_source_clk(struct scmi_hailo_set_i2s_source_clock_
 static int scmi_hailo_set_spi_interrupt_forwarding(struct scmi_hailo_set_spi_interrupt_forwarding_a2p *params);
 static int scmi_hailo_set_throttling_mode(struct scmi_hailo_set_throttling_mode_a2p *params);
 static int scmi_hailo_get_throttling_mode(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a *info);
+static int scmi_hailo_set_throttling_thresholds(struct scmi_hailo_set_throttling_thresholds_a2p *params);
+static int scmi_hailo_get_throttling_thresholds(struct scmi_hailo_get_throttling_thresholds_p2a *info);
 static int scmi_hailo_set_source_clock(struct scmi_hailo_set_source_clock_a2p *params);
 static int scmi_hailo_get_source_clock(struct scmi_hailo_get_source_clock_a2p *params, struct scmi_hailo_get_source_clock_p2a *info);
 static int scmi_hailo_get_identification_attributes(struct scmi_hailo_identification_attributes_p2a *params);
 static int scmi_hailo_get_sku_id(struct scmi_hailo_get_sku_id_p2a *params);
 static int scmi_hailo_send_host_current_limit(struct scmi_hailo_send_host_current_limit_a2p *params);
 
-const struct scmi_hailo_ops ops = {
+static const struct scmi_hailo_ops ops = {
 	.register_notifier = scmi_hailo_register_notifier,
 	.unregister_notifier = scmi_hailo_unregister_notifier,
 	.get_boot_info = scmi_hailo_get_boot_info,
@@ -54,6 +52,8 @@ const struct scmi_hailo_ops ops = {
 	.set_spi_interrupt_forwarding = scmi_hailo_set_spi_interrupt_forwarding,
 	.set_throttling_mode = scmi_hailo_set_throttling_mode,
 	.get_throttling_mode = scmi_hailo_get_throttling_mode,
+	.set_throttling_thresholds = scmi_hailo_set_throttling_thresholds,
+	.get_throttling_thresholds = scmi_hailo_get_throttling_thresholds,
 	.set_source_clock = scmi_hailo_set_source_clock,
 	.get_source_clock = scmi_hailo_get_source_clock,
 	.get_identification_attributes = scmi_hailo_get_identification_attributes,
@@ -184,6 +184,16 @@ static int scmi_hailo_set_throttling_mode(struct scmi_hailo_set_throttling_mode_
 static int scmi_hailo_get_throttling_mode(struct scmi_hailo_get_throttling_mode_a2p *params, struct scmi_hailo_get_throttling_mode_p2a  *info)
 {
 	return hailo_ops->get_throttling_mode(ph, params, info);
+}
+
+static int scmi_hailo_set_throttling_thresholds(struct scmi_hailo_set_throttling_thresholds_a2p *params)
+{
+	return hailo_ops->set_throttling_thresholds(ph, params);
+}
+
+static int scmi_hailo_get_throttling_thresholds(struct scmi_hailo_get_throttling_thresholds_p2a *info)
+{
+	return hailo_ops->get_throttling_thresholds(ph, info);
 }
 
 static int scmi_hailo_set_source_clock(struct scmi_hailo_set_source_clock_a2p *params)

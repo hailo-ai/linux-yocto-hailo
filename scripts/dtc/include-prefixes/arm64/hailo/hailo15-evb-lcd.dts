@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019-2026 Hailo Technologies Ltd. All rights reserved.
+ */
+/dts-v1/;
+/plugin/;
+
+#include "hailo15-lcd-panel.dtsi"
+
+/* 0x45 is the panel's own address, so this monitor has to go or the panel
+   never gets an i2c client. */
+&{/i2c@105000/USB_AVDD_IO_HV@45} {
+    status = "disabled";
+};

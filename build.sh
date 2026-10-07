@@ -25,10 +25,6 @@ extract_machine() {
     echo ${machine_name%.dtb}
 }
 
-if [ -z "$MACHINE" ]; then
-	MACHINE=$(extract_machine)
-fi
-
 # Function to align a file by adding padding to make its size a multiple of `pad_size`
 align_file() {
     binary_file="$1"
@@ -85,6 +81,9 @@ deploy_image() {
 }
 
 make_all(){
+    if [ -z "$MACHINE" ]; then
+        MACHINE=$(extract_machine)
+    fi
     echo "Building kernel for machine $MACHINE..."
 	if [ ! -f .config ]; then
 		if [ -f "${DEPLOY_DIR}/kernel.config" ]; then

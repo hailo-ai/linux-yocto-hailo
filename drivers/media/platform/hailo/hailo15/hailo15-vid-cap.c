@@ -37,6 +37,36 @@
 #define STREAM_OFF 0
 #define STREAM_ON 1
 
+/* Outside the vb2 index range, so per-index bookkeeping (VSM) skips the scratch buffer. */
+#define SCRATCH_PRIMING_INDEX HAILO15_MAX_BUFFERS
+
+static bool is_scratch_priming_buf(const struct hailo15_video_node *vid_node,
+				   const struct hailo15_buffer *buf)
+{
+	return buf == &vid_node->scratch_priming_buf;
+}
+
+static void release_scratch_priming_buf(struct hailo15_video_node *vid_node)
+{
+	vid_node->scratch_priming_in_flight = false;
+	trace_vid_cap_fast_toggle_priming_buf_released(vid_node->path,
+						       SCRATCH_PRIMING_INDEX,
+						       vid_node->scratch_priming_phys);
+}
+
+static void discard_buf_on_clean(struct hailo15_video_node *vid_node,
+				 struct hailo15_buffer *buf,
+				 enum vb2_buffer_state state)
+{
+	if (is_scratch_priming_buf(vid_node, buf)) {
+		release_scratch_priming_buf(vid_node);
+		return;
+	}
+	trace_vid_cap_buffer_dequeue(vid_node->path, buf->vb.vb2_buf.index,
+				     buf->dma[0], ktime_get_ns());
+	vb2_buffer_done(&buf->vb.vb2_buf, state);
+}
+
 #define VIDEO_INDEX_VALIDATE(index, do_fail)                                   \
 	do {                                                                   \
 		if ((index) >= MAX_VIDEO_NODE_NUM) {                           \
@@ -312,24 +342,24 @@ static void hailo15_video_node_queue_clean(struct hailo15_video_node *vid_node,
 	mutex_lock(&vid_node->qlock);
 	list_for_each_entry_safe (buf, nbuf, &vid_node->buf_queue, irqlist) {
 		hailo15_buf_list_del(buf);
-		trace_vid_cap_buffer_dequeue(vid_node->path, buf->vb.vb2_buf.index,
-					     buf->dma[0], ktime_get_ns());
-		vb2_buffer_done(&buf->vb.vb2_buf, state);
+		discard_buf_on_clean(vid_node, buf, state);
 	}
 	if (vid_node->prev_buf) {
 		tmp_buf = vid_node->prev_buf;
 		vid_node->prev_buf = NULL;
-		trace_vid_cap_buffer_dequeue(vid_node->path, tmp_buf->vb.vb2_buf.index,
-					     tmp_buf->dma[0], ktime_get_ns());
-		vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
+		discard_buf_on_clean(vid_node, tmp_buf, state);
 	}
 	if (vid_node->fast_toggle_priming_buf) {
 		tmp_buf = vid_node->fast_toggle_priming_buf;
 		vid_node->fast_toggle_priming_buf = NULL;
-		trace_vid_cap_fast_toggle_priming_buf_released(vid_node->path,
-							       tmp_buf->vb.vb2_buf.index,
-							       tmp_buf->dma[0]);
-		vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
+		if (is_scratch_priming_buf(vid_node, tmp_buf)) {
+			release_scratch_priming_buf(vid_node);
+		} else {
+			trace_vid_cap_fast_toggle_priming_buf_released(vid_node->path,
+								       tmp_buf->vb.vb2_buf.index,
+								       tmp_buf->dma[0]);
+			vb2_buffer_done(&tmp_buf->vb.vb2_buf, state);
+		}
 	}
 
 	vid_node->skip_first_list_entry = false;
@@ -405,6 +435,18 @@ static int hailo15_video_node_subdev_fast_toggle_set_status(struct hailo15_video
 	}
 
 	return 0;
+}
+
+/* A priming left over from a switch that never finished silently breaks the next one. */
+static void fast_toggle_unwind(struct hailo15_video_node *vid_node)
+{
+	int cleared = hailo15_video_node_subdev_fast_toggle_set_status(
+		vid_node, FAST_TOGGLE_NONE, FAST_TOGGLE_TYPE_MAX);
+
+	if (cleared)
+		pr_err("%s - failed to clear fast-toggle state on subdevs, subdev call returned %d\n",
+		       __func__, cleared);
+	vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
 }
 
 static int hailo15_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
@@ -846,6 +888,130 @@ static int hailo15_video_device_process_vb2_buffer(struct vb2_buffer *vb, bool i
 	return hailo15_video_node_buffer_process(ctx, vid_node->path, buf, is_buf_time_synced);
 }
 
+static struct hailo15_buffer *next_buffer_for_hw(struct hailo15_video_node *vid_node)
+{
+	struct hailo15_buffer *buf;
+
+	buf = list_first_entry_or_null(&vid_node->buf_queue, struct hailo15_buffer, irqlist);
+	if (!buf || !vid_node->skip_first_list_entry)
+		return buf;
+
+	if (list_is_singular(&vid_node->buf_queue))
+		return NULL;
+
+	return list_next_entry(buf, irqlist);
+}
+
+/* The scratch buffer, made to look like any other queued buffer. */
+static struct hailo15_buffer *take_scratch_priming_buf(struct hailo15_video_node *vid_node)
+{
+	struct hailo15_buffer *buf = &vid_node->scratch_priming_buf;
+	struct media_pad *pad;
+	int plane;
+
+	if (vid_node->scratch_priming_in_flight)
+		return NULL;
+
+	if (!vid_node->scratch_priming_phys) {
+		struct hailo15_dma_ctx *ctx;
+
+		if (!vid_node->direct_sd)
+			return NULL;
+		ctx = v4l2_get_subdevdata(vid_node->direct_sd);
+		if (hailo15_video_node_get_scratch_buf(ctx, vid_node->path,
+						       &vid_node->scratch_priming_phys))
+			return NULL;
+	}
+
+	pad = media_entity_remote_pad(&vid_node->pad);
+	if (!pad)
+		return NULL;
+
+	memset(buf, 0, sizeof(*buf));
+	hailo15_buf_list_init(buf);
+	for (plane = 0; plane < FMT_MAX_PLANES; ++plane)
+		buf->dma[plane] = vid_node->scratch_priming_phys;
+	buf->sd = media_entity_to_v4l2_subdev(pad->entity);
+	buf->grp_id = vid_node->path;
+	buf->vb.vb2_buf.index = SCRATCH_PRIMING_INDEX;
+	buf->vb.vb2_buf.vb2_queue = &vid_node->queue;
+
+	vid_node->scratch_priming_in_flight = true;
+	return buf;
+}
+
+static void return_unused_priming_buf(struct hailo15_video_node *vid_node,
+				      struct hailo15_buffer *buf)
+{
+	bool requeued = false;
+
+	mutex_lock(&vid_node->qlock);
+	if (is_scratch_priming_buf(vid_node, buf)) {
+		release_scratch_priming_buf(vid_node);
+		mutex_unlock(&vid_node->qlock);
+		return;
+	}
+	if (vid_node->streaming) {
+		hailo15_buf_list_add_tail(buf, &vid_node->buf_queue);
+		requeued = true;
+	}
+	mutex_unlock(&vid_node->qlock);
+
+	if (!requeued)
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
+}
+
+static struct hailo15_buffer *take_queued_priming_buf(struct hailo15_video_node *vid_node)
+{
+	struct hailo15_buffer *reserved;
+	struct hailo15_buffer *next_for_hw;
+
+	next_for_hw = next_buffer_for_hw(vid_node);
+	if (!next_for_hw)
+		return NULL;
+
+	reserved = list_last_entry(&vid_node->buf_queue, struct hailo15_buffer, irqlist);
+	if (reserved == next_for_hw ||
+	    list_prev_entry(reserved, irqlist) == next_for_hw)
+		return NULL;
+
+	hailo15_buf_list_del(reserved);
+	return reserved;
+}
+
+/* Prefer a queued buffer; the scratch buffer costs one frame but never refuses the switch. */
+static bool reserve_fast_toggle_priming_buf(struct hailo15_video_node *vid_node)
+{
+	struct hailo15_buffer *reserved = NULL;
+	bool held = false;
+
+	mutex_lock(&vid_node->qlock);
+
+	if (!vid_node->streaming)
+		goto out;
+
+	if (vid_node->fast_toggle_priming_buf != NULL) {
+		held = true;
+		goto out;
+	}
+
+	reserved = take_queued_priming_buf(vid_node);
+	if (!reserved)
+		reserved = take_scratch_priming_buf(vid_node);
+	if (!reserved)
+		goto out;
+
+	vid_node->fast_toggle_priming_buf = reserved;
+	trace_vid_cap_fast_toggle_priming_buf_saved(vid_node->path,
+						    reserved->vb.vb2_buf.index,
+						    reserved->dma[0]);
+	held = true;
+
+out:
+	mutex_unlock(&vid_node->qlock);
+	return held;
+}
+
 // inner implementation of fast toggle - after param checks
 static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dma_ctx *ctx, enum fast_toggle_type toggle_type)
 {
@@ -955,7 +1121,7 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 		hailo15_buf_list_del(buf);
 		mutex_unlock(&vid_node->qlock);
 		dev_err(vid_node->dev, "can't process priming buffer on node %d with error %d\n", vid_node->id, ret);
-		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		return_unused_priming_buf(vid_node, buf);
 		return ret;
 	}
 
@@ -969,6 +1135,11 @@ static int do_fast_toggle(struct hailo15_video_node *vid_node, struct hailo15_dm
 	vid_node->streaming = STREAM_ON;
 
 	return ret;
+}
+
+static bool fast_toggle_supported_on_node(const struct hailo15_video_node *vid_node)
+{
+	return vid_node->path == HAILO15_VID_GRP_SX_CSI0_ISP_MP;
 }
 
 // TODO for v1.12 - once the user pass more than a single number to represent which toggle to perform
@@ -1013,8 +1184,8 @@ static int fast_toggle(struct hailo15_video_node *vid_node, enum fast_toggle_typ
 		return -EINVAL;
 	}
 
-	if (vid_node->path != HAILO15_VID_GRP_SX_CSI0_ISP_MP) {
-		pr_err("%s - fast toggle not supported on P2A nodes\n", __func__);
+	if (!fast_toggle_supported_on_node(vid_node)) {
+		pr_err("%s - fast toggle not supported on node %d\n", __func__, vid_node->id);
 		return -EINVAL;
 	}
 
@@ -1187,12 +1358,12 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 			pr_err("%s - fast toggle failed with error %d\n", __func__, (int)ret);
 		}
 
-		// If priming buf still exists (toggle failed before using it), return it to user
+		// If priming buf still exists (toggle failed before using it), return it to its owner
 		if (vid_node->fast_toggle_priming_buf != NULL) {
 			trace_vid_cap_fast_toggle_priming_buf_error(vid_node->path,
 								    vid_node->fast_toggle_priming_buf->vb.vb2_buf.index,
 								    vid_node->fast_toggle_priming_buf->dma[0]);
-			vb2_buffer_done(&vid_node->fast_toggle_priming_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+			return_unused_priming_buf(vid_node, vid_node->fast_toggle_priming_buf);
 			vid_node->fast_toggle_priming_buf = NULL;
 		}
 
@@ -1209,6 +1380,13 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 	case VIDEO_FAST_TOGGLE_PRIMING:
 		trace_vid_cap_fast_toggle_priming_start(vid_node->path);
 
+		if (!fast_toggle_supported_on_node(vid_node)) {
+			pr_err("%s - fast toggle not supported on node %d\n", __func__, vid_node->id);
+			ret = -EINVAL;
+			trace_vid_cap_fast_toggle_priming_complete(vid_node->path, ret);
+			break;
+		}
+
 		if (vid_node->fast_toggle_state != FAST_TOGGLE_NONE) {
 			pr_err("%s - fast toggle priming called when another fast toggle is in progress %d\n", __func__, vid_node->fast_toggle_state);
 			ret = -EALREADY;
@@ -1220,10 +1398,25 @@ static long hailo15_video_node_unlocked_ioctl(struct file *file,
 		ret = hailo15_video_node_subdev_fast_toggle_set_status(vid_node, FAST_TOGGLE_PRIMING, FAST_TOGGLE_TYPE_MAX);
 		if (ret) {
 			pr_err("%s - failed to prime before fast toggle on subdev, subdev call returned %ld\n", __func__, ret);
+			/* Priming is already partly applied: the ISP has posted
+			 * FAST_TOGGLE_PRIMING to the daemon and every subdev reached
+			 * before the failure is primed. Unwind so the daemon gets its
+			 * FAST_TOGGLE_DONE and no stale priming survives into the next
+			 * toggle. */
+			fast_toggle_unwind(vid_node);
 			trace_vid_cap_fast_toggle_priming_complete(vid_node->path, ret);
 			break;
 		}
 		vid_node->fast_toggle_state = FAST_TOGGLE_PRIMING;
+
+		/* Refuse here: at the toggle the sensor is stopped and no retry can help. */
+		if (!reserve_fast_toggle_priming_buf(vid_node)) {
+			fast_toggle_unwind(vid_node);
+			ret = -EAGAIN;
+			trace_vid_cap_fast_toggle_priming_complete(vid_node->path, ret);
+			break;
+		}
+
 		trace_vid_cap_fast_toggle_priming_complete(vid_node->path, 0);
 		break;
 	case VIDEO_EVENT_COMPLETE:
@@ -1271,7 +1464,8 @@ static int hailo15_video_node_stream_cancel(struct hailo15_video_node *vid_node)
 	}
 	vid_node->pipeline_init = 0;
 	vid_node->sequence = 0;
-	vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
+	if (vid_node->fast_toggle_state != FAST_TOGGLE_NONE)
+		fast_toggle_unwind(vid_node);
 	return ret;
 }
 
@@ -1299,21 +1493,14 @@ static int hailo15_video_node_release(struct file *file)
 	if (vid_node->streaming &&
 		file->private_data == vid_node->queue.owner) {
 		ret = hailo15_video_node_stream_cancel(vid_node);
-		if (ret == -EAGAIN) {
-			/* Daemon-event timeout: HW chain already stopped
-			 * upstream of the post_event, so the data path is
-			 * drained. Fall through to vb2_fop_release so the
-			 * queue state is cleared; otherwise the next open
-			 * inherits stale num_buffers/owner. */
-			pr_warn("%s: stream_cancel timed out on daemon event ack; freeing queue state anyway\n",
-				__func__);
-		} else if (ret) {
-			/* Non-recoverable cancel failure. HW DMA state
-			 * uncertain; do not free the queue. fd is still
-			 * closed by __fput. */
-			pr_err("%s - stream_cancel failed returning: %d\n",
-				   __func__, ret);
-			return ret;
+		if (ret) {
+			/* stream_cancel already cleared vid_node->streaming and
+			 * the buffer queue; the only state still pinned by this
+			 * fd is queue.owner. Falling through to vb2_fop_release
+			 * is safe (no HW touches) and necessary: holding owner
+			 * blocks the next open's TRY_FMT with EBUSY. See MSW-16325. */
+			pr_warn("%s: stream_cancel returned %d; releasing queue state anyway\n",
+				__func__, ret);
 		}
 	}
 
@@ -1543,16 +1730,6 @@ static void hailo15_buffer_queue(struct vb2_buffer *vb)
 		return;
 	}
 
-	if (vid_node->fast_toggle_state == FAST_TOGGLE_PRIMING) {
-		if (vid_node->fast_toggle_priming_buf == NULL) {
-			vid_node->fast_toggle_priming_buf = buf;
-			trace_vid_cap_fast_toggle_priming_buf_saved(vid_node->path,
-								    buf->vb.vb2_buf.index,
-								    buf->dma[0]);
-			return;
-		}
-	}
-
 	/* if the list is empty, it will be called twice. */
 	if (hailo15_video_node_buffer_init(vb)) {
 		pr_err("%s - failed hailo15_video_node_buffer_init, returning\n",
@@ -1647,6 +1824,8 @@ static int hailo15_video_device_buffer_dequeue(struct hailo15_dma_ctx *ctx,
 	}
 
 	if (buf != NULL) {
+		if (WARN_ON_ONCE(is_scratch_priming_buf(vid_node, buf)))
+			return -EINVAL;
 		if (hailo15_is_p2a_grp_id(vid_node->path)) {
 			buf->vb.sequence = vid_node->sequence++;
 		}
@@ -1701,7 +1880,13 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	mutex_unlock(&vid_node->qlock);
 
 	if (prev_buf) {
-		if (vid_node->drop_prev_buf) {
+		if (is_scratch_priming_buf(vid_node, prev_buf)) {
+			/* Completing it restarted the buffer flow; its contents are of no use. */
+			mutex_lock(&vid_node->qlock);
+			vid_node->drop_prev_buf = false;
+			release_scratch_priming_buf(vid_node);
+			mutex_unlock(&vid_node->qlock);
+		} else if (vid_node->drop_prev_buf) {
 			/* Re-queue the stale frame to the driver queue; vb2_buffer_done(QUEUED)
 			 * would orphan it (no done_list, no buf_queue op) and leak one per toggle. */
 			mutex_lock(&vid_node->qlock);
@@ -1731,15 +1916,7 @@ static int hailo15_video_device_buffer_done(struct hailo15_dma_ctx *ctx,
 	 * during stream stop. */
 	if (vid_node->streaming) {
 		mutex_lock(&vid_node->qlock);
-		next_buffer = list_first_entry_or_null(
-			&vid_node->buf_queue, struct hailo15_buffer, irqlist);
-		if (vid_node->skip_first_list_entry) {
-			if (next_buffer && !list_empty(&vid_node->buf_queue) && !list_is_singular(&vid_node->buf_queue)) {
-				next_buffer = list_next_entry(next_buffer, irqlist);
-			} else {
-				next_buffer = NULL;
-			}
-		}
+		next_buffer = next_buffer_for_hw(vid_node);
 		mutex_unlock(&vid_node->qlock);
 
 		if (next_buffer) {
@@ -1812,6 +1989,18 @@ static int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int 
 	vid_node->queue_accepting_buffers = true;
 
 	if (!vid_node->streaming) {
+		/*
+		 * Clear a leftover priming before the subdevs are told to stream,
+		 * not after. The sensors gate their power handling on this state:
+		 * starting a stream while it is stale makes the sensor skip its
+		 * pm_runtime get and program an unpowered device, which fails with
+		 * -EIO. Unwinding afterwards never ran in that case - the error
+		 * path below jumps past it - so the stale state survived and every
+		 * later stream start failed the same way.
+		 */
+		if (vid_node->fast_toggle_state != FAST_TOGGLE_NONE)
+			fast_toggle_unwind(vid_node);
+
 		ret = hailo15_video_node_subdev_set_stream(vid_node, STREAM_ON);
 		if (ret) {
 			dev_err(vid_node->dev,
@@ -1820,7 +2009,6 @@ static int hailo15_video_node_start_streaming(struct vb2_queue *q, unsigned int 
 			goto err;
 		}
 
-		vid_node->fast_toggle_state = FAST_TOGGLE_NONE;
 		vid_node->streaming = STREAM_ON;
 		wake_up_interruptible(&vid_node->stream_wait);
 	}
